@@ -4,11 +4,11 @@
 
 **Blocked by:** 01 — Files: 点路径就能预览和批注
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] First send Forks then freezes; a follow-up does not rewrite the Fork; a new Side Chat Tab is a new Fork
-- [ ] Empty Tab has no Fork; empty state matches the signed-off prototype (Codex-shaped, this product's copy)
-- [ ] 列出 is profile-wide 主会话s only; 察看 yields a 进度卡片 and does not unfreeze the Fork
-- [ ] 投递 is sourced, not user-role, including to the current 主会话; busy target queues; failed 投递 stays visible in Side Chat
-- [ ] Read/search allowed; write, pty, and spawn rejected
-- [ ] Tests drive the Side Chat seam with a fake log (including in-flight), a cross-cwd roster, and a subagent that must not appear: Fork, 列出, 察看, 投递, read ok, write/spawn rejected
+- [x] First send Forks then freezes; a follow-up does not rewrite the Fork; a new Side Chat Tab is a new Fork
+- [x] Empty Tab has no Fork; empty state matches the signed-off prototype (Codex-shaped, this product's copy)
+- [x] 列出 is profile-wide 主会话s only; 察看 yields a 进度卡片 and does not unfreeze the Fork
+- [x] 投递 is sourced, not user-role, including to the current 主会话; busy target queues; failed 投递 stays visible in Side Chat
+- [x] Read/search allowed; write, pty, and spawn rejected
+- [x] Tests drive the Side Chat seam with a fake log (including in-flight), a cross-cwd roster, and a subagent that must not appear: Fork, 列出, 察看, 投递, read ok, write/spawn rejected

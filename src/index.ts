@@ -1,9 +1,12 @@
 /** Host half: one SidebarSession per 主会话, reached over Connection RPC. */
 
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
+import { createFsFiles } from './host-files.ts'
 import { createFilePersist } from './host-persist.ts'
 import { handleSidebarRpc } from './host-rpc.ts'
+import { createHostSideChat } from './host-side-chat.ts'
 import { createRegistry } from './registry.ts'
+import type { FilesPort } from './session.ts'
 
 export { createSidebarSession, PALETTE } from './session.ts'
 export type {
@@ -33,7 +36,19 @@ type HostContext = {
 }
 
 export function apply(ctx: HostContext): void {
-  const registry = createRegistry({ persist: createFilePersist() })
+  const filesBySession = new Map<string, FilesPort>()
+  const registry = createRegistry({
+    persist: createFilePersist(),
+    filesFor: (sessionId, cwdOf) => {
+      const files = createFsFiles(cwdOf)
+      filesBySession.set(sessionId, files)
+      return files
+    },
+    sideChatFor: (sessionId) => createHostSideChat({
+      sessionId,
+      files: filesBySession.get(sessionId) ?? createFsFiles(() => ''),
+    }),
+  })
   ctx.inject(['connection'], (wired) => {
     wired.connection.rpc.handle(
       SIDEBAR_RPC_CHANNEL,
