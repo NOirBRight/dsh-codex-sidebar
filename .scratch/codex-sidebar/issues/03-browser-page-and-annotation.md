@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 — Files: 点路径就能预览和批注
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] URL click / typed URL opens or reuses a Browser Tab; paths still go to Files, not this 工具
-- [ ] Empty chrome has no 批注 icon; unreachable has no 批注 icon; a loaded page can 批注 at the clicked element
-- [ ] Back, forward, refresh, and open-external exist; no run/stop/spawn effect when a URL fails
-- [ ] 批注 Enter / Ctrl+Enter land on the 主会话 composer, same rules as Files
-- [ ] Tests drive the Browser seam with fake page documents and an unreachable URL: reuse, navigate, no spawn, 批注 destination is the 主会话
+- [x] URL click / typed URL opens or reuses a Browser Tab; paths still go to Files, not this 工具
+- [x] Empty chrome has no 批注 icon; unreachable has no 批注 icon; a loaded page can 批注 at the clicked element
+- [x] Back, forward, refresh, and open-external exist; no run/stop/spawn effect when a URL fails
+- [x] 批注 Enter / Ctrl+Enter land on the 主会话 composer, same rules as Files
+- [x] Tests drive the Browser seam with fake page documents and an unreachable URL: reuse, navigate, no spawn, 批注 destination is the 主会话
