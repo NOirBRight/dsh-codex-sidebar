@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 — Files: 点路径就能预览和批注
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Default open is 本轮变更; switching to working tree shows human leftover files the 舵主 did not write this turn
-- [ ] Empty 本轮变更 stays empty — it does not silently fall back to the working tree
-- [ ] Diff is read-only: no stage, revert, or commit effects
-- [ ] File row expands unified diff; gutter `+` 批注 stacks or sends to the 主会话 composer like Files
-- [ ] Tests drive the Review seam with fake 主会话 write events and a fake git tree: default, switch, no git writes, finding is a composer attachment/send
+- [x] Default open is 本轮变更; switching to working tree shows human leftover files the 舵主 did not write this turn
+- [x] Empty 本轮变更 stays empty — it does not silently fall back to the working tree
+- [x] Diff is read-only: no stage, revert, or commit effects
+- [x] File row expands unified diff; gutter `+` 批注 stacks or sends to the 主会话 composer like Files
+- [x] Tests drive the Review seam with fake 主会话 write events and a fake git tree: default, switch, no git writes, finding is a composer attachment/send
