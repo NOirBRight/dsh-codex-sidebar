@@ -82,6 +82,13 @@ export const SIDEBAR_CSS = `
   flex: 1; overflow: auto; font-family: var(--ds-font-family-code);
   font-size: 12.5px; line-height: 1.6; padding: 10px 0;
 }
+.dcs-code[data-media] { padding: 0; }
+.dcs-md {
+  font-family: var(--dsw-font-family, inherit);
+  color: var(--dsw-alias-label-primary);
+}
+.dcs-md h1, .dcs-md h2, .dcs-md h3 { font-weight: 600; letter-spacing: -0.02em; }
+.dcs-md p { color: var(--dsw-alias-label-secondary); }
 .dcs-code[data-mark] { cursor: crosshair; }
 .dcs-line { display: grid; grid-template-columns: 44px 1fr; }
 .dcs-line .dcs-n { text-align: right; padding-right: 14px; color: var(--dsw-alias-label-tertiary); user-select: none; }

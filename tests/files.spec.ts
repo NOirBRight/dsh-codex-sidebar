@@ -223,4 +223,23 @@ describe('Files seam', () => {
     expect(b.snapshot().tabs).toEqual([])
     expect(b.snapshot().collapsed).toBe(true)
   })
+
+  it('keeps image data URLs and markdown source in the Files preview', () => {
+    const png = 'data:image/png;base64,aaa'
+    const files = memoryFiles({
+      'docs/logo.png': png,
+      'docs/note.md': '# Title\n\nhello',
+    })
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: memoryPersist(),
+      isBusy: () => false,
+    })
+    box.dispatch({ type: 'open-path', path: 'docs/logo.png' })
+    expect(box.snapshot().files.preview).toBe(png)
+    box.dispatch({ type: 'open-path', path: 'docs/note.md' })
+    expect(box.snapshot().files.preview).toBe('# Title\n\nhello')
+    expect(box.snapshot().tabs).toHaveLength(2)
+  })
 })

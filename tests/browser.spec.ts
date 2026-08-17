@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BrowserPort, PageDocument } from '../src/browser.ts'
+import { createHostBrowser } from '../src/host-browser.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
 
@@ -226,5 +227,53 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make the heading larger' })
     expect(box.dispatch({ type: 'browser-note-ctrl-enter' })[0]?.type).toBe('send')
+  })
+
+  it('loads a page snapshot from fetched HTML and treats a failed fetch as unreachable', () => {
+    const html = '<html><title>Sign in</title><h1 id="hero">Hello</h1><h2>Sub</h2><button class="go">Go</button><a href="/x">Next</a></html>'
+    const opened: string[] = []
+    const browser = createHostBrowser({
+      isBusy: () => false,
+      fetchHtml: (url) => url === PAGE_URL ? html : undefined,
+      openExternal: (url) => { opened.push(url) },
+    })
+    expect(browser.spawn).toBeUndefined()
+    const box = session(browser)
+    box.dispatch({ type: 'pick-tool', kind: 'Browser' })
+    box.dispatch({ type: 'open-url', url: DEAD_URL })
+    expect(box.snapshot().browser.status).toBe('unreachable')
+    expect(box.snapshot().browser.canAnnotate).toBe(false)
+    expect(box.snapshot().browser.page).toBeNull()
+
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const loaded = box.snapshot().browser
+    expect(loaded.status).toBe('loaded')
+    expect(loaded.page?.title).toBe('Sign in')
+    expect(loaded.page?.elements.map((el) => el.selector)).toEqual([
+      'h1#hero',
+      'h2:nth-of-type(1)',
+      'button.go',
+      'a:nth-of-type(1)',
+    ])
+    expect(box.dispatch({ type: 'browser-open-external' })).toEqual([])
+    expect(opened).toEqual([PAGE_URL])
+  })
+
+  it('opens a Browser Tab from an empty 侧栏 and reuses it for the same URL', () => {
+    const box = session(fakeBrowser())
+    expect(box.snapshot().tabs).toEqual([])
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const first = box.snapshot()
+    expect(first.collapsed).toBe(false)
+    expect(first.tabs).toHaveLength(1)
+    expect(first.tabs[0]?.kind).toBe('Browser')
+    expect(first.tabs[0]?.target).toBe(PAGE_URL)
+    expect(first.browser.url).toBe(PAGE_URL)
+    expect(first.browser.status).toBe('loaded')
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    expect(box.snapshot().tabs).toHaveLength(1)
+    box.dispatch({ type: 'open-url', url: OTHER_URL })
+    expect(box.snapshot().tabs).toHaveLength(2)
+    expect(box.snapshot().tabs[1]?.target).toBe(OTHER_URL)
   })
 })

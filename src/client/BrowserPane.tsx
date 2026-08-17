@@ -1,6 +1,6 @@
 /** Browser 工具: URL chrome, empty / unreachable / loaded page, 批注 at the mark. */
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactElement } from 'react'
 import type { Intent, SidebarSnapshot } from '../session.ts'
 import { Ico } from './icons.tsx'
 
@@ -36,7 +36,11 @@ const BROWSER_CSS = `
 }
 .dcs-b-empty p { margin: 0; font-size: 13px; color: var(--dsw-alias-label-tertiary); }
 .dcs-b-page {
-  flex: 1; background: #f3efe6; display: flex; align-items: center; justify-content: center; min-height: 0;
+  flex: 1; background: var(--dsw-alias-bg-base); position: relative; min-height: 0;
+}
+.dcs-b-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.dcs-b-mask {
+  position: absolute; inset: 0; z-index: 2; cursor: crosshair; background: transparent;
 }
 .dcs-b-page[data-mark] { cursor: crosshair; }
 .dcs-b-card { width: 260px; }
@@ -80,19 +84,6 @@ export function BrowserPane({
   function submitUrl(event: FormEvent): void {
     event.preventDefault()
     onIntent({ type: 'open-url', url: draft })
-  }
-
-  function markElement(selector: string, event: MouseEvent<HTMLElement>): void {
-    if (!browser.annotate) return
-    const pane = bodyRef.current
-    if (pane === null) return
-    const box = pane.getBoundingClientRect()
-    onIntent({
-      type: 'browser-click-content',
-      mark: selector,
-      x: event.clientX - box.left,
-      y: event.clientY - box.top,
-    })
   }
 
   function onNoteKey(event: KeyboardEvent<HTMLInputElement>): void {
@@ -192,20 +183,32 @@ export function BrowserPane({
           <p>侧栏不起项目</p>
         </div>
       )}
-      {browser.status === 'loaded' && browser.page !== null && (
+      {browser.status === 'loaded' && browser.url.length > 0 && (
         <div className="dcs-b-page" data-mark={browser.annotate || undefined}>
-          <div className="dcs-b-card">
-            {browser.page.elements.map((element) => (
-              <PageNode
-                key={element.selector}
-                selector={element.selector}
-                text={element.text}
-                hit={browser.pendingMark === element.selector}
-                annotate={browser.annotate}
-                onMark={markElement}
-              />
-            ))}
-          </div>
+          <iframe
+            className="dcs-b-frame"
+            title={browser.page?.title ?? browser.url}
+            src={browser.url}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          />
+          {browser.annotate && (
+            <div
+              className="dcs-b-mask"
+              onClick={(event) => {
+                const pane = bodyRef.current
+                if (pane === null) return
+                const box = pane.getBoundingClientRect()
+                const x = event.clientX - box.left
+                const y = event.clientY - box.top
+                onIntent({
+                  type: 'browser-click-content',
+                  mark: `${browser.url}@${Math.round(x)},${Math.round(y)}`,
+                  x,
+                  y,
+                })
+              }}
+            />
+          )}
         </div>
       )}
       {browser.pendingMark !== null && browser.notePos !== null && (
@@ -219,55 +222,6 @@ export function BrowserPane({
           />
         </div>
       )}
-    </div>
-  )
-}
-
-function PageNode({
-  selector,
-  text,
-  hit,
-  annotate,
-  onMark,
-}: {
-  selector: string
-  text: string
-  hit: boolean
-  annotate: boolean
-  onMark: (selector: string, event: MouseEvent<HTMLElement>) => void
-}): ReactElement {
-  const cursor = annotate ? 'crosshair' : 'default'
-  if (selector.includes('button')) {
-    return (
-      <button
-        type="button"
-        data-hit={hit || undefined}
-        style={{ cursor }}
-        onClick={(event) => { onMark(selector, event) }}
-      >
-        {text}
-      </button>
-    )
-  }
-  if (selector.includes('h1')) {
-    return (
-      <h1
-        data-hit={hit || undefined}
-        style={{ cursor }}
-        onClick={(event) => { onMark(selector, event) }}
-      >
-        {text}
-      </h1>
-    )
-  }
-  return (
-    <div
-      className="dcs-b-el"
-      data-hit={hit || undefined}
-      style={{ cursor }}
-      onClick={(event) => { onMark(selector, event) }}
-    >
-      {text}
     </div>
   )
 }

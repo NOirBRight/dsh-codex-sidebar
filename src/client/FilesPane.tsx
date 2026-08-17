@@ -1,6 +1,6 @@
 /** Files 工具: read-only preview + closable tree + 批注 at the mark. */
 
-import { useRef, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react'
+import { useRef, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode } from 'react'
 import type { Intent, SidebarSnapshot } from '../session.ts'
 import { Ico } from './icons.tsx'
 
@@ -25,10 +25,12 @@ export function FilesPane({
   const slash = files.path.lastIndexOf('/')
   const dir = slash === -1 ? '' : `${files.path.slice(0, slash + 1)}`
   const name = slash === -1 ? files.path : files.path.slice(slash + 1)
-  const lines = (files.preview ?? '').split('\n')
+  const image = imageSrc(files.path, files.preview)
+  const markdown = image === undefined && isMarkdown(files.path)
+  const lines = image === undefined && !markdown ? (files.preview ?? '').split('\n') : []
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  function markLine(line: number, event: MouseEvent<HTMLDivElement>): void {
+  function markLine(line: number, event: MouseEvent<HTMLElement>): void {
     if (!files.annotate) return
     const pane = bodyRef.current
     if (pane === null) return
@@ -83,13 +85,30 @@ export function FilesPane({
             </button>
           )}
         </div>
-        <div className="dcs-code" data-mark={files.annotate || undefined}>
-          {lines.map((line, index) => (
-            <div key={index} className="dcs-line" onClick={(event) => { markLine(index + 1, event) }}>
-              <span className="dcs-n">{index + 1}</span>
-              <span className="dcs-t">{line.length === 0 ? ' ' : line}</span>
+        <div className="dcs-code" data-mark={files.annotate || undefined} data-media={image !== undefined || markdown || undefined}>
+          {image !== undefined ? (
+            <img
+              alt={name}
+              src={image}
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', padding: 16 }}
+              onClick={(event) => { markLine(1, event) }}
+            />
+          ) : markdown ? (
+            <div
+              className="dcs-md"
+              style={{ padding: '12px 18px', lineHeight: 1.55, fontSize: 13.5 }}
+              onClick={(event) => { markLine(1, event) }}
+            >
+              {renderMarkdown(files.preview ?? '')}
             </div>
-          ))}
+          ) : (
+            lines.map((line, index) => (
+              <div key={index} className="dcs-line" onClick={(event) => { markLine(index + 1, event) }}>
+                <span className="dcs-n">{index + 1}</span>
+                <span className="dcs-t">{line.length === 0 ? ' ' : line}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
       {files.treeOpen && (
@@ -160,4 +179,37 @@ function groupTree(nodes: SidebarSnapshot['files']['tree']): TreeEntry[] {
     }
   }
   return out
+}
+
+function isMarkdown(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path)
+}
+
+function imageSrc(path: string, preview: string | undefined): string | undefined {
+  if (preview === undefined) return undefined
+  if (preview.startsWith('data:image/')) return preview
+  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path) && preview.startsWith('data:')) return preview
+  return undefined
+}
+
+function renderMarkdown(source: string): ReactNode {
+  const blocks = source.split(/\n{2,}/)
+  return blocks.map((block, index) => {
+    const heading = /^(#{1,3})\s+(.*)$/.exec(block)
+    if (heading) {
+      const text = heading[2] ?? ''
+      if (heading[1] === '#') return <h1 key={index} style={{ fontSize: 22, margin: '0 0 8px' }}>{text}</h1>
+      if (heading[1] === '##') return <h2 key={index} style={{ fontSize: 17, margin: '0 0 8px' }}>{text}</h2>
+      return <h3 key={index} style={{ fontSize: 14, margin: '0 0 8px' }}>{text}</h3>
+    }
+    if (block.startsWith('```')) {
+      const body = block.replace(/^```[a-z]*\n?/, '').replace(/```$/, '')
+      return (
+        <pre key={index} style={{ fontFamily: 'var(--ds-font-family-code)', fontSize: 12.5, whiteSpace: 'pre-wrap' }}>
+          {body}
+        </pre>
+      )
+    }
+    return <p key={index} style={{ margin: '0 0 10px' }}>{block}</p>
+  })
 }

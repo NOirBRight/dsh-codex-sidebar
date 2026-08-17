@@ -13,7 +13,12 @@ export function createFsFiles(cwdOf: () => string): FilesPort {
       const cwd = cwdOf()
       if (cwd.length === 0) return undefined
       try {
-        return readFileSync(join(cwd, path), 'utf8')
+        const full = join(cwd, path)
+        if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) {
+          const buf = readFileSync(full)
+          return `data:${imageMime(path)};base64,${buf.toString('base64')}`
+        }
+        return readFileSync(full, 'utf8')
       } catch {
         return undefined
       }
@@ -26,6 +31,15 @@ export function createFsFiles(cwdOf: () => string): FilesPort {
       return nodes
     },
   }
+}
+
+function imageMime(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.svg')) return 'image/svg+xml'
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  return 'image/jpeg'
 }
 
 function walk(root: string, dir: string, nodes: TreeNode[]): void {

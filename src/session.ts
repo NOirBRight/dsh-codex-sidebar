@@ -42,6 +42,7 @@ export type PersistPort = {
 export type Effect =
   | { type: 'send'; text: string; attachments: Annotation[] }
   | { type: 'queue'; text: string; attachments: Annotation[] }
+  | { type: 'deliver'; to: string; text: string; sourceTab: string; sourceSession: string }
 
 export type Intent =
   | { type: 'pick-tool'; kind: ToolKind }
@@ -164,12 +165,23 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
 
   function fillOrOpen(kind: ToolKind, target = ''): void {
     expand()
-    if (kind === 'Files' && target) {
-      const reuse = tabs.find((t) => t.kind === 'Files' && t.target === target)
+    if (target) {
+      const reuse = tabs.find((t) => t.kind === kind && t.target === target)
       if (reuse) {
         active = reuse.id
         return
       }
+    }
+    const current = tabs.find((t) => t.id === active)
+    if (current?.kind === kind && (current.target.length === 0 || current.target === target)) {
+      if (target.length > 0) {
+        tabs = tabs.map((t) => (
+          t.id === current.id
+            ? { ...t, target, title: target.split('/').pop() ?? kind }
+            : t
+        ))
+      }
+      return
     }
     const empty = tabs.find((t) => t.id === active && t.kind === null)
     if (empty) {
@@ -227,6 +239,13 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         active = tab.id
         if (tab.kind === 'Files' && tab.target) {
           files = { ...files, path: tab.target, pendingMark: null, notePos: null }
+        }
+        if (tab.kind === 'Browser' && tab.target.length > 0) {
+          const nextBrowser = reduceBrowser(browser, { type: 'open-url', url: tab.target } as BrowserIntent, opts.browser)
+          if (nextBrowser !== undefined) {
+            browser = nextBrowser.state
+            effects.push(...nextBrowser.effects)
+          }
         }
         break
       }
@@ -303,6 +322,15 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       }
       default: {
+        if (intent.type === 'open-url') {
+          const url = (intent as { url: string }).url
+          fillOrOpen('Browser', url)
+          const tab = tabs.find((item) => item.id === active && item.kind === 'Browser')
+          if (tab) {
+            tab.target = url
+            tab.title = url.replace(/^https?:\/\//i, '').slice(0, 48) || url
+          }
+        }
         const nextReview = reduceReview(review, intent, opts.review)
         if (nextReview !== undefined) {
           review = nextReview.state

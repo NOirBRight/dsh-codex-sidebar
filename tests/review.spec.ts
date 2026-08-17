@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { SIDEBAR_DISPATCH_ENDPOINT } from '../src/contract.ts'
+import { handleSidebarRpc } from '../src/host-rpc.ts'
+import { createRegistry } from '../src/registry.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
 import type { ReviewPort } from '../src/review.ts'
+import { turnWritesFromLog, turnWritesFromSession } from '../src/turn-writes.ts'
 
 function memoryFiles(files: Record<string, string>): FilesPort {
   return {
@@ -202,5 +206,123 @@ describe('Review seam', () => {
     box.dispatch({ type: 'review-dismiss-note' })
     expect(box.snapshot().review.pendingMark).toBeNull()
     expect(box.snapshot().review.noteDraft).toBe('')
+  })
+
+  it('reads 本轮变更 from the 主会话 log, not leftover working-tree files', () => {
+    const writes = turnWritesFromLog([
+      { seq: 1, turn: 1, role: 'user', text: 'fix login' },
+      { seq: 2, turn: 1, role: 'tool-result', text: LOGIN_AFTER, writes: ['src/Login.tsx'] },
+      { seq: 3, turn: 1, role: 'assistant', text: 'done', closed: true },
+    ])
+    expect(writes).toEqual([{ path: 'src/Login.tsx', before: '', after: LOGIN_AFTER }])
+    expect(turnWritesFromSession({
+      messages: [
+        { role: 'user', text: 'fix login' },
+        { role: 'tool', text: LOGIN_AFTER, writes: ['src/Login.tsx'] },
+      ],
+    }).map((change) => change.path)).toEqual(['src/Login.tsx'])
+    expect(turnWritesFromLog([
+      { seq: 1, turn: 1, role: 'user', text: 'look around' },
+      { seq: 2, turn: 1, role: 'assistant', text: 'nothing to write', closed: true },
+    ])).toEqual([])
+  })
+
+  it('projects 本轮变更 from DSH conversation nodes, including write tool args', () => {
+    const snapshot = {
+      nodes: [
+        { kind: 'user', turn: 1, text: 'fix login' },
+        {
+          kind: 'tool-result',
+          turn: 1,
+          call: { name: 'str_replace', argsRaw: JSON.stringify({ file_path: 'src/Login.tsx' }) },
+          text: LOGIN_AFTER,
+        },
+        { kind: 'assistant', turn: 1, text: 'done' },
+      ],
+    }
+    expect(turnWritesFromSession(snapshot).map((change) => change.path)).toEqual(['src/Login.tsx'])
+    expect(turnWritesFromSession({
+      chat: {
+        legacy: {
+          nodes: [
+            { kind: 'user', turn: 2, text: 'now notes' },
+            {
+              kind: 'tool-call',
+              turn: 2,
+              call: { name: 'write', argsRaw: JSON.stringify({ path: 'notes.md' }) },
+            },
+            {
+              kind: 'tool-result',
+              turn: 2,
+              call: { name: 'write', argsRaw: JSON.stringify({ path: 'notes.md' }) },
+              text: NOTES_AFTER,
+            },
+          ],
+        },
+      },
+    })).toEqual([{ path: 'notes.md', before: '', after: NOTES_AFTER }])
+    expect(turnWritesFromSession({
+      nodes: [
+        { kind: 'user', turn: 1, text: 'look around' },
+        { kind: 'tool-result', turn: 1, call: { name: 'read', argsRaw: JSON.stringify({ path: 'src/Login.tsx' }) } },
+      ],
+    })).toEqual([])
+  })
+
+  it('projects 本轮变更 from the RPC 主会话 log and keeps leftovers on the working tree', () => {
+    const registry = createRegistry({
+      persist: memoryPersist(),
+      filesFor: () => memoryFiles({ 'src/Login.tsx': LOGIN_AFTER, 'notes.md': NOTES_AFTER }),
+      reviewFor: (_id, io) => ({
+        turnWrites: () => io.turnWrites(),
+        workingTree: () => [LOGIN_TURN, NOTES_TREE],
+        isBusy: io.isBusy,
+      }),
+    })
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: '/work',
+      busy: false,
+      turnWrites: [LOGIN_TURN],
+      intent: { type: 'pick-tool', kind: 'Review' },
+    })
+    expect(opened.ok).toBe(true)
+    if (!opened.ok) return
+    const snap = opened.value as { snapshot: { review: { mode: string; files: Array<{ path: string }> } } }
+    expect(snap.snapshot.review.mode).toBe('turn')
+    expect(snap.snapshot.review.files.map((file) => file.path)).toEqual(['src/Login.tsx'])
+
+    const tree = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: '/work',
+      busy: false,
+      turnWrites: [LOGIN_TURN],
+      intent: { type: 'review-switch', mode: 'tree' },
+    })
+    expect(tree.ok).toBe(true)
+    if (!tree.ok) return
+    const next = tree.value as { snapshot: { review: { files: Array<{ path: string }> } } }
+    expect(next.snapshot.review.files.map((file) => file.path)).toEqual(['src/Login.tsx', 'notes.md'])
+
+    const emptyRegistry = createRegistry({
+      persist: memoryPersist(),
+      filesFor: () => memoryFiles({ 'notes.md': NOTES_AFTER }),
+      reviewFor: (_id, io) => ({
+        turnWrites: () => io.turnWrites(),
+        workingTree: () => [NOTES_TREE],
+        isBusy: io.isBusy,
+      }),
+    })
+    const emptyTurn = handleSidebarRpc(emptyRegistry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-b',
+      cwd: '/work',
+      busy: false,
+      turnWrites: [],
+      intent: { type: 'pick-tool', kind: 'Review' },
+    })
+    expect(emptyTurn.ok).toBe(true)
+    if (!emptyTurn.ok) return
+    const empty = emptyTurn.value as { snapshot: { review: { files: unknown[] } } }
+    expect(empty.snapshot.review.files).toEqual([])
   })
 })

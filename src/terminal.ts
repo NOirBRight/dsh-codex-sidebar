@@ -9,7 +9,7 @@ export type TerminalIntent =
 
 export type TerminalPort = {
   cwd(): string
-  create(tabId: string, cwd: string): void
+  create(tabId: string, cwd: string, token?: string): string
   write(tabId: string, bytes: string): void
   destroy(tabId: string): void
   read(tabId: string): string
@@ -18,6 +18,7 @@ export type TerminalPort = {
 export type TerminalPty = {
   cwd: string
   output: string
+  token: string
 }
 
 export type TerminalState = {
@@ -29,12 +30,14 @@ export function emptyTerminal(): TerminalState {
 }
 
 export function projectTerminal(state: TerminalState, port?: TerminalPort): TerminalState {
-  const byTab: Record<string, TerminalPty> = { ...state.byTab }
-  if (port === undefined) return { byTab }
-  for (const tabId of Object.keys(byTab)) {
-    const rec = byTab[tabId]
-    if (rec === undefined) continue
-    byTab[tabId] = { ...rec, output: port.read(tabId) }
+  const byTab: Record<string, TerminalPty> = {}
+  for (const [tabId, rec] of Object.entries(state.byTab ?? {})) {
+    const token = rec.token ?? tabId
+    byTab[tabId] = {
+      cwd: rec.cwd,
+      token,
+      output: port === undefined ? rec.output : port.read(tabId),
+    }
   }
   return { byTab }
 }
@@ -50,9 +53,10 @@ export function reduceTerminal(
   switch (typed.type) {
     case 'terminal-open': {
       const cwd = port === undefined ? '' : port.cwd()
-      port?.create(typed.tabId, cwd)
+      const held = byTab[typed.tabId]?.token
+      const token = port === undefined ? held ?? typed.tabId : port.create(typed.tabId, cwd, held)
       const output = port === undefined ? '' : port.read(typed.tabId)
-      byTab[typed.tabId] = { cwd, output }
+      byTab[typed.tabId] = { cwd, output, token }
       return { state: { byTab }, effects: [] }
     }
     case 'terminal-write': {
@@ -62,6 +66,7 @@ export function reduceTerminal(
       byTab[typed.tabId] = {
         cwd: rec?.cwd ?? '',
         output: port === undefined ? `${rec?.output ?? ''}${typed.bytes}` : port.read(typed.tabId),
+        token: rec?.token ?? typed.tabId,
       }
       return { state: { byTab }, effects: [] }
     }

@@ -140,8 +140,11 @@ export function reduceSideChat(
   port?: SideChatPort,
 ): { state: SideChatState; effects: Effect[] } | undefined {
   if (!SIDE_TYPES.has(intent.type)) return undefined
-  const next = reduceKnown(normalize(state), intent as SideChatIntent, port)
-  return { state: next, effects: [] }
+  const current = normalize(state)
+  if (intent.type === 'side-deliver') {
+    return deliver(current, intent as Extract<SideChatIntent, { type: 'side-deliver' }>, port)
+  }
+  return { state: reduceKnown(current, intent as SideChatIntent, port), effects: [] }
 }
 
 function reduceKnown(state: SideChatState, intent: SideChatIntent, port?: SideChatPort): SideChatState {
@@ -155,7 +158,7 @@ function reduceKnown(state: SideChatState, intent: SideChatIntent, port?: SideCh
     case 'side-inspect':
       return inspect(state, intent, port)
     case 'side-deliver':
-      return deliver(state, intent, port)
+      return deliver(state, intent, port).state
     case 'side-read':
       return readFile(state, intent, port)
     case 'side-search':
@@ -223,7 +226,7 @@ function deliver(
   state: SideChatState,
   intent: Extract<SideChatIntent, { type: 'side-deliver' }>,
   port?: SideChatPort,
-): SideChatState {
+): { state: SideChatState; effects: Effect[] } {
   const payload: SourcedDelivery = {
     role: 'sourced',
     to: intent.sessionId,
@@ -235,11 +238,22 @@ function deliver(
   const message: SideChatMessage = result.ok
     ? { kind: 'delivery', to: intent.sessionId, text: intent.text, status: result.queued ? 'queued' : 'sent' }
     : { kind: 'delivery', to: intent.sessionId, text: intent.text, status: 'failed', error: result.error }
-  return patchTab(state, intent.tabId, (tab) => ({
+  const next = patchTab(state, intent.tabId, (tab) => ({
     ...tab,
     error: null,
     messages: [...tab.messages, message],
   }))
+  if (!result.ok) return { state: next, effects: [] }
+  return {
+    state: next,
+    effects: [{
+      type: 'deliver',
+      to: payload.to,
+      text: payload.text,
+      sourceTab: payload.sourceTab,
+      sourceSession: payload.sourceSession,
+    }],
+  }
 }
 
 function readFile(

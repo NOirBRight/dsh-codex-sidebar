@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { createSidebarSession } from '../src/session.ts'
-import type { FilesPort, PersistPort, SidebarSession } from '../src/session.ts'
+import { SIDEBAR_DISPATCH_ENDPOINT } from '../src/contract.ts'
+import { handleSidebarRpc } from '../src/host-rpc.ts'
+import { createRegistry } from '../src/registry.ts'
+import { createSidebarSession, PALETTE } from '../src/session.ts'
+import type { FilesPort, PersistPort } from '../src/session.ts'
 import type { TerminalPort } from '../src/terminal.ts'
 
 const WORKSPACE = '/work/foo'
@@ -10,6 +13,7 @@ type FakePty = {
   stdin: string[]
   output: string
   destroyed: boolean
+  token: string
 }
 
 function memoryFiles(files: Record<string, string>): FilesPort {
@@ -45,10 +49,20 @@ function fakePtyPort(workspace: string): { port: TerminalPort; ptys: Map<string,
     cwd() {
       return workspace
     },
-    create(tabId, cwd) {
+    create(tabId, cwd, token) {
+      if (token !== undefined) {
+        for (const pty of ptys.values()) {
+          if (pty.token === token && !pty.destroyed) {
+            ptys.set(tabId, pty)
+            return token
+          }
+        }
+      }
       const existing = ptys.get(tabId)
-      if (existing !== undefined && !existing.destroyed) return
-      ptys.set(tabId, { cwd, stdin: [], output: '', destroyed: false })
+      if (existing !== undefined && !existing.destroyed) return existing.token
+      const next: FakePty = { cwd, stdin: [], output: '', destroyed: false, token: token ?? `pty-${tabId}` }
+      ptys.set(tabId, next)
+      return next.token
     },
     write(tabId, bytes) {
       const pty = ptys.get(tabId)
@@ -104,7 +118,9 @@ describe('Terminal seam', () => {
     const pty = ptys.get(tabId)
     expect(pty?.destroyed).toBe(false)
     expect(pty?.cwd).toBe(WORKSPACE)
+    expect(pty?.token).toBe(`pty-${tabId}`)
     expect(box.snapshot().terminal.byTab[tabId]?.cwd).toBe(WORKSPACE)
+    expect(box.snapshot().terminal.byTab[tabId]?.token).toBe(pty?.token)
   })
 
   it('gives each Terminal Tab its own pty so stdin is not shared', () => {
@@ -179,5 +195,46 @@ describe('Terminal seam', () => {
     expect(ptys.get(tabId)?.stdin).toEqual(['npm test\n'])
     expect(reopened.snapshot().terminal.byTab[tabId]?.output).toBe('npm test\n')
     expect(reopened.snapshot().terminal.byTab[tabId]?.cwd).toBe(WORKSPACE)
+    expect(reopened.snapshot().terminal.byTab[tabId]?.token).toBe(ptys.get(tabId)?.token)
+  })
+
+  it('opens a pty through RPC with a fake port and does not inject output', () => {
+    const { port, ptys } = fakePtyPort(WORKSPACE)
+    const registry = createRegistry({
+      persist: memoryPersist(),
+      filesFor: () => memoryFiles({ 'README.md': '# foo\n' }),
+      terminalFor: () => port,
+    })
+    const picked = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: WORKSPACE,
+      busy: false,
+      intent: { type: 'pick-tool', kind: 'Terminal' },
+    })
+    expect(picked.ok).toBe(true)
+    if (!picked.ok) return
+    const tabId = (picked.value as { snapshot: { tabs: Array<{ id: string }> } }).snapshot.tabs[0]?.id as string
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: WORKSPACE,
+      busy: false,
+      intent: { type: 'terminal-open', tabId },
+    })
+    expect(opened.ok).toBe(true)
+    if (!opened.ok) return
+    const written = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: WORKSPACE,
+      busy: false,
+      intent: { type: 'terminal-write', tabId, bytes: 'ls\n' },
+    })
+    expect(written.ok).toBe(true)
+    if (!written.ok) return
+    const reply = written.value as { snapshot: { attachments: unknown[]; queue: unknown[] }; effects: unknown[] }
+    expect(reply.effects).toEqual([])
+    expect(reply.snapshot.attachments).toEqual([])
+    expect(reply.snapshot.queue).toEqual([])
+    expect(ptys.get(tabId)?.cwd).toBe(WORKSPACE)
+    expect(ptys.get(tabId)?.stdin).toEqual(['ls\n'])
   })
 })

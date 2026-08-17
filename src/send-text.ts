@@ -11,3 +11,10 @@ export function formatSend(text: string, attachments: readonly Annotation[]): st
   if (marks.length === 0) return body
   return `${body}\n\n${marks}`
 }
+
+export function formatDelivery(text: string, sourceTab: string, sourceSession: string): string {
+  const label = `[投递 · Side Chat ${sourceTab} · 主会话 ${sourceSession}]`
+  const body = text.trim()
+  if (body.length === 0) return label
+  return `${label}\n${body}`
+}

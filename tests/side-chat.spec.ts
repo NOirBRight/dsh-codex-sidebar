@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { formatDelivery } from '../src/send-text.ts'
 import { createSidebarSession } from '../src/session.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
 import type {
@@ -227,7 +228,13 @@ describe('Side Chat seam', () => {
       sessionId: 'sess-b',
       text: 'use this login plan',
     })
-    expect(idle).toEqual([])
+    expect(idle).toEqual([{
+      type: 'deliver',
+      to: 'sess-b',
+      text: 'use this login plan',
+      sourceTab: tabId,
+      sourceSession: 'sess-a',
+    }])
     expect(port.delivered[0]).toEqual({
       role: 'sourced',
       to: 'sess-b',
@@ -245,7 +252,13 @@ describe('Side Chat seam', () => {
       sessionId: 'sess-a',
       text: 'hand this back',
     })
-    expect(busy).toEqual([])
+    expect(busy).toEqual([{
+      type: 'deliver',
+      to: 'sess-a',
+      text: 'hand this back',
+      sourceTab: tabId,
+      sourceSession: 'sess-a',
+    }])
     expect(port.delivered[1]).toEqual({
       role: 'sourced',
       to: 'sess-a',
@@ -332,5 +345,11 @@ describe('Side Chat seam', () => {
     expect(tab.forked).toBe(true)
     expect(tab.forkSeq).toBe(5)
     expect(tab.messages.some((msg) => msg.kind === 'user' && msg.text === 'freeze this')).toBe(true)
+  })
+
+  it('labels a 投递 so the 主会话 can see it is not a user message', () => {
+    expect(formatDelivery('use this login plan', 't1', 'sess-a')).toBe(
+      '[投递 · Side Chat t1 · 主会话 sess-a]\nuse this login plan',
+    )
   })
 })
