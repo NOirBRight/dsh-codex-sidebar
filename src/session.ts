@@ -1,13 +1,13 @@
 /** Deep module: 侧栏 chrome + Files 工具. Tests and the plugin cross this seam. */
 
-import type { BrowserIntent, BrowserState } from './browser.ts'
-import { emptyBrowser, reduceBrowser } from './browser.ts'
-import type { ReviewIntent, ReviewState } from './review.ts'
-import { emptyReview, reduceReview } from './review.ts'
-import type { SideChatIntent, SideChatState } from './side-chat.ts'
-import { emptySideChat, reduceSideChat } from './side-chat.ts'
-import type { TerminalIntent, TerminalState } from './terminal.ts'
-import { emptyTerminal, reduceTerminal } from './terminal.ts'
+import type { BrowserIntent, BrowserPort, BrowserState } from './browser.ts'
+import { emptyBrowser, projectBrowser, reduceBrowser } from './browser.ts'
+import type { ReviewIntent, ReviewPort, ReviewState } from './review.ts'
+import { emptyReview, projectReview, reduceReview } from './review.ts'
+import type { SideChatIntent, SideChatPort, SideChatState } from './side-chat.ts'
+import { emptySideChat, projectSideChat, reduceSideChat } from './side-chat.ts'
+import type { TerminalIntent, TerminalPort, TerminalState } from './terminal.ts'
+import { emptyTerminal, projectTerminal, reduceTerminal } from './terminal.ts'
 
 export const PALETTE = ['Review', 'Terminal', 'Browser', 'Files', 'Side Chat'] as const
 export type ToolKind = (typeof PALETTE)[number]
@@ -94,6 +94,10 @@ export type SessionOptions = {
   files: FilesPort
   persist: PersistPort
   isBusy: () => boolean
+  review?: ReviewPort
+  browser?: BrowserPort
+  terminal?: TerminalPort
+  sideChat?: SideChatPort
 }
 
 export type SidebarSession = {
@@ -145,10 +149,10 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       showPalette,
       palette: PALETTE,
       files: { ...files, tree: opts.files.tree(), preview: files.path ? opts.files.read(files.path) : undefined },
-      review: { ...review },
-      browser: { ...browser },
-      terminal: { ...terminal },
-      sideChat: { ...sideChat },
+      review: projectReview(review, opts.review),
+      browser: projectBrowser(browser, opts.browser),
+      terminal: projectTerminal(terminal, opts.terminal),
+      sideChat: projectSideChat(sideChat, opts.sideChat),
       attachments: attachments.map((a) => ({ ...a })),
       queue: queue.map((q) => ({ text: q.text, attachments: q.attachments.map((a) => ({ ...a })) })),
     }
@@ -299,25 +303,25 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       }
       default: {
-        const nextReview = reduceReview(review, intent)
+        const nextReview = reduceReview(review, intent, opts.review)
         if (nextReview !== undefined) {
           review = nextReview.state
           effects.push(...nextReview.effects)
           break
         }
-        const nextBrowser = reduceBrowser(browser, intent)
+        const nextBrowser = reduceBrowser(browser, intent, opts.browser)
         if (nextBrowser !== undefined) {
           browser = nextBrowser.state
           effects.push(...nextBrowser.effects)
           break
         }
-        const nextTerminal = reduceTerminal(terminal, intent)
+        const nextTerminal = reduceTerminal(terminal, intent, opts.terminal)
         if (nextTerminal !== undefined) {
           terminal = nextTerminal.state
           effects.push(...nextTerminal.effects)
           break
         }
-        const nextSideChat = reduceSideChat(sideChat, intent)
+        const nextSideChat = reduceSideChat(sideChat, intent, opts.sideChat)
         if (nextSideChat !== undefined) {
           sideChat = nextSideChat.state
           effects.push(...nextSideChat.effects)

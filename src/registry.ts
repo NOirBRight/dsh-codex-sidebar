@@ -1,8 +1,12 @@
 /** One SidebarSession per 主会话. */
 
+import type { BrowserPort } from './browser.ts'
 import { createFsFiles } from './host-files.ts'
+import type { ReviewPort } from './review.ts'
 import { createSidebarSession } from './session.ts'
 import type { FilesPort, PersistPort, SidebarSession } from './session.ts'
+import type { SideChatPort } from './side-chat.ts'
+import type { TerminalPort } from './terminal.ts'
 
 export type SessionGate = {
   cwd: string
@@ -12,6 +16,10 @@ export type SessionGate = {
 export type RegistryOptions = {
   persist: PersistPort
   filesFor?: (sessionId: string, cwdOf: () => string) => FilesPort
+  reviewFor?: (sessionId: string) => ReviewPort
+  browserFor?: (sessionId: string) => BrowserPort
+  terminalFor?: (sessionId: string) => TerminalPort
+  sideChatFor?: (sessionId: string) => SideChatPort
 }
 
 export function createRegistry(opts: RegistryOptions): {
@@ -32,6 +40,10 @@ export function createRegistry(opts: RegistryOptions): {
         files: filesFor(sessionId, () => cwd.get(sessionId) ?? ''),
         persist: opts.persist,
         isBusy: () => busy.get(sessionId) ?? false,
+        ...opts.reviewFor === undefined ? {} : { review: opts.reviewFor(sessionId) },
+        ...opts.browserFor === undefined ? {} : { browser: opts.browserFor(sessionId) },
+        ...opts.terminalFor === undefined ? {} : { terminal: opts.terminalFor(sessionId) },
+        ...opts.sideChatFor === undefined ? {} : { sideChat: opts.sideChatFor(sessionId) },
       })
       live.set(sessionId, created)
       return created
