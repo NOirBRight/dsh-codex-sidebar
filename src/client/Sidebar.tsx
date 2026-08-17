@@ -116,7 +116,9 @@ function SidebarChrome({
         {!snapshot.showPalette && active?.kind === 'Terminal' && (
           <TerminalPane snapshot={snapshot} onIntent={onIntent} tabId={active.id} />
         )}
-        {!snapshot.showPalette && active?.kind === 'Side Chat' && <SideChatPane later={t('later')} />}
+        {!snapshot.showPalette && active?.kind === 'Side Chat' && (
+          <SideChatPane snapshot={snapshot} onIntent={onIntent} />
+        )}
       </div>
     </section>
   )
