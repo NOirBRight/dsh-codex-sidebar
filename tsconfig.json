@@ -22,18 +22,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": [
-    "src/session.ts",
-    "src/registry.ts",
-    "src/contract.ts",
-    "src/send-text.ts",
-    "src/host-files.ts",
-    "src/host-persist.ts",
-    "src/host-rpc.ts",
-    "src/review.ts",
-    "src/browser.ts",
-    "src/terminal.ts",
-    "src/side-chat.ts",
-    "src/index.ts"
-  ]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/client/**"]
 }
