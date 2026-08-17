@@ -111,7 +111,9 @@ function SidebarChrome({
         )}
         {!snapshot.showPalette && active?.kind === 'Review' && <ReviewPane later={t('later')} />}
         {!snapshot.showPalette && active?.kind === 'Browser' && <BrowserPane later={t('later')} />}
-        {!snapshot.showPalette && active?.kind === 'Terminal' && <TerminalPane later={t('later')} />}
+        {!snapshot.showPalette && active?.kind === 'Terminal' && (
+          <TerminalPane snapshot={snapshot} onIntent={onIntent} tabId={active.id} />
+        )}
         {!snapshot.showPalette && active?.kind === 'Side Chat' && <SideChatPane later={t('later')} />}
       </div>
     </section>
