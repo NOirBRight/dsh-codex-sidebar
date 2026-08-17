@@ -109,7 +109,9 @@ function SidebarChrome({
             notePlaceholder={t('notePlaceholder')}
           />
         )}
-        {!snapshot.showPalette && active?.kind === 'Review' && <ReviewPane later={t('later')} />}
+        {!snapshot.showPalette && active?.kind === 'Review' && (
+          <ReviewPane snapshot={snapshot} onIntent={onIntent} />
+        )}
         {!snapshot.showPalette && active?.kind === 'Browser' && <BrowserPane later={t('later')} />}
         {!snapshot.showPalette && active?.kind === 'Terminal' && <TerminalPane later={t('later')} />}
         {!snapshot.showPalette && active?.kind === 'Side Chat' && <SideChatPane later={t('later')} />}
