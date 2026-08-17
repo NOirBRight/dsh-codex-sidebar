@@ -1,0 +1,4 @@
+# Insert the Codex-style 侧栏 as one loader row on the current 主会话.
+- insert:
+    - id: codex-sidebar
+      name: 'dsh-codex-sidebar'

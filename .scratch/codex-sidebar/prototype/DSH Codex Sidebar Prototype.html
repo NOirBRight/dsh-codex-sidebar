@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>DSH Codex Sidebar Prototype (throwaway)</title>
+  <!--
+    THROW AWAY. Answers: how does the frozen 侧栏 feel inside DSH?
+    Assumptions: DSH dark host; Codex App IA (Palette → Tab, + , 侧栏开关);
+    批注 Enter=stack / Ctrl+Enter=send; Side Chat Fork at first send.
+    IA is frozen — this is not a layout bake-off.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --bg: #111318;
+      --rail: #0e1014;
+      --panel: #171a21;
+      --lift: #1e222b;
+      --line: #2c3140;
+      --ink: #eceef2;
+      --muted: #8d93a1;
+      --faint: #5c6370;
+      --accent: #4c8dff;
+      --warn: #e3943a;
+      --ok: #3dd68c;
+      --chip: #2a3140;
+      --hover: #252a36;
+      --danger: #e85d5d;
+    }
+    * { box-sizing: border-box; }
+    html, body, #root { height: 100%; margin: 0; }
+    body {
+      font-family: "IBM Plex Sans", sans-serif;
+      background: #07080a;
+      color: var(--ink);
+    }
+    button, input, textarea { font-family: inherit; }
+    kbd {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 11px;
+      background: var(--chip);
+      color: var(--muted);
+      padding: 2px 7px;
+      border-radius: 6px;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const TOOLS = [
+      { kind: "Review", shortcut: "Ctrl+Shift+G", hint: "本轮变更 / 工作区 Diff" },
+      { kind: "Terminal", shortcut: "Ctrl+`", hint: "人的 pty · 不注入主会话" },
+      { kind: "Browser", shortcut: "Ctrl+T", hint: "页面 + 批注 · 不起项目" },
+      { kind: "Files", shortcut: "Ctrl+P", hint: "树 + 预览 + 批注" },
+      { kind: "Side Chat", shortcut: "Ctrl+Alt+S", hint: "Fork 顾问 · 可投递" },
+    ];
+
+    const LOGIN_SRC = `export function Login() {
+  return (
+    <form>
+      <h1>Sign in</h1>
+      <button className="submit">Continue</button>
+    </form>
+  );
+}`;
+
+    const REVIEW_TURN = [
+      {
+        key: "src/Login.tsx",
+        name: "Login.tsx",
+        dir: "src",
+        added: 8,
+        removed: 2,
+        hunk: "@@ -4,6 +4,12 @@",
+        lines: [
+          { type: "ctx", oldNo: 4, newNo: 4, text: "  return (" },
+          { type: "ctx", oldNo: 5, newNo: 5, text: "    <form>" },
+          { type: "del", oldNo: 6, newNo: null, text: "      <button>OK</button>" },
+          { type: "add", oldNo: null, newNo: 6, text: "      <h1>Sign in</h1>" },
+          { type: "add", oldNo: null, newNo: 7, text: '      <button className="submit">Continue</button>' },
+          { type: "ctx", oldNo: 7, newNo: 8, text: "    </form>" },
+          { type: "ctx", oldNo: 8, newNo: 9, text: "  );" },
+        ],
+      },
+    ];
+
+    const REVIEW_TREE = [
+      ...REVIEW_TURN,
+      {
+        key: "notes.md",
+        name: "notes.md",
+        dir: "",
+        added: 12,
+        removed: 0,
+        hunk: "@@ -0,0 +1,12 @@",
+        lines: [
+          { type: "add", oldNo: null, newNo: 1, text: "# leftover" },
+          { type: "add", oldNo: null, newNo: 2, text: "local scratch — not this turn" },
+        ],
+      },
+    ];
+
+    function ReviewView({ mode, setMode, openKey, setOpenKey, comment, setComment, onStack, onSend }) {
+      const files = mode === "turn" ? REVIEW_TURN : REVIEW_TREE;
+      const [hover, setHover] = useState(null);
+      const inputRef = useRef(null);
+
+      useEffect(() => {
+        if (comment && inputRef.current) inputRef.current.focus();
+      }, [comment]);
+
+      function lineKey(file, i) {
+        return file.key + ":" + i;
+      }
+
+      return (
+        <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>⎇ master</span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              {["turn", "tree"].map((m) => (
+                <button key={m} onClick={() => { setMode(m); setOpenKey(m === mode ? openKey : files[0] && files[0].key); }} style={{
+                  background: mode === m ? "var(--lift)" : "transparent",
+                  border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "3px 9px", cursor: "pointer", fontSize: 11
+                }}>{m === "turn" ? "本轮变更" : "工作区"}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--faint)", marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+            <span>Uncommitted</span>
+            <span>只读</span>
+          </div>
+          <div style={{ flex: 1, overflow: "auto" }}>
+            {files.map((file) => {
+              const open = openKey === file.key;
+              return (
+                <div key={file.key} style={{ borderBottom: "1px solid var(--line)" }}>
+                  <div
+                    onClick={() => setOpenKey(open ? null : file.key)}
+                    style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "8px 4px", cursor: "pointer" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--hover)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{file.name}</span>
+                    {file.dir ? <span style={{ fontSize: 11, color: "var(--faint)" }}>{file.dir}</span> : null}
+                    <span style={{ marginLeft: "auto", fontFamily: "IBM Plex Mono, monospace", fontSize: 11, whiteSpace: "nowrap" }}>
+                      <span style={{ color: "#3dd68c" }}>+{file.added}</span>
+                      {" "}
+                      <span style={{ color: "#e85d5d" }}>−{file.removed}</span>
+                    </span>
+                  </div>
+                  {open && (
+                    <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 11, background: "#0c0e12", border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden", margin: "0 0 10px" }}>
+                      <div style={{ padding: "4px 10px", color: "var(--faint)", background: "var(--lift)", fontSize: 10 }}>{file.hunk}</div>
+                      {file.lines.map((ln, i) => {
+                        const bg = ln.type === "add" ? "rgba(61,214,140,0.10)" : ln.type === "del" ? "rgba(232,93,93,0.12)" : "transparent";
+                        const sign = ln.type === "add" ? "+" : ln.type === "del" ? "−" : " ";
+                        const signColor = ln.type === "add" ? "#3dd68c" : ln.type === "del" ? "#e85d5d" : "var(--faint)";
+                        const hk = lineKey(file, i);
+                        const showPlus = hover === hk;
+                        return (
+                          <React.Fragment key={i}>
+                            <div
+                              style={{ display: "grid", gridTemplateColumns: "22px 28px 28px 14px 1fr", alignItems: "stretch", background: bg }}
+                              onMouseEnter={() => setHover(hk)}
+                              onMouseLeave={() => setHover((h) => (h === hk ? null : h))}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                {showPlus && (
+                                  <button
+                                    title="批注此行"
+                                    onClick={(e) => { e.stopPropagation(); setComment({ file: file.key, line: ln.newNo || ln.oldNo, text: ln.text.trim(), draft: "" }); }}
+                                    style={{ width: 16, height: 16, border: 0, borderRadius: 3, background: "#2f6f4e", color: "#fff", cursor: "pointer", fontSize: 12, lineHeight: "16px", padding: 0 }}
+                                  >+</button>
+                                )}
+                              </div>
+                              <div style={{ color: ln.type === "del" ? "#e85d5d" : "var(--faint)", textAlign: "right", paddingRight: 6, paddingTop: 3 }}>{ln.oldNo || ""}</div>
+                              <div style={{ color: ln.type === "add" ? "#3dd68c" : "var(--faint)", textAlign: "right", paddingRight: 6, paddingTop: 3 }}>{ln.newNo || ""}</div>
+                              <div style={{ color: signColor, paddingTop: 3 }}>{sign}</div>
+                              <div style={{ padding: "3px 8px 3px 0", whiteSpace: "pre", color: "var(--ink)" }}>{ln.text}</div>
+                            </div>
+                            {comment && comment.file === file.key && comment.line === (ln.newNo || ln.oldNo) && (
+                              <div style={{ background: "var(--panel)", padding: 10, borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }} onClick={(e) => e.stopPropagation()}>
+                                <textarea
+                                  ref={inputRef}
+                                  placeholder="Leave a comment"
+                                  value={comment.draft}
+                                  onChange={(e) => setComment({ ...comment, draft: e.target.value })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Escape") { e.preventDefault(); setComment(null); }
+                                    if (e.key === "Enter" && e.ctrlKey) {
+                                      e.preventDefault();
+                                      onSend(`${file.key}:${comment.line} ${comment.draft || comment.text}`);
+                                      setComment(null);
+                                    } else if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      onStack(`${file.key}:${comment.line} ${comment.draft || comment.text}`);
+                                      setComment(null);
+                                    }
+                                  }}
+                                  style={{ width: "100%", minHeight: 64, background: "var(--bg)", border: "1px solid #3dd68c", borderRadius: 8, color: "var(--ink)", padding: 8, fontFamily: "IBM Plex Sans, sans-serif", fontSize: 12, resize: "vertical" }}
+                                />
+                                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8, alignItems: "center" }}>
+                                  <button onClick={() => setComment(null)} style={{ background: "transparent", border: 0, color: "var(--muted)", cursor: "pointer", fontSize: 12 }}>Cancel <kbd>Esc</kbd></button>
+                                  <button
+                                    onClick={() => { onStack(`${file.key}:${comment.line} ${comment.draft || comment.text}`); setComment(null); }}
+                                    style={{ background: "#2f6f4e", color: "#fff", border: 0, borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}
+                                  >Comment <kbd style={{ background: "rgba(255,255,255,0.15)", color: "#fff" }}>Enter</kbd></button>
+                                  <span style={{ fontSize: 10, color: "var(--faint)" }}>Ctrl+Enter 发给主会话</span>
+                                </div>
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    const ROSTER = [
+      { id: "A", title: "Run login", cwd: "foo/", busy: true },
+      { id: "B", title: "API 改动", cwd: "bar/", busy: false },
+      { id: "C", title: "docs site", cwd: "docs/", busy: false },
+    ];
+
+    let seq = 1;
+    const nid = () => "t" + seq++;
+
+    function Icon({ d, size = 16 }) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+          <path d={d} />
+        </svg>
+      );
+    }
+
+    function App() {
+      const [collapsed, setCollapsed] = useState(false);
+      const [tabs, setTabs] = useState([]);
+      const [active, setActive] = useState(null);
+      const [reviewMode, setReviewMode] = useState("turn");
+      const [reviewOpen, setReviewOpen] = useState(null);
+      const [reviewComment, setReviewComment] = useState(null);
+      const [filePath, setFilePath] = useState("src/Login.tsx");
+      const [fileTreeOpen, setFileTreeOpen] = useState(true);
+      const [browserUrl, setBrowserUrl] = useState("");
+      const [urlDraft, setUrlDraft] = useState("");
+      const [browserHist, setBrowserHist] = useState([]);
+      const [browserIdx, setBrowserIdx] = useState(-1);
+      const [annotate, setAnnotate] = useState(false);
+      const [draftNote, setDraftNote] = useState("");
+      const [pendingMark, setPendingMark] = useState(null);
+      const [attachments, setAttachments] = useState([]);
+      const [composer, setComposer] = useState("");
+      const [queue, setQueue] = useState([]);
+      const [working, setWorking] = useState(true);
+      const [termLines, setTermLines] = useState([]);
+      const [termIn, setTermIn] = useState("");
+      const [sideMsgs, setSideMsgs] = useState([]);
+      const [sideDraft, setSideDraft] = useState("");
+      const [forked, setForked] = useState(false);
+      const [forkMeta, setForkMeta] = useState(null);
+      const [listed, setListed] = useState(null);
+      const [card, setCard] = useState(null);
+      const [deliveries, setDeliveries] = useState([]);
+      const [flash, setFlash] = useState("");
+      const noteRef = useRef(null);
+
+      const activeTab = tabs.find((t) => t.id === active);
+
+      function expand() {
+        setCollapsed(false);
+      }
+
+      function goUrl(url) {
+        const u = (url || "").trim();
+        setBrowserUrl(u);
+        setUrlDraft(u);
+        setAnnotate(false);
+        setPendingMark(null);
+        if (!u) return;
+        setBrowserHist((h) => {
+          const next = h.slice(0, browserIdx + 1).concat(u);
+          setBrowserIdx(next.length - 1);
+          return next;
+        });
+      }
+
+      function openTool(kind, target) {
+        expand();
+        const reuse = tabs.find((t) => t.kind === kind && t.target === (target || "") && t.kind !== "Terminal" && t.kind !== "Side Chat" && t.kind !== "Review");
+        if (reuse) {
+          setActive(reuse.id);
+          return reuse;
+        }
+        const id = nid();
+        const tab = {
+          id,
+          kind,
+          target: target || "",
+          title: target ? target.replace(/^https?:\/\//, "").slice(0, 22) || kind : kind,
+        };
+        setTabs((ts) => [...ts, tab]);
+        setActive(id);
+        if (kind === "Files" && target) setFilePath(target);
+        if (kind === "Browser" && target) goUrl(target);
+        return tab;
+      }
+
+      function openEmpty() {
+        expand();
+        const id = nid();
+        setTabs((ts) => [...ts, { id, kind: null, target: "", title: "New tab" }]);
+        setActive(id);
+      }
+
+      function closeTab(id, e) {
+        e && e.stopPropagation();
+        setTabs((ts) => {
+          const next = ts.filter((t) => t.id !== id);
+          if (next.length === 0) {
+            setActive(null);
+            setCollapsed(true);
+          } else if (active === id) {
+            setActive(next[next.length - 1].id);
+          }
+          return next;
+        });
+      }
+
+      function fillActive(kind) {
+        expand();
+        const empty = tabs.find((t) => t.id === active && !t.kind);
+        if (empty) {
+          setTabs((ts) => ts.map((t) => (t.id === empty.id ? { ...t, kind, title: kind, target: "" } : t)));
+          return;
+        }
+        openTool(kind);
+      }
+
+      function addAttachment(text, from) {
+        setAttachments((a) => [...a, { id: nid(), text, from }]);
+        setFlash("批注已进主会话输入框");
+      }
+
+      function sendToMain(text, extra) {
+        const payload = extra || attachments;
+        if (working) {
+          setQueue((q) => [...q, { text, payload }]);
+          setFlash("主会话忙 · 已排队");
+        } else {
+          setFlash("已发给主会话");
+        }
+        setAttachments([]);
+        setComposer("");
+      }
+
+      function onNoteKey(e) {
+        if (e.key === "Enter" && e.ctrlKey) {
+          e.preventDefault();
+          const text = draftNote || pendingMark || "批注";
+          sendToMain(text, [...attachments, { id: nid(), text, from: pendingMark }]);
+          setDraftNote("");
+          setPendingMark(null);
+          setAnnotate(false);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          addAttachment(draftNote || pendingMark || "批注", pendingMark);
+          setDraftNote("");
+          setPendingMark(null);
+        }
+      }
+
+      function sendSide() {
+        const text = sideDraft.trim();
+        if (!text) return;
+        if (!forked) {
+          setForked(true);
+          setForkMeta({ at: "turn 1 · in-flight read src/Login.tsx", seq: 41 });
+        }
+        setSideMsgs((m) => [...m, { role: "user", text }, { role: "side", text: forked ? "仍按 Fork 那一刀答。要看现在，察看。" : "已 Fork 主会话（含本轮工具过程）。这刀冻住了。" }]);
+        setSideDraft("");
+      }
+
+      function inspect(id) {
+        const s = ROSTER.find((r) => r.id === id) || ROSTER[0];
+        setCard({
+          id: s.id,
+          title: s.title,
+          busy: s.busy,
+          turn: s.id === "A" ? "turn 2 / step 1" : "idle",
+          last: s.id === "A" ? "正在改 Login 按钮" : "上次：已推 API schema",
+          files: s.id === "A" ? ["src/Login.tsx"] : ["internal/api.go"],
+        });
+      }
+
+      useEffect(() => {
+        function onKey(e) {
+          const tag = document.activeElement && document.activeElement.tagName;
+          if (tag === "INPUT" || tag === "TEXTAREA") return;
+          if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "g") { e.preventDefault(); openTool("Review"); }
+          if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "s") { e.preventDefault(); openTool("Side Chat"); }
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      });
+
+      const chrome = {
+        shell: { display: "grid", gridTemplateColumns: collapsed ? "220px 1fr 44px" : "220px 1fr 440px", height: "100%", background: "var(--bg)" },
+        rail: { background: "var(--rail)", borderRight: "1px solid var(--line)", padding: "14px 12px", display: "flex", flexDirection: "column", gap: 14 },
+        brand: { fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" },
+        recents: { fontSize: 11, color: "var(--faint)", textTransform: "uppercase", letterSpacing: "0.12em" },
+        rec: (on) => ({ padding: "8px 10px", borderRadius: 8, background: on ? "var(--lift)" : "transparent", fontSize: 13, cursor: "default" }),
+        header: { height: 44, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", borderBottom: "1px solid var(--line)" },
+        chat: { display: "flex", flexDirection: "column", minWidth: 0, background: "var(--bg)" },
+        msgs: { flex: 1, overflow: "auto", padding: "22px 28px", display: "flex", flexDirection: "column", gap: 18 },
+        bubble: { maxWidth: 560, fontSize: 14, lineHeight: 1.55, color: "var(--ink)" },
+        link: { color: "var(--accent)", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 },
+        composerWrap: { padding: 16, borderTop: "1px solid var(--line)" },
+        composer: { background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: "10px 12px" },
+        chips: { display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" },
+        chip: { fontSize: 12, background: "var(--chip)", borderRadius: 999, padding: "3px 10px", color: "var(--muted)" },
+        input: { width: "100%", background: "transparent", border: 0, color: "var(--ink)", outline: "none", fontSize: 14, resize: "none" },
+        row: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 },
+        send: { width: 28, height: 28, borderRadius: "50%", background: "var(--accent)", border: 0, color: "#fff", cursor: "pointer" },
+        side: { background: "var(--panel)", borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", minWidth: 0 },
+        tabbar: { height: 40, display: "flex", alignItems: "center", gap: 4, padding: "0 8px", borderBottom: "1px solid var(--line)" },
+        tab: (on) => ({ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 8, background: on ? "var(--lift)" : "transparent", fontSize: 12, cursor: "pointer", maxWidth: 140 }),
+        plus: { width: 26, height: 26, border: 0, background: "transparent", color: "var(--muted)", cursor: "pointer", fontSize: 18 },
+        palette: { padding: 10, display: "flex", flexDirection: "column", gap: 2, width: 300 },
+        palRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, cursor: "pointer" },
+        body: { flex: 1, overflow: "auto", padding: 12, minHeight: 0 },
+        toggle: { width: 44, borderLeft: "1px solid var(--line)", background: "var(--panel)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 10 },
+        flash: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#0b0d12", border: "1px solid var(--line)", padding: "8px 14px", borderRadius: 999, fontSize: 12, color: "var(--muted)", zIndex: 20 },
+      };
+
+      return (
+        <div style={chrome.shell}>
+          <aside style={chrome.rail}>
+            <div style={chrome.brand}>DSH</div>
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>New chat</div>
+            <div style={chrome.recents}>Recents</div>
+            <div style={chrome.rec(true)}>Run login</div>
+            <div style={chrome.rec(false)}>API 改动</div>
+            <div style={{ marginTop: "auto", fontSize: 12, color: "var(--faint)" }}>noirbright</div>
+          </aside>
+
+          <main style={chrome.chat}>
+            <header style={chrome.header}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>Run login</div>
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>主会话 · foo/ · {working ? "Working" : "Idle"}</div>
+              </div>
+              <button
+                onClick={() => setCollapsed((c) => !c)}
+                title="侧栏开关"
+                style={{ background: "var(--lift)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 12 }}
+              >
+                {collapsed ? "拉开侧栏" : "收起侧栏"}
+              </button>
+            </header>
+            <div style={chrome.msgs}>
+              <div style={{ ...chrome.bubble, color: "var(--muted)" }}>把登录页做出来，按钮要能批注。</div>
+              <div style={chrome.bubble}>
+                已写 <span style={chrome.link} onClick={() => openTool("Files", "src/Login.tsx")}>src/Login.tsx</span>
+                。页面在 <span style={chrome.link} onClick={() => openTool("Browser", "http://localhost:5173")}>http://localhost:5173</span>
+                。本轮还在改。
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--warn)" }}>Working for 13s · read Login.tsx</div>
+              </div>
+              {deliveries.map((d) => (
+                <div key={d.id} style={{ ...chrome.bubble, background: "var(--lift)", padding: 12, borderRadius: 10, border: "1px dashed var(--accent)", fontSize: 13 }}>
+                  <div style={{ fontSize: 11, color: "var(--accent)", marginBottom: 4 }}>预览 · {d.to} 的主会话将看到这张投递（非用户）</div>
+                  {d.text}
+                </div>
+              ))}
+              {queue.length > 0 && (
+                <div style={{ fontSize: 12, color: "var(--warn)" }}>排队 {queue.length} 条（批注/消息）· 与普通对话相同</div>
+              )}
+            </div>
+            <div style={chrome.composerWrap}>
+              <div style={chrome.composer}>
+                {attachments.length > 0 && (
+                  <div style={chrome.chips}>
+                    <span style={chrome.chip}>{attachments.length} annotations</span>
+                    {attachments.map((a) => (
+                      <span key={a.id} style={chrome.chip}>{a.text.slice(0, 24)}</span>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  style={chrome.input}
+                  rows={2}
+                  placeholder="Do anything"
+                  value={composer}
+                  onChange={(e) => setComposer(e.target.value)}
+                />
+                <div style={chrome.row}>
+                  <span style={{ fontSize: 12, color: "var(--warn)" }}>Full access</span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button onClick={() => setWorking((w) => !w)} style={{ background: "transparent", border: 0, color: "var(--muted)", cursor: "pointer", fontSize: 11 }}>
+                      {working ? "设为 Idle" : "设为 Working"}
+                    </button>
+                    <button style={chrome.send} onClick={() => sendToMain(composer)} aria-label="send">↑</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          {collapsed ? (
+            <div style={chrome.toggle}>
+              <button onClick={() => setCollapsed(false)} style={{ background: "transparent", border: 0, color: "var(--muted)", cursor: "pointer", writingMode: "vertical-rl" }}>侧栏</button>
+            </div>
+          ) : (
+            <section style={chrome.side}>
+              {tabs.some((t) => t.kind) && (
+                <div style={chrome.tabbar}>
+                  {tabs.map((t) => (
+                    <div key={t.id} style={chrome.tab(t.id === active)} onClick={() => setActive(t.id)}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+                      <span onClick={(e) => closeTab(t.id, e)} style={{ color: "var(--faint)" }}>×</span>
+                    </div>
+                  ))}
+                  <button style={chrome.plus} onClick={openEmpty}>+</button>
+                </div>
+              )}
+              <div style={{
+                ...chrome.body,
+                ...((!activeTab || !activeTab.kind) ? { display: "flex", alignItems: "center", justifyContent: "center" } : {}),
+                ...(activeTab && (activeTab.kind === "Terminal" || activeTab.kind === "Browser" || activeTab.kind === "Files") ? { display: "flex", flexDirection: "column", padding: 0, overflow: "hidden" } : {}),
+              }}>
+                {(!activeTab || !activeTab.kind) && (
+                  <div style={chrome.palette}>
+                    {TOOLS.map((tool) => (
+                      <div
+                        key={tool.kind}
+                        style={chrome.palRow}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--hover)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        onClick={() => fillActive(tool.kind)}
+                      >
+                        <span style={{ width: 18, color: "var(--muted)" }}>▢</span>
+                        <span style={{ flex: 1, fontSize: 14 }}>{tool.kind}</span>
+                        <kbd>{tool.shortcut}</kbd>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {activeTab && activeTab.kind === "Review" && (
+                  <ReviewView
+                    mode={reviewMode}
+                    setMode={setReviewMode}
+                    openKey={reviewOpen}
+                    setOpenKey={setReviewOpen}
+                    comment={reviewComment}
+                    setComment={setReviewComment}
+                    onStack={(text) => addAttachment(text, "review")}
+                    onSend={(text) => sendToMain(text, [...attachments, { id: nid(), text, from: "review" }])}
+                  />
+                )}
+                {activeTab && activeTab.kind === "Files" && (
+                  <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%" }}>
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: fileTreeOpen ? "1px solid var(--line)" : "none" }}>
+                      <div style={{ height: 36, display: "flex", alignItems: "center", gap: 8, padding: "0 10px", borderBottom: "1px solid var(--line)", fontSize: 12, color: "var(--muted)" }}>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--ink)" }}>{filePath}</span>
+                        <span style={{ fontSize: 11, color: "var(--faint)" }}>预览</span>
+                        <button
+                          title="批注"
+                          onClick={() => setAnnotate((a) => !a)}
+                          style={{ width: 26, height: 26, border: 0, borderRadius: 6, cursor: "pointer", background: annotate ? "var(--accent)" : "transparent", color: annotate ? "#fff" : "var(--ink)", display: "flex", alignItems: "center", justifyContent: "center" }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                            <path d="M3 17.2V21h3.8L19.1 8.7a1.1 1.1 0 0 0 0-1.6l-2.2-2.2a1.1 1.1 0 0 0-1.6 0L3 17.2z" />
+                          </svg>
+                        </button>
+                        {!fileTreeOpen && (
+                          <button title="打开文件列表" onClick={() => setFileTreeOpen(true)} style={{ width: 26, height: 26, border: 0, background: "transparent", color: "var(--muted)", cursor: "pointer" }}>☰</button>
+                        )}
+                      </div>
+                      <pre
+                        style={{ flex: 1, margin: 0, overflow: "auto", fontFamily: "IBM Plex Mono, monospace", fontSize: 12, lineHeight: 1.55, background: "var(--bg)", padding: 12, cursor: annotate ? "crosshair" : "text" }}
+                        onClick={() => { if (annotate) { setPendingMark(filePath + ":7"); noteRef.current && noteRef.current.focus(); } }}
+                      >{filePath === "src/Login.tsx" ? LOGIN_SRC : "# foo\nnpm run dev"}</pre>
+                    </div>
+                    {fileTreeOpen && (
+                      <div style={{ width: 148, flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--panel)" }}>
+                        <div style={{ height: 36, display: "flex", alignItems: "center", padding: "0 8px", borderBottom: "1px solid var(--line)", fontSize: 11, color: "var(--faint)" }}>
+                          <span style={{ flex: 1 }}>foo</span>
+                          <button title="关闭列表" onClick={() => setFileTreeOpen(false)} style={{ width: 22, height: 22, border: 0, background: "transparent", color: "var(--muted)", cursor: "pointer", fontSize: 14 }}>×</button>
+                        </div>
+                        <div style={{ flex: 1, overflow: "auto", padding: "8px 6px", fontSize: 12 }}>
+                          <div style={{ color: "var(--faint)", padding: "2px 6px" }}>src</div>
+                          <div
+                            onClick={() => setFilePath("src/Login.tsx")}
+                            style={{ padding: "4px 6px 4px 16px", borderRadius: 6, cursor: "pointer", background: filePath === "src/Login.tsx" ? "var(--lift)" : "transparent", color: filePath === "src/Login.tsx" ? "var(--ink)" : "var(--muted)" }}
+                          >Login.tsx</div>
+                          <div
+                            onClick={() => setFilePath("README.md")}
+                            style={{ padding: "4px 6px", borderRadius: 6, cursor: "pointer", marginTop: 2, background: filePath === "README.md" ? "var(--lift)" : "transparent", color: filePath === "README.md" ? "var(--ink)" : "var(--muted)" }}
+                          >README.md</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {activeTab && activeTab.kind === "Browser" && (() => {
+                  const hasPage = !!browserUrl.trim();
+                  const canBack = browserIdx > 0;
+                  const canFwd = browserIdx >= 0 && browserIdx < browserHist.length - 1;
+                  const navBtn = (enabled) => ({
+                    width: 28, height: 28, border: 0, borderRadius: 6, cursor: enabled ? "pointer" : "default",
+                    background: "transparent", color: enabled ? "var(--ink)" : "var(--faint)", display: "flex", alignItems: "center", justifyContent: "center"
+                  });
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, height: "100%" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "8px 10px", borderBottom: "1px solid var(--line)" }}>
+                        <button title="后退" disabled={!canBack} style={navBtn(canBack)} onClick={() => {
+                          if (!canBack) return;
+                          const i = browserIdx - 1;
+                          setBrowserIdx(i);
+                          setBrowserUrl(browserHist[i]);
+                          setUrlDraft(browserHist[i]);
+                          setAnnotate(false);
+                        }}>←</button>
+                        <button title="前进" disabled={!canFwd} style={navBtn(canFwd)} onClick={() => {
+                          if (!canFwd) return;
+                          const i = browserIdx + 1;
+                          setBrowserIdx(i);
+                          setBrowserUrl(browserHist[i]);
+                          setUrlDraft(browserHist[i]);
+                          setAnnotate(false);
+                        }}>→</button>
+                        <button title="刷新" style={navBtn(hasPage)} onClick={() => { if (hasPage) setFlash("已刷新"); }}>↻</button>
+                        <form style={{ flex: 1, display: "flex", alignItems: "center", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 8, padding: "0 8px" }} onSubmit={(e) => { e.preventDefault(); goUrl(urlDraft); }}>
+                          <input
+                            value={urlDraft}
+                            onChange={(e) => setUrlDraft(e.target.value)}
+                            placeholder="Enter a URL"
+                            style={{ flex: 1, background: "transparent", border: 0, color: "var(--ink)", outline: "none", fontSize: 12, padding: "7px 4px" }}
+                          />
+                          <button type="button" title="外部打开" style={navBtn(hasPage)} onClick={() => { if (hasPage) { window.open(browserUrl, "_blank", "noopener"); setFlash("已请求系统浏览器"); } }}>↗</button>
+                        </form>
+                        {hasPage && (
+                          <button
+                            title="批注"
+                            onClick={() => setAnnotate((a) => !a)}
+                            style={{ ...navBtn(true), background: annotate ? "var(--accent)" : "transparent", color: annotate ? "#fff" : "var(--ink)" }}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                              <path d="M3 17.2V21h3.8L19.1 8.7a1.1 1.1 0 0 0 0-1.6l-2.2-2.2a1.1 1.1 0 0 0-1.6 0L3 17.2z" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column" }}>
+                        {!hasPage && (
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--faint)", gap: 10 }}>
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+                              <circle cx="12" cy="12" r="9" />
+                              <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+                            </svg>
+                            <div style={{ fontSize: 16, fontWeight: 600, color: "var(--muted)" }}>Start browsing</div>
+                            <div style={{ fontSize: 12 }}>Enter a URL to open a page</div>
+                          </div>
+                        )}
+                        {hasPage && browserUrl.includes("5173") && (
+                          <div style={{ background: "#f4f1ea", color: "#1a1a1a", flex: 1, padding: 24 }}>
+                            <div style={{ fontFamily: "Georgia, serif", fontSize: 22 }}>Sign in</div>
+                            <button
+                              onClick={() => { if (annotate) { setPendingMark("button.submit"); noteRef.current && noteRef.current.focus(); } }}
+                              style={{ marginTop: 16, background: "#111", color: "#fff", border: 0, padding: "8px 16px", borderRadius: 6, cursor: annotate ? "crosshair" : "default" }}
+                            >Continue</button>
+                          </div>
+                        )}
+                        {hasPage && !browserUrl.includes("5173") && (
+                          <div style={{ color: "var(--danger)", fontSize: 13, padding: 24 }}>无法连接 · 侧栏不起项目</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {activeTab && activeTab.kind === "Terminal" && (
+                  <div style={{ background: "#0b0c0f", padding: 12, fontFamily: "IBM Plex Mono, monospace", fontSize: 12, flex: 1, minHeight: 0, height: "100%", overflow: "auto" }}>
+                    {termLines.map((l, i) => <div key={i}>{l}</div>)}
+                    <form onSubmit={(e) => { e.preventDefault(); setTermLines((ls) => [...ls, "noirbright@dsh:~/foo$ " + termIn, "ok (人的 pty · 未注入主会话)"]); setTermIn(""); }} style={{ display: "flex" }}>
+                      <span>noirbright@dsh:~/foo$ </span>
+                      <input value={termIn} onChange={(e) => setTermIn(e.target.value)} style={{ background: "transparent", border: 0, color: "#cde3c3", outline: "none", flex: 1, fontFamily: "inherit" }} />
+                    </form>
+                  </div>
+                )}
+                {activeTab && activeTab.kind === "Side Chat" && (
+                  <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 8 }}>
+                    <div style={{ fontSize: 11, color: forked ? "var(--ok)" : "var(--faint)" }}>
+                      {forked ? `Fork 已冻 · ${forkMeta.at}` : "尚未 Fork · 第一次发送时切"}
+                    </div>
+                    <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+                      {sideMsgs.map((m, i) => (
+                        <div key={i} style={{ fontSize: 13, color: m.role === "user" ? "var(--ink)" : "var(--muted)" }}>{m.text}</div>
+                      ))}
+                      {listed && (
+                        <div style={{ fontSize: 12, background: "var(--lift)", padding: 8, borderRadius: 8 }}>
+                          列出（全 profile）
+                          {listed.map((s) => (
+                            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+                              <span>{s.title} · {s.cwd}</span>
+                              <span>
+                                <button onClick={() => inspect(s.id)} style={{ fontSize: 11, marginRight: 4, cursor: "pointer" }}>察看</button>
+                                <button onClick={() => { setDeliveries((d) => [...d, { id: nid(), to: s.title, text: "按这个登录方案改 API" }]); setFlash("投递卡片 → " + s.title + "（不是用户消息）"); }} style={{ fontSize: 11, cursor: "pointer" }}>投递</button>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {card && (
+                        <div style={{ fontSize: 12, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}>
+                          <b>进度卡片 · {card.title}</b>
+                          <div>{card.busy ? "忙" : "闲"} · {card.turn}</div>
+                          <div>{card.last}</div>
+                          <div>{card.files.join(", ")}</div>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => setListed(ROSTER)} style={{ fontSize: 11, cursor: "pointer" }}>列出</button>
+                      <button onClick={() => inspect("A")} style={{ fontSize: 11, cursor: "pointer" }}>察看 A</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        value={sideDraft}
+                        onChange={(e) => setSideDraft(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && sendSide()}
+                        placeholder="不打断主会话来提问"
+                        style={{ flex: 1, background: "var(--bg)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+                      />
+                      <button onClick={sendSide} style={{ ...chrome.send, width: 26, height: 26 }}>↑</button>
+                    </div>
+                  </div>
+                )}
+                {(pendingMark || annotate) && activeTab && (activeTab.kind === "Files" || (activeTab.kind === "Browser" && browserUrl)) && (
+                  <div style={{ marginTop: 12, background: "#fff", color: "#111", borderRadius: 999, padding: "6px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: "#888" }}>{pendingMark || "批注"}</span>
+                    <input
+                      ref={noteRef}
+                      value={draftNote}
+                      onChange={(e) => setDraftNote(e.target.value)}
+                      onKeyDown={onNoteKey}
+                      placeholder="Enter 堆积 · Ctrl+Enter 发送"
+                      style={{ flex: 1, border: 0, outline: "none", fontSize: 12 }}
+                    />
+                  </div>
+                )}
+              </div>
+              <details style={{ fontSize: 10, color: "var(--faint)", padding: 8, borderTop: "1px solid var(--line)" }}>
+                <summary>prototype state</summary>
+                <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify({ collapsed, tabs, active, attachments: attachments.length, forked, queue: queue.length }, null, 2)}</pre>
+              </details>
+            </section>
+          )}
+          {flash && <div style={chrome.flash} onAnimationEnd={() => {}}>{flash}</div>}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
