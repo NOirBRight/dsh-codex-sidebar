@@ -1,5 +1,7 @@
 /** Browser 工具 slice. Ticket 03 owns this file. */
 
+import type { Effect } from './session.ts'
+
 export type BrowserIntent = never
 
 export type BrowserState = {
@@ -10,6 +12,6 @@ export function emptyBrowser(): BrowserState {
   return { url: '' }
 }
 
-export function reduceBrowser(_state: BrowserState, _intent: { type: string }): BrowserState | undefined {
+export function reduceBrowser(_state: BrowserState, _intent: { type: string }): { state: BrowserState; effects: Effect[] } | undefined {
   return undefined
 }

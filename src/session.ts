@@ -301,22 +301,26 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       default: {
         const nextReview = reduceReview(review, intent)
         if (nextReview !== undefined) {
-          review = nextReview
+          review = nextReview.state
+          effects.push(...nextReview.effects)
           break
         }
         const nextBrowser = reduceBrowser(browser, intent)
         if (nextBrowser !== undefined) {
-          browser = nextBrowser
+          browser = nextBrowser.state
+          effects.push(...nextBrowser.effects)
           break
         }
         const nextTerminal = reduceTerminal(terminal, intent)
         if (nextTerminal !== undefined) {
-          terminal = nextTerminal
+          terminal = nextTerminal.state
+          effects.push(...nextTerminal.effects)
           break
         }
         const nextSideChat = reduceSideChat(sideChat, intent)
         if (nextSideChat !== undefined) {
-          sideChat = nextSideChat
+          sideChat = nextSideChat.state
+          effects.push(...nextSideChat.effects)
           break
         }
         break
