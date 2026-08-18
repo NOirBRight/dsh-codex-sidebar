@@ -152,6 +152,7 @@ button.dcs-tab[data-drag] { opacity: 0.45; }
 .dcs-tab .dcs-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dcs-tab .dcs-x { opacity: 0; color: var(--dsw-alias-label-tertiary); display: grid; place-items: center; border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0; }
 button.dcs-tab:hover, button.dcs-tab[data-on] { color: var(--dsw-alias-label-primary); }
+button.dcs-tab:hover:not([data-on]) { background: var(--dsw-alias-interactive-bg-hover); }
 button.dcs-tab[data-on] {
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-l2);
