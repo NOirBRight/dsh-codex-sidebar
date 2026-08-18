@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
 
-function memoryFiles(files: Record<string, string>): FilesPort {
+function memoryFiles(
+  files: Record<string, string>,
+  changes?: Record<string, { before: string; after: string }>,
+): FilesPort {
   return {
     read(path) {
       return files[path]
@@ -13,6 +16,11 @@ function memoryFiles(files: Record<string, string>): FilesPort {
         name: path.split('/').pop() ?? path,
       }))
     },
+    ...(changes === undefined ? {} : {
+      change(path: string) {
+        return changes[path]
+      },
+    }),
   }
 }
 
@@ -84,6 +92,18 @@ describe('Files seam', () => {
     expect(box.snapshot().showPalette).toBe(false)
   })
 
+  it('picking a 工具 while a Tab is already filled opens another filled Tab', () => {
+    const { box } = session()
+    box.dispatch({ type: 'pick-tool', kind: 'Files' })
+    box.dispatch({ type: 'pick-tool', kind: 'Terminal' })
+    const snap = box.snapshot()
+    expect(snap.tabs).toHaveLength(2)
+    expect(snap.tabs[0]?.kind).toBe('Files')
+    expect(snap.tabs[1]?.kind).toBe('Terminal')
+    expect(snap.active).toBe(snap.tabs[1]?.id)
+    expect(snap.showPalette).toBe(false)
+  })
+
   it('hides the 侧栏 when the last Tab closes, and keeps Tabs when only toggled', () => {
     const { box } = session()
     box.dispatch({ type: 'pick-tool', kind: 'Files' })
@@ -118,6 +138,22 @@ describe('Files seam', () => {
     expect(two.tabs).toHaveLength(2)
     expect(two.tabs[1]?.target).toBe('README.md')
     expect(two.files.preview).toBe('# foo\n')
+  })
+
+  it('previews an absolute path even when it is outside the workspace tree', () => {
+    const files = memoryFiles({
+      'src/Login.tsx': 'export function Login() {}\n',
+      '/other/repo/index.ts': 'export const n = 1\n',
+    })
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: memoryPersist(),
+      isBusy: () => false,
+    })
+    box.dispatch({ type: 'open-path', path: '/other/repo/index.ts' })
+    expect(box.snapshot().files.path).toBe('/other/repo/index.ts')
+    expect(box.snapshot().files.preview).toBe('export const n = 1\n')
   })
 
   it('reuses a Files Tab even when the active Tab is empty, and restores preview on select', () => {
@@ -177,7 +213,15 @@ describe('Files seam', () => {
     box.dispatch({ type: 'set-note-draft', text: 'make the heading larger' })
     expect(box.dispatch({ type: 'note-enter' })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
-      { id: 't2', text: 'make the heading larger', from: 'src/Login.tsx:1' },
+      {
+        id: 't2',
+        text: 'make the heading larger',
+        from: 'Login.tsx:1',
+        source: 'files',
+        selector: 'src/Login.tsx:1',
+        path: 'src/Login.tsx',
+        line: 1,
+      },
     ])
     expect(box.snapshot().files.pendingMark).toBeNull()
 
@@ -188,8 +232,24 @@ describe('Files seam', () => {
       type: 'send',
       text: 'and the button',
       attachments: [
-        { id: 't2', text: 'make the heading larger', from: 'src/Login.tsx:1' },
-        { id: 't3', text: 'and the button', from: 'src/Login.tsx:2' },
+        {
+          id: 't2',
+          text: 'make the heading larger',
+          from: 'Login.tsx:1',
+          source: 'files',
+          selector: 'src/Login.tsx:1',
+          path: 'src/Login.tsx',
+          line: 1,
+        },
+        {
+          id: 't3',
+          text: 'and the button',
+          from: 'Login.tsx:2',
+          source: 'files',
+          selector: 'src/Login.tsx:2',
+          path: 'src/Login.tsx',
+          line: 2,
+        },
       ],
     }])
     expect(box.snapshot().attachments).toEqual([])
@@ -206,6 +266,71 @@ describe('Files seam', () => {
     expect(box.snapshot().queue).toHaveLength(1)
     const again = box.dispatch({ type: 'composer-send', text: 'follow up' })
     expect(again).toEqual([{ type: 'queue', text: 'follow up', attachments: [] }])
+  })
+
+  it('drops a stacked 批注 from the 主会话 chips', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
+    box.dispatch({ type: 'set-note-draft', text: 'make the heading larger' })
+    box.dispatch({ type: 'note-enter' })
+    expect(box.dispatch({ type: 'remove-attachment', id: 't2' })).toEqual([])
+    expect(box.snapshot().attachments).toEqual([])
+  })
+
+  it('keeps the tree closed when a path opens, and remembers a dragged width', () => {
+    const { box } = session()
+    expect(box.snapshot().files.treeOpen).toBe(false)
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    expect(box.snapshot().files.treeOpen).toBe(false)
+    box.dispatch({ type: 'toggle-tree' })
+    expect(box.snapshot().files.treeOpen).toBe(true)
+    box.dispatch({ type: 'set-tree-width', width: 300 })
+    expect(box.snapshot().files.treeWidth).toBe(300)
+    box.dispatch({ type: 'open-path', path: 'README.md' })
+    expect(box.snapshot().files.treeOpen).toBe(false)
+    expect(box.snapshot().files.treeWidth).toBe(300)
+  })
+
+  it('exposes a working-tree diff for an edited file and can switch back to preview', () => {
+    const persist = memoryPersist()
+    const files = memoryFiles(
+      { 'src/Login.tsx': 'export function Login() {\n  return <h1>Sign in</h1>\n}' },
+      {
+        'src/Login.tsx': {
+          before: 'export function Login() {\n  return <button>OK</button>\n}',
+          after: 'export function Login() {\n  return <h1>Sign in</h1>\n}',
+        },
+      },
+    )
+    const box = createSidebarSession({ sessionId: 'sess-a', files, persist, isBusy: () => false })
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    expect(box.snapshot().files.view).toBe('preview')
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx', view: 'diff' })
+    const opened = box.snapshot().files
+    expect(opened.view).toBe('diff')
+    expect(opened.diff?.added).toBe(1)
+    expect(opened.diff?.removed).toBe(1)
+    box.dispatch({ type: 'set-files-view', view: 'preview' })
+    expect(box.snapshot().files.view).toBe('preview')
+  })
+
+  it('opens an edit tool hunk so the Files diff keeps deletions', () => {
+    const persist = memoryPersist()
+    const files = memoryFiles({ 'a.ts': 'new file\n' })
+    const box = createSidebarSession({ sessionId: 'sess-a', files, persist, isBusy: () => false })
+    box.dispatch({
+      type: 'open-path',
+      path: 'a.ts',
+      view: 'diff',
+      before: 'old line\nkeep\n',
+      after: 'new line\nkeep\n',
+    })
+    const diff = box.snapshot().files.diff
+    expect(diff?.removed).toBe(1)
+    expect(diff?.added).toBe(1)
+    expect(diff?.lines.some((line) => line.kind === 'del' && line.text.includes('old line'))).toBe(true)
   })
 
   it('persists the Tab strip with the 主会话 and isolates another 主会话', () => {
@@ -241,5 +366,21 @@ describe('Files seam', () => {
     box.dispatch({ type: 'open-path', path: 'docs/note.md' })
     expect(box.snapshot().files.preview).toBe('# Title\n\nhello')
     expect(box.snapshot().tabs).toHaveLength(2)
+  })
+
+  it('reorders Tabs and keeps the active id', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'open-path', path: 'README.md' })
+    const [first, second] = box.snapshot().tabs.map((tab) => tab.id)
+    expect(first).toBeDefined()
+    expect(second).toBeDefined()
+    box.dispatch({ type: 'reorder-tabs', from: 0, to: 1 })
+    expect(box.snapshot().tabs.map((tab) => tab.id)).toEqual([second, first])
+    expect(box.snapshot().active).toBe(second)
+    box.dispatch({ type: 'reorder-tabs', from: 0, to: 0 })
+    box.dispatch({ type: 'reorder-tabs', from: -1, to: 0 })
+    box.dispatch({ type: 'reorder-tabs', from: 0, to: 9 })
+    expect(box.snapshot().tabs.map((tab) => tab.id)).toEqual([second, first])
   })
 })

@@ -133,13 +133,19 @@ describe('Side Chat seam', () => {
     const box = session(fakePort())
     const tabId = openSide(box)
     const effects = box.dispatch({ type: 'side-send', tabId, text: 'what is this turn doing?' })
-    expect(effects).toEqual([])
+    expect(effects).toEqual([{
+      type: 'side-ask',
+      tabId,
+      text: 'what is this turn doing?',
+      atSeq: 5,
+    }])
     const tab = tabOf(box, tabId)
     expect(tab.forked).toBe(true)
     expect(tab.fork.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5])
     expect(tab.forkSeq).toBe(5)
     expect(tab.fork.some((event) => event.closed === false)).toBe(false)
     expect(tab.messages.some((msg) => msg.kind === 'user' && msg.text === 'what is this turn doing?')).toBe(true)
+    expect(tab.messages.some((msg) => msg.kind === 'side' && msg.text === '正在回答…')).toBe(true)
   })
 
   it('does not rewrite the Fork on a follow-up after the 主会话 log grows', () => {

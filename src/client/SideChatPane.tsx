@@ -1,9 +1,10 @@
-/** Side Chat 工具 pane: empty Fork, transcript, 列出 / 察看 / 投递. */
+/** Side Chat 工具 pane: empty Fork, transcript, list / inspect / send. */
 
 import { useState, type FormEvent, type KeyboardEvent, type ReactElement } from 'react'
 import type { Intent, SidebarSnapshot } from '../session.ts'
 import { emptySideTab, type SideChatMessage, type SideChatTabState } from '../side-chat.ts'
 import { Ico } from './icons.tsx'
+import { isImeKey, useImeSafeDraft } from './ime-draft.ts'
 
 export function SideChatPane({
   snapshot,
@@ -16,16 +17,22 @@ export function SideChatPane({
   const tabId = snapshot.active ?? ''
   const tab = snapshot.sideChat.byTab?.[tabId] ?? emptySideTab()
   const [menu, setMenu] = useState(false)
-  const empty = tab.messages.length === 0 && tab.listed === null && tab.card === null
+  const visible = tab.messages.filter((msg) => !isCannedSide(msg))
+  const empty = visible.length === 0 && tab.listed === null && tab.card === null
+  const draft = useImeSafeDraft(tab.draft, (text) => {
+    if (tabId.length === 0) return
+    onIntent({ type: 'side-draft', tabId, text })
+  })
 
   function send(): void {
-    const text = tab.draft.trim()
+    const text = draft.flush().trim()
     if (text.length === 0 || tabId.length === 0) return
     setMenu(false)
     onIntent({ type: 'side-send', tabId, text })
   }
 
   function onComposerKey(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    if (isImeKey(event.nativeEvent)) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       send()
@@ -33,7 +40,7 @@ export function SideChatPane({
   }
 
   function deliverTo(sessionId: string): void {
-    const text = tab.draft.trim() || lastUserText(tab)
+    const text = draft.flush().trim() || lastUserText(tab)
     if (text.length === 0 || tabId.length === 0) return
     onIntent({ type: 'side-deliver', tabId, sessionId, text })
   }
@@ -43,17 +50,17 @@ export function SideChatPane({
       {empty ? (
         <div className="dcs-side-empty">
           <Ico name="chat" size={56} />
-          <h2>Side chat</h2>
-          <p>第一次发送时 Fork 主会话，不打断舵主。</p>
+          <h2>侧栏问答</h2>
+          <p>在这里提问，不会打断当前会话。</p>
         </div>
       ) : (
         <div className="dcs-side-msgs">
-          {tab.messages.map((msg, index) => (
+          {visible.map((msg, index) => (
             <MessageBlock key={index} msg={msg} />
           ))}
           {tab.listed !== null && (
             <div className="dcs-roster">
-              <div className="dcs-roster-h">列出 · 全 profile 主会话</div>
+              <div className="dcs-roster-h">其他会话</div>
               {tab.listed.map((row) => (
                 <div key={row.id} className="dcs-roster-row">
                   <span className="dcs-st" data-busy={row.busy || undefined} />
@@ -62,10 +69,10 @@ export function SideChatPane({
                     <div className="dcs-roster-cwd">{row.cwd}</div>
                   </div>
                   <button type="button" className="dcs-mini" onClick={() => { onIntent({ type: 'side-inspect', tabId, sessionId: row.id }) }}>
-                    察看
+                    查看进度
                   </button>
                   <button type="button" className="dcs-mini" onClick={() => { deliverTo(row.id) }}>
-                    投递
+                    发给该会话
                   </button>
                 </div>
               ))}
@@ -83,7 +90,7 @@ export function SideChatPane({
               </div>
             </div>
           )}
-          {tab.error !== null && <div className="dcs-side-err">{tab.error}</div>}
+          {tab.error !== null && <div className="dcs-side-err">{tab.error === 'not a 主会话' ? '只能查看普通会话' : tab.error}</div>}
         </div>
       )}
       <div className="dcs-side-harness">
@@ -93,9 +100,11 @@ export function SideChatPane({
         >
           <textarea
             rows={2}
-            value={tab.draft}
-            placeholder="不打断主会话来提问"
-            onChange={(event) => { onIntent({ type: 'side-draft', tabId, text: event.target.value }) }}
+            value={draft.value}
+            placeholder="在这里提问，不会打断当前会话"
+            onChange={(event) => { draft.onChange(event.target.value) }}
+            onCompositionStart={draft.onCompositionStart}
+            onCompositionEnd={(event) => { draft.onCompositionEnd(event.currentTarget.value) }}
             onKeyDown={onComposerKey}
           />
           <div className="dcs-harness-row">
@@ -104,16 +113,16 @@ export function SideChatPane({
             </button>
             {menu && (
               <div className="dcs-plus-pop">
-                <button type="button" onClick={() => { onIntent({ type: 'side-list', tabId }); setMenu(false) }}>列出</button>
+                <button type="button" onClick={() => { onIntent({ type: 'side-list', tabId }); setMenu(false) }}>会话列表</button>
                 <button
                   type="button"
                   onClick={() => { onIntent({ type: 'side-inspect', tabId, sessionId: snapshot.sessionId }); setMenu(false) }}
                 >
-                  察看
+                  查看进度
                 </button>
               </div>
             )}
-            <span className="dcs-h-chip" data-ok={tab.forked || undefined}>{tab.forked ? 'Fork 已冻' : '尚未 Fork'}</span>
+            <span className="dcs-h-chip" data-ok={tab.forked || undefined}>{tab.forked ? '已连接' : '新对话'}</span>
             <button type="submit" className="dcs-side-send" aria-label="send">
               <SendIcon />
             </button>
@@ -122,6 +131,11 @@ export function SideChatPane({
       </div>
     </div>
   )
+}
+
+function isCannedSide(msg: SideChatMessage): boolean {
+  if (msg.kind !== 'side') return false
+  return /已 Fork 主会话/.test(msg.text) || /这刀冻住了/.test(msg.text) || /仍按 Fork 那一刀答/.test(msg.text)
 }
 
 function MessageBlock({ msg }: { msg: SideChatMessage }): ReactElement {
@@ -143,10 +157,10 @@ function MessageBlock({ msg }: { msg: SideChatMessage }): ReactElement {
       </div>
     )
   }
-  const label = msg.status === 'sent' ? '已投递' : msg.status === 'queued' ? '已排队' : `失败 · ${msg.error}`
+  const label = msg.status === 'sent' ? '已发送' : msg.status === 'queued' ? '已排队' : `失败 · ${msg.error}`
   return (
     <div className="dcs-delivery" data-failed={msg.status === 'failed' || undefined}>
-      <div className="dcs-delivery-k">投递 · {msg.to} · {label}</div>
+      <div className="dcs-delivery-k">发给 {msg.to} · {label}</div>
       {msg.text}
     </div>
   )
@@ -170,11 +184,13 @@ function SendIcon(): ReactElement {
 
 function ensureSideChatStyles(): void {
   if (typeof document === 'undefined') return
-  if (document.getElementById('dsh-codex-sidebar-side-css')) return
-  const style = document.createElement('style')
-  style.id = 'dsh-codex-sidebar-side-css'
+  let style = document.getElementById('dsh-codex-sidebar-side-css') as HTMLStyleElement | null
+  if (style === null) {
+    style = document.createElement('style')
+    style.id = 'dsh-codex-sidebar-side-css'
+    document.head.appendChild(style)
+  }
   style.textContent = SIDE_CHAT_CSS
-  document.head.appendChild(style)
 }
 
 const SIDE_CHAT_CSS = `

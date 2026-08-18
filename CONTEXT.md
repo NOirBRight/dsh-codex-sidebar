@@ -25,11 +25,11 @@ A control (Codex-style) that shows or hides the 侧栏.
 _Avoid_: window close, destroy session
 
 **Tab**:
-One pane in the 侧栏. An empty Tab shows a Palette; choosing a 工具 fills it. Tabs belong to one 主会话, survive reopen of that 主会话, and more than one Tab may use the same 工具.
+One pane in the 侧栏. Clicking + opens a 工具 menu and choosing one creates a filled Tab. An empty Tab (if one exists) shows a Palette. Tabs belong to one 主会话, survive reopen of that 主会话, and more than one Tab may use the same 工具.
 _Avoid_: page, pane, window, mode
 
 **Palette**:
-The picker shown inside an empty Tab, listing the 工具. Choosing one dismisses the Palette and fills that Tab.
+The picker shown inside an empty Tab, or when the 侧栏 has no Tab yet, listing the 工具. Choosing one dismisses the Palette and fills that Tab. The + control uses the same list as a dropdown so the human does not create an empty Tab first.
 _Avoid_: command menu, mode list, launcher
 
 **工具**:

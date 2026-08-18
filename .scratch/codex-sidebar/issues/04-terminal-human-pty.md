@@ -11,3 +11,4 @@
 - [x] Typed commands and output never appear as 主会话 turns
 - [x] 舵主 tool commands do not attach to this pty
 - [x] Tests drive the Terminal seam with a fake pty port: one pty per Tab, close destroys, no inject, no shared stdin with the 舵主
+- [x] Host adapter is a real pty; the pane is an emulator (resize + incremental pull). Tests still use a fake port

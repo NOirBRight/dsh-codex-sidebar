@@ -1,6 +1,6 @@
 /** Browser 工具: navigable page + 批注. Does not start the project. */
 
-import type { Annotation, Effect } from './session.ts'
+import type { Annotation, AnnotationRect, Effect } from './session.ts'
 
 export type PageElement = {
   selector: string
@@ -10,6 +10,10 @@ export type PageElement = {
 export type PageDocument = {
   url: string
   title: string
+  html?: string
+  frameUrl?: string
+  /** The origin answered with an auth challenge; only the iframe holds credentials. */
+  requiresAuth?: boolean
   elements: PageElement[]
 }
 
@@ -17,12 +21,13 @@ export type BrowserStatus = 'empty' | 'loaded' | 'unreachable'
 
 export type BrowserIntent =
   | { type: 'open-url'; url: string }
+  | { type: 'browser-follow'; url: string }
   | { type: 'browser-back' }
   | { type: 'browser-forward' }
   | { type: 'browser-refresh' }
   | { type: 'browser-open-external' }
   | { type: 'browser-set-annotate'; on: boolean }
-  | { type: 'browser-click-content'; mark: string; x: number; y: number }
+  | { type: 'browser-click-content'; mark: string; x: number; y: number; selector?: string; rect?: AnnotationRect }
   | { type: 'browser-dismiss-note' }
   | { type: 'browser-set-note-draft'; text: string }
   | { type: 'browser-note-enter' }
@@ -33,6 +38,7 @@ export type BrowserPort = {
   openExternal(url: string): void
   isBusy(): boolean
   spawn?(command: string): void
+  frameUrl?(url: string): string | undefined
 }
 
 export type BrowserState = {
@@ -47,6 +53,8 @@ export type BrowserState = {
   canAnnotate: boolean
   annotate: boolean
   pendingMark: string | null
+  pendingSelector: string | null
+  pendingRect: AnnotationRect | null
   notePos: { x: number; y: number } | null
   noteDraft: string
   attachments: Annotation[]
@@ -57,8 +65,32 @@ export function emptyBrowser(): BrowserState {
   return hydrate({ url: '' })
 }
 
-export function projectBrowser(state: BrowserState, _port?: BrowserPort): BrowserState {
-  return flags(hydrate(state))
+export function rememberBrowser(state: Partial<BrowserState> & { url?: string }): BrowserState {
+  return hydrate({ ...state, url: state.url ?? '' })
+}
+
+export function hydrateBrowserPages(saved: {
+  browser?: BrowserState
+  browsers?: Record<string, BrowserState>
+  tabs?: Array<{ id: string; kind: string | null }>
+  active?: string | null
+} | undefined): Record<string, BrowserState> {
+  if (saved?.browsers !== undefined && Object.keys(saved.browsers).length > 0) {
+    const out: Record<string, BrowserState> = {}
+    for (const [id, state] of Object.entries(saved.browsers)) out[id] = rememberBrowser(state)
+    return out
+  }
+  const tabs = saved?.tabs ?? []
+  const tab = tabs.find((item) => item.id === saved?.active && item.kind === 'Browser')
+    ?? tabs.find((item) => item.kind === 'Browser')
+  if (saved?.browser !== undefined && tab !== undefined) return { [tab.id]: rememberBrowser(saved.browser) }
+  return {}
+}
+
+export function projectBrowser(state: BrowserState, port?: BrowserPort): BrowserState {
+  const next = flags(hydrate(state))
+  if (next.status !== 'loaded' || next.page === null || port?.frameUrl === undefined) return next
+  return { ...next, page: withFrameUrl(next.page, port.frameUrl(next.url)) }
 }
 
 export function reduceBrowser(
@@ -68,8 +100,9 @@ export function reduceBrowser(
 ): { state: BrowserState; effects: Effect[] } | undefined {
   const current = flags(hydrate(state))
   switch (intent.type) {
-    case 'open-url': {
-      const url = (intent as BrowserIntent & { type: 'open-url' }).url
+    case 'open-url':
+    case 'browser-follow': {
+      const url = (intent as BrowserIntent & { type: 'open-url' | 'browser-follow' }).url
       return { state: pushUrl(current, url, port), effects: [] }
     }
     case 'browser-back': {
@@ -100,6 +133,8 @@ export function reduceBrowser(
             ...current,
             annotate: false,
             pendingMark: null,
+            pendingSelector: null,
+            pendingRect: null,
             notePos: null,
             noteDraft: '',
           }),
@@ -113,10 +148,14 @@ export function reduceBrowser(
       const mark = (intent as BrowserIntent & { type: 'browser-click-content' }).mark
       const x = (intent as BrowserIntent & { type: 'browser-click-content' }).x
       const y = (intent as BrowserIntent & { type: 'browser-click-content' }).y
+      const selector = (intent as BrowserIntent & { type: 'browser-click-content' }).selector
+      const rect = (intent as BrowserIntent & { type: 'browser-click-content' }).rect
       return {
         state: flags({
           ...current,
           pendingMark: mark,
+          pendingSelector: selector ?? null,
+          pendingRect: rect ?? null,
           notePos: { x, y },
           noteDraft: '',
         }),
@@ -129,43 +168,16 @@ export function reduceBrowser(
     }
     case 'browser-dismiss-note':
       return {
-        state: flags({ ...current, pendingMark: null, notePos: null, noteDraft: '' }),
-        effects: [],
-      }
-    case 'browser-note-enter': {
-      if (current.pendingMark === null) return { state: current, effects: [] }
-      const text = current.noteDraft || current.pendingMark
-      const seq = current.seq + 1
-      return {
         state: flags({
           ...current,
-          seq,
-          attachments: [...current.attachments, { id: `b${seq}`, text, from: current.pendingMark }],
           pendingMark: null,
+          pendingSelector: null,
+          pendingRect: null,
           notePos: null,
           noteDraft: '',
         }),
         effects: [],
       }
-    }
-    case 'browser-note-ctrl-enter': {
-      if (current.pendingMark === null) return { state: current, effects: [] }
-      const text = current.noteDraft || current.pendingMark
-      const seq = current.seq + 1
-      const payload = [...current.attachments, { id: `b${seq}`, text, from: current.pendingMark }]
-      const next = flags({
-        ...current,
-        seq,
-        attachments: [],
-        pendingMark: null,
-        notePos: null,
-        noteDraft: '',
-      })
-      if (port?.isBusy()) {
-        return { state: next, effects: [{ type: 'queue', text, attachments: payload }] }
-      }
-      return { state: next, effects: [{ type: 'send', text, attachments: payload }] }
-    }
     default:
       return undefined
   }
@@ -184,6 +196,8 @@ function hydrate(state: Partial<BrowserState> & { url: string }): BrowserState {
     canAnnotate: false,
     annotate: state.annotate ?? false,
     pendingMark: state.pendingMark ?? null,
+    pendingSelector: state.pendingSelector ?? null,
+    pendingRect: state.pendingRect ?? null,
     notePos: state.notePos ?? null,
     noteDraft: state.noteDraft ?? '',
     attachments: state.attachments ?? [],
@@ -227,13 +241,82 @@ function show(
     index,
     annotate: false,
     pendingMark: null,
+    pendingSelector: null,
+    pendingRect: null,
     notePos: null,
     noteDraft: '',
   })
 }
 
+export function normalizeUrl(raw: string): string {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return trimmed
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed
+  if (/^(mailto|data|blob|about|javascript):/i.test(trimmed)) return trimmed
+  if (
+    /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(trimmed)
+    || /^\d{1,3}(\.\d{1,3}){3}(:|\/|$)/.test(trimmed)
+  ) {
+    return `http://${trimmed}`
+  }
+  if (/^[\w.-]+\.[a-z]{2,}([/:?#]|$)/i.test(trimmed)) return `https://${trimmed}`
+  return trimmed
+}
+
+export function liveHref(url: string): string | undefined {
+  const href = normalizeUrl(url)
+  return /^https?:\/\//i.test(href) ? href : undefined
+}
+
+/** 主会话 path takeover: http(s), loopback, and `example.com` — never `README.md`. */
+export function isTakeoverUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return false
+  if (/^https?:\/\//i.test(trimmed)) return true
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(trimmed)) return true
+  if (/^\d{1,3}(\.\d{1,3}){3}(:|\/|$)/.test(trimmed)) return true
+  if (isWorkspacePath(trimmed)) return false
+  return /^[\w.-]+\.[a-z]{2,}([/:?#]|$)/i.test(trimmed)
+}
+
+const FILE_EXT = /^(tsx?|jsx?|mjs|cjs|md|json|css|html?|vue|svelte|py|rs|go|toml|ya?ml|svg|png|jpe?g|gif|webp|txt|map|lock)$/i
+
+function isWorkspacePath(raw: string): boolean {
+  if (raw.startsWith('.') || raw.startsWith('/') || raw.startsWith('~')) return true
+  if (/^[A-Za-z]:[\\/]/.test(raw)) return true
+  const noQuery = raw.split(/[?#]/)[0] ?? raw
+  const first = (noQuery.split('/')[0] ?? '').split(':')[0] ?? ''
+  if (looksLikeHost(first)) return false
+  if (noQuery.includes('/') || noQuery.includes('\\')) return true
+  const base = noQuery.split(/[\\/]/).pop() ?? noQuery
+  const ext = base.includes('.') ? (base.split('.').pop() ?? '') : ''
+  return ext.length > 0 && FILE_EXT.test(ext)
+}
+
+function looksLikeHost(part: string): boolean {
+  if (/^(localhost|127\.0\.0\.1)$/i.test(part)) return true
+  if (!/^[\w.-]+\.[a-z]{2,}$/i.test(part)) return false
+  const tld = part.split('.').pop() ?? ''
+  return !FILE_EXT.test(tld)
+}
+
+function withFrameUrl(page: PageDocument, frameUrl: string | undefined): PageDocument {
+  if (frameUrl === page.frameUrl) return page
+  if (frameUrl === undefined) {
+    if (page.frameUrl === undefined) return page
+    return {
+      url: page.url,
+      title: page.title,
+      elements: page.elements,
+      ...page.html === undefined ? {} : { html: page.html },
+      ...page.requiresAuth === undefined ? {} : { requiresAuth: page.requiresAuth },
+    }
+  }
+  return { ...page, frameUrl }
+}
+
 function loadPage(url: string, port?: BrowserPort): Pick<BrowserState, 'url' | 'draft' | 'status' | 'page'> {
-  const trimmed = url.trim()
+  const trimmed = normalizeUrl(url.trim())
   if (trimmed.length === 0) {
     return { url: '', draft: '', status: 'empty', page: null }
   }
@@ -241,7 +324,8 @@ function loadPage(url: string, port?: BrowserPort): Pick<BrowserState, 'url' | '
   if (page !== undefined) {
     return { url: trimmed, draft: trimmed, status: 'loaded', page }
   }
-  if (port === undefined) {
+  // http(s) is for the iframe to try. A failed snapshot probe is not "no service".
+  if (port === undefined || liveHref(trimmed) !== undefined) {
     return {
       url: trimmed,
       draft: trimmed,

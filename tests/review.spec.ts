@@ -37,6 +37,8 @@ function memoryPersist(): PersistPort {
 function fakeReview(opts?: {
   turn?: Array<{ path: string; before: string; after: string }>
   tree?: Array<{ path: string; before: string; after: string }>
+  staged?: Array<{ path: string; before: string; after: string }>
+  unstaged?: Array<{ path: string; before: string; after: string }>
   busy?: () => boolean
 }): ReviewPort {
   return {
@@ -45,6 +47,12 @@ function fakeReview(opts?: {
     },
     workingTree() {
       return opts?.tree ?? []
+    },
+    staged() {
+      return opts?.staged ?? []
+    },
+    unstaged() {
+      return opts?.unstaged ?? []
     },
     isBusy() {
       return opts?.busy?.() ?? false
@@ -104,7 +112,7 @@ describe('Review seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Review' })
     box.dispatch({ type: 'review-switch', mode: 'tree' })
     const snap = box.snapshot()
-    expect(snap.review.mode).toBe('tree')
+    expect(snap.review.mode).toBe('uncommitted')
     expect(snap.review.files.map((file) => file.path)).toEqual(['src/Login.tsx', 'notes.md'])
   })
 
@@ -118,6 +126,47 @@ describe('Review seam', () => {
     expect(box.snapshot().review.files).toEqual([])
     box.dispatch({ type: 'review-switch', mode: 'tree' })
     expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['notes.md'])
+    box.dispatch({ type: 'review-switch', mode: 'staged' })
+    expect(box.snapshot().review.mode).toBe('staged')
+    expect(box.snapshot().review.files).toEqual([])
+    box.dispatch({ type: 'review-switch', mode: 'unstaged' })
+    expect(box.snapshot().review.mode).toBe('unstaged')
+    expect(box.snapshot().review.files).toEqual([])
+  })
+
+  it('filters staged and unstaged independently of last-turn writes', () => {
+    const staged = { path: 'staged.ts', before: 'a\n', after: 'b\n' }
+    const unstaged = { path: 'dirty.ts', before: 'c\n', after: 'd\n' }
+    const box = session(fakeReview({
+      turn: [LOGIN_TURN],
+      tree: [LOGIN_TURN, staged, unstaged],
+      staged: [staged],
+      unstaged: [unstaged],
+    }))
+    box.dispatch({ type: 'pick-tool', kind: 'Review' })
+    expect(box.snapshot().review.scopes.turn.added).toBeGreaterThan(0)
+    box.dispatch({ type: 'review-switch', mode: 'staged' })
+    expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['staged.ts'])
+    box.dispatch({ type: 'review-switch', mode: 'unstaged' })
+    expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['dirty.ts'])
+    box.dispatch({ type: 'review-switch', mode: 'uncommitted' })
+    expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['src/Login.tsx', 'staged.ts', 'dirty.ts'])
+  })
+
+  it('lists git branches as a second filter and diffs against the picked ref', () => {
+    const vsMain = { path: 'from-main.ts', before: 'old\n', after: 'new\n' }
+    const box = session({
+      ...fakeReview({ turn: [LOGIN_TURN], tree: [LOGIN_TURN] }),
+      branches: () => ({ current: 'work', names: ['main', 'work'] }),
+      against: (ref) => ref === 'main' ? [vsMain] : [],
+    })
+    box.dispatch({ type: 'pick-tool', kind: 'Review' })
+    expect(box.snapshot().review.branches.names).toEqual(['main', 'work'])
+    expect(box.snapshot().review.branch).toBe('work')
+    box.dispatch({ type: 'review-set-branch', branch: 'main' })
+    box.dispatch({ type: 'review-switch', mode: 'uncommitted' })
+    expect(box.snapshot().review.branch).toBe('main')
+    expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['from-main.ts'])
   })
 
   it('expands a file row into a unified diff and collapses it on a second click', () => {
@@ -158,10 +207,19 @@ describe('Review seam', () => {
     expect(box.snapshot().review.pendingMark).toBe('src/Login.tsx:2')
     box.dispatch({ type: 'review-set-note-draft', text: 'restore the deleted OK button' })
     expect(box.dispatch({ type: 'review-note-enter' })).toEqual([])
-    expect(box.snapshot().review.attachments).toEqual([
-      { id: 'r1', text: 'restore the deleted OK button', from: 'src/Login.tsx:2' },
+    expect(box.snapshot().attachments).toEqual([
+      {
+        id: 'r1',
+        text: 'restore the deleted OK button',
+        from: 'Login.tsx:2',
+        source: 'review',
+        selector: 'src/Login.tsx:2',
+        path: 'src/Login.tsx',
+        line: 2,
+      },
     ])
     expect(box.snapshot().review.pendingMark).toBeNull()
+    expect(box.snapshot().review.attachments).toEqual([])
 
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
     box.dispatch({ type: 'review-set-note-draft', text: 'keep the Sign in heading' })
@@ -170,10 +228,27 @@ describe('Review seam', () => {
       type: 'send',
       text: 'keep the Sign in heading',
       attachments: [
-        { id: 'r1', text: 'restore the deleted OK button', from: 'src/Login.tsx:2' },
-        { id: 'r2', text: 'keep the Sign in heading', from: 'src/Login.tsx:2' },
+        {
+          id: 'r1',
+          text: 'restore the deleted OK button',
+          from: 'Login.tsx:2',
+          source: 'review',
+          selector: 'src/Login.tsx:2',
+          path: 'src/Login.tsx',
+          line: 2,
+        },
+        {
+          id: 'r2',
+          text: 'keep the Sign in heading',
+          from: 'Login.tsx:2',
+          source: 'review',
+          selector: 'src/Login.tsx:2',
+          path: 'src/Login.tsx',
+          line: 2,
+        },
       ],
     }])
+    expect(box.snapshot().attachments).toEqual([])
     expect(box.snapshot().review.attachments).toEqual([])
   })
 
@@ -186,8 +261,16 @@ describe('Review seam', () => {
     const queued = box.dispatch({ type: 'review-note-ctrl-enter' })
     expect(queued).toEqual([{
       type: 'queue',
-      text: 'src/Login.tsx:2',
-      attachments: [{ id: 'r1', text: 'src/Login.tsx:2', from: 'src/Login.tsx:2' }],
+      text: '',
+      attachments: [{
+        id: 'r1',
+        text: '',
+        from: 'Login.tsx:2',
+        source: 'review',
+        selector: 'src/Login.tsx:2',
+        path: 'src/Login.tsx',
+        line: 2,
+      }],
     }])
     busy = false
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
@@ -267,6 +350,24 @@ describe('Review seam', () => {
         { kind: 'tool-result', turn: 1, call: { name: 'read', argsRaw: JSON.stringify({ path: 'src/Login.tsx' }) } },
       ],
     })).toEqual([])
+    expect(turnWritesFromSession({
+      nodes: [{
+        kind: 'tool-result',
+        turn: 1,
+        call: { name: 'run_code', argsRaw: '{"code":"write()"}' },
+        subCalls: [{
+          kind: 'tool-result',
+          callId: 'w1',
+          call: {
+            name: 'write',
+            argsRaw: JSON.stringify({ file_path: 'diff-display-test.md', content: '# hi\n' }),
+          },
+          content: [],
+          resultView: null,
+          subCalls: [],
+        }],
+      }],
+    }).map((change) => change.path)).toEqual(['diff-display-test.md'])
   })
 
   it('projects 本轮变更 from the RPC 主会话 log and keeps leftovers on the working tree', () => {

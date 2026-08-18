@@ -16,6 +16,7 @@ const host: UserConfig = {
     neverBundle: [
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-client-connection',
+      'node-pty',
     ],
   },
 }
@@ -41,6 +42,7 @@ const client: UserConfig = {
       '@deepseek-ai/dsh-client-ui-layout/client',
       '@deepseek-ai/dsh-client-ui-slots',
     ],
+    alwaysBundle: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-unicode11'],
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),

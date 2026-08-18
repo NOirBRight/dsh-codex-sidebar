@@ -1,6 +1,6 @@
 # Attach to a DSH 主会话 as a tabbed 侧栏
 
-The product is a DeepSeek Harness web plugin, not a standalone host. It hangs off one 主会话: the human keeps talking in the center, and the right 侧栏 is a Codex-app-style tab strip (empty Tab → Palette → filled 工具; `+` opens another Tab).
+The product is a DeepSeek Harness web plugin, not a standalone host. It hangs off one 主会话: the human keeps talking in the center, and the right 侧栏 is a Codex-app-style tab strip (`+` opens a 工具 menu; an empty Tab still shows a Palette).
 
 A persistent five-item mode rail was rejected because Codex App (the reference) uses tabs, and Review / Browser / Terminal need to coexist. Treating any other runtime as the host was rejected: every 工具 serves the DSH 主会话 the 侧栏 is attached to.
 

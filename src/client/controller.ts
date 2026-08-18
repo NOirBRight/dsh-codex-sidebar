@@ -10,8 +10,12 @@ import {
 } from '../contract.ts'
 import { formatDelivery, formatSend } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
+import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
+import { allowTranscriptTakeover } from '../transcript-takeover.ts'
+import { hunkForOpen, viewForTool } from '../tool-open.ts'
 import type { Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
+import { applyDetailsTrack } from '../details-occupancy.ts'
 
 export type SidebarStore = {
   bySession: Record<string, SidebarSnapshot>
@@ -19,13 +23,23 @@ export type SidebarStore = {
 
 type PromptPart = { type: string; text?: string }
 
+type LiveSession = {
+  prompt: (content: Array<{ type: 'text'; text: string }>, mode: 'queue' | 'steer') => Promise<unknown>
+  getSnapshot: () => unknown
+  subscribe: (listener: () => void) => () => void
+}
+
 export class SidebarController {
   #store: SidebarStore = { bySession: {} }
   #listeners = new Set<() => void>()
+  #forks = new Map<string, string>()
+  #watching = new Set<string>()
   #wrapped = new Set<string>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
   #layout: ILayout
+  #chain = new Map<string, Promise<unknown>>()
+  #depth = new Map<string, number>()
 
   constructor(ctx: ClientContext) {
     this.#ctx = ctx
@@ -45,46 +59,106 @@ export class SidebarController {
   }
 
   async refresh(sessionId: string): Promise<SidebarSnapshot | undefined> {
-    const gate = this.#gate(sessionId)
-    if (gate === undefined) return undefined
-    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
-    if (!result.ok) return undefined
-    const snapshot = (result.value as { snapshot: SidebarSnapshot }).snapshot
-    this.#put(snapshot)
-    this.#syncLayout(snapshot)
-    this.#wrapPrompt(sessionId)
-    return snapshot
+    return this.#enqueue(sessionId, async () => {
+      const gate = this.#gate(sessionId)
+      if (gate === undefined) return undefined
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
+      if (!result.ok) return undefined
+      const snapshot = (result.value as { snapshot: SidebarSnapshot }).snapshot
+      this.#put(snapshot)
+      this.#syncLayout(snapshot)
+      this.#wrapPrompt(sessionId)
+      return snapshot
+    })
   }
 
   async dispatch(sessionId: string, intent: Intent, applyEffects = true): Promise<SidebarSnapshot | undefined> {
-    const gate = this.#gate(sessionId)
-    if (gate === undefined) return undefined
-    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent })
-    if (!result.ok) return undefined
-    const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
-    this.#put(reply.snapshot)
-    this.#syncLayout(reply.snapshot)
-    if (applyEffects) await this.#applyEffects(sessionId, reply.effects)
-    this.#wrapPrompt(sessionId)
-    return reply.snapshot
+    return this.#enqueue(sessionId, async () => {
+      const gate = this.#gate(sessionId)
+      if (gate === undefined) return undefined
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent })
+      if (!result.ok) return undefined
+      const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
+      this.#put(reply.snapshot)
+      this.#syncLayout(reply.snapshot)
+      if (applyEffects) await this.#applyEffects(sessionId, reply.effects)
+      this.#wrapPrompt(sessionId)
+      return reply.snapshot
+    })
+  }
+
+  #enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+    if ((this.#depth.get(sessionId) ?? 0) > 0) return work()
+    const prev = this.#chain.get(sessionId) ?? Promise.resolve()
+    const run = async (): Promise<T> => {
+      this.#depth.set(sessionId, 1)
+      try {
+        return await work()
+      } finally {
+        this.#depth.set(sessionId, 0)
+      }
+    }
+    const next = prev.then(run, run)
+    this.#chain.set(sessionId, next.then(() => undefined, () => undefined))
+    return next
   }
 
   installPathTakeover(): void {
     const workspaces = this.#ctx.workspaces
+    if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
     const original = workspaces.openPath.bind(workspaces)
+    let lastTool: string | undefined
+    if (typeof document !== 'undefined') {
+      document.addEventListener('pointerdown', (event) => {
+        const raw = event.target
+        const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
+        const host = node instanceof Element ? node.closest('[data-tool]') : null
+        lastTool = host instanceof Element ? host.getAttribute('data-tool') ?? undefined : undefined
+      }, true)
+    }
     workspaces.openPath = async (path: string): Promise<void> => {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
       if (sessionId === undefined) {
         await original(path)
         return
       }
-      if (/^https?:\/\//i.test(path)) {
-        await this.dispatch(String(sessionId), { type: 'open-url', url: path })
+      if (isTakeoverUrl(path)) {
+        await this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(path) })
         return
       }
       const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
-      await this.dispatch(String(sessionId), { type: 'open-path', path: relativize(path, cwd) })
+      const view = viewForTool(lastTool)
+      const binding = this.#ctx.sessions.binding(sessionId as never)
+      const hunk = binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool)
+      lastTool = undefined
+      await this.dispatch(String(sessionId), {
+        type: 'open-path',
+        path: relativize(path, cwd),
+        view,
+        ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
+      })
     }
+    this.#installUrlClicks()
+  }
+
+  #installUrlClicks(): void {
+    if (typeof document === 'undefined') return
+    document.addEventListener('click', (event) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      const raw = event.target
+      const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
+      if (!(node instanceof Element)) return
+      const anchor = node.closest('a')
+      if (anchor === null) return
+      if (!allowTranscriptTakeover((selector) => anchor.closest(selector))) return
+      const href = (anchor.getAttribute('href') ?? '').trim()
+      if (!isTakeoverUrl(href)) return
+      event.preventDefault()
+      event.stopPropagation()
+      const sessionId = this.#ctx.sessions.list.getSnapshot().current
+      if (sessionId === undefined) return
+      void this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(href) })
+    }, true)
   }
 
   #gate(sessionId: string): {
@@ -113,9 +187,39 @@ export class SidebarController {
     for (const listener of this.#listeners) listener()
   }
 
-  #syncLayout(snapshot: SidebarSnapshot): void {
-    if (snapshot.collapsed) this.#layout.closeDetails()
-    else this.#layout.openDetails()
+  /**
+   * AppFrame columns are pinned by the overlay ColumnPin. Do not closeDetails
+   * while the 侧栏 is open — that would collapse the third track.
+   */
+  readonly hideHostDetails = (): void => {
+    this.#applyTrack(true)
+  }
+
+  /** Open the AppFrame details track immediately, then persist the expanded flag. */
+  reveal(sessionId: string): void {
+    this.#applyTrack(false)
+    if (this.snap(sessionId)?.collapsed === false) return
+    void this.dispatch(sessionId, { type: 'toggle-collapsed' })
+  }
+
+  syncTrack(collapsed: boolean): void {
+    this.#applyTrack(collapsed)
+  }
+
+  #layoutFace(): ILayout {
+    return this.#ctx.layout ?? this.#layout
+  }
+
+  #applyTrack(collapsed: boolean): void {
+    try {
+      applyDetailsTrack(this.#layoutFace(), collapsed)
+    } catch {
+      // layout face is missing until AppFrame mounts
+    }
+  }
+
+  #syncLayout(snapshot: { collapsed: boolean }): void {
+    this.#applyTrack(snapshot.collapsed)
   }
 
   async #applyEffects(sessionId: string, effects: Effect[]): Promise<void> {
@@ -127,12 +231,82 @@ export class SidebarController {
         await target.session.prompt([{ type: 'text', text }], 'queue')
         continue
       }
+      if (effect.type === 'side-ask') {
+        await this.#askSide(sessionId, effect)
+        continue
+      }
       const binding = this.#ctx.sessions.binding(sessionId as never)
       if (binding === undefined) continue
       const text = formatSend(effect.text, effect.attachments)
       if (text.length === 0) continue
       await binding.session.prompt([{ type: 'text', text }], 'queue')
     }
+  }
+
+  async #askSide(
+    sessionId: string,
+    effect: { tabId: string; text: string; atSeq: number | null },
+  ): Promise<void> {
+    try {
+      const key = `${sessionId}:${effect.tabId}`
+      const bound = this.snap(sessionId)?.sideChat.byTab[effect.tabId]?.forkSessionId
+      let childId = bound ?? this.#forks.get(key)
+      if (childId === undefined || childId.length === 0) {
+        const forked = await this.#ctx.sessions.fork({
+          sessionId: sessionId as never,
+          ...effect.atSeq === null ? {} : { atSeq: effect.atSeq },
+        }) as unknown
+        childId = typeof forked === 'string'
+          ? forked
+          : String((forked as { id?: string } | null)?.id ?? forked ?? '')
+        if (childId.length === 0) {
+          await this.dispatch(sessionId, {
+            type: 'side-reply',
+            tabId: effect.tabId,
+            text: '无法创建侧栏问答，请再试一次。',
+          }, false)
+          return
+        }
+        this.#forks.set(key, childId)
+        await this.dispatch(sessionId, { type: 'side-bind-fork', tabId: effect.tabId, sessionId: childId }, false)
+      }
+      const binding = this.#ctx.sessions.binding(childId as never)
+      if (binding === undefined) {
+        await this.dispatch(sessionId, {
+          type: 'side-reply',
+          tabId: effect.tabId,
+          text: '无法连接到该会话，请再试一次。',
+        }, false)
+        return
+      }
+      const live = binding.session as unknown as LiveSession
+      this.#watchFork(sessionId, effect.tabId, live)
+      await live.prompt([{ type: 'text', text: effect.text }], 'queue')
+    } catch (err) {
+      const text = err instanceof Error && err.message.length > 0
+        ? err.message
+        : '提问失败，请再试一次。'
+      await this.dispatch(sessionId, { type: 'side-reply', tabId: effect.tabId, text }, false)
+    }
+  }
+
+  #watchFork(sessionId: string, tabId: string, live: LiveSession): void {
+    const key = `${sessionId}:${tabId}`
+    if (this.#watching.has(key)) return
+    this.#watching.add(key)
+    const start = logEventsFromSession(live.getSnapshot())
+    const baseline = start.reduce((max, event) => Math.max(max, event.seq), 0)
+    let last = ''
+    const pull = (): void => {
+      const events = logEventsFromSession(live.getSnapshot())
+      const assistant = [...events].reverse().find((event) => event.role === 'assistant' && event.seq > baseline)
+      const text = assistant?.text ?? ''
+      if (text.length === 0 || text === last) return
+      last = text
+      void this.dispatch(sessionId, { type: 'side-reply', tabId, text }, false)
+    }
+    live.subscribe(pull)
+    pull()
   }
 
   #wrapPrompt(sessionId: string): void {

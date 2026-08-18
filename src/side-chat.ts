@@ -9,6 +9,8 @@ export type LogEvent = {
   text: string
   closed?: boolean
   writes?: string[]
+  before?: string
+  after?: string
 }
 
 export type RosterKind = 'main' | 'subagent' | 'side-chat'
@@ -55,6 +57,7 @@ export type SideChatMessage =
 export type SideChatTabState = {
   forked: boolean
   forkSeq: number | null
+  forkSessionId: string | null
   fork: LogEvent[]
   messages: SideChatMessage[]
   listed: ListedMain[] | null
@@ -99,6 +102,8 @@ export type SideChatIntent =
   | { type: 'side-pty'; tabId: string; command: string }
   | { type: 'side-spawn'; tabId: string }
   | { type: 'side-draft'; tabId: string; text: string }
+  | { type: 'side-bind-fork'; tabId: string; sessionId: string }
+  | { type: 'side-reply'; tabId: string; text: string }
 
 const SIDE_TYPES = new Set<string>([
   'side-send',
@@ -111,6 +116,8 @@ const SIDE_TYPES = new Set<string>([
   'side-pty',
   'side-spawn',
   'side-draft',
+  'side-bind-fork',
+  'side-reply',
 ])
 
 export function emptySideChat(): SideChatState {
@@ -121,6 +128,7 @@ export function emptySideTab(): SideChatTabState {
   return {
     forked: false,
     forkSeq: null,
+    forkSessionId: null,
     fork: [],
     messages: [],
     listed: null,
@@ -144,6 +152,9 @@ export function reduceSideChat(
   if (intent.type === 'side-deliver') {
     return deliver(current, intent as Extract<SideChatIntent, { type: 'side-deliver' }>, port)
   }
+  if (intent.type === 'side-send') {
+    return send(current, intent as Extract<SideChatIntent, { type: 'side-send' }>, port)
+  }
   return { state: reduceKnown(current, intent as SideChatIntent, port), effects: [] }
 }
 
@@ -152,7 +163,11 @@ function reduceKnown(state: SideChatState, intent: SideChatIntent, port?: SideCh
     case 'side-draft':
       return patchTab(state, intent.tabId, (tab) => ({ ...tab, draft: intent.text }))
     case 'side-send':
-      return send(state, intent, port)
+      return send(state, intent, port).state
+    case 'side-bind-fork':
+      return patchTab(state, intent.tabId, (tab) => ({ ...tab, forkSessionId: intent.sessionId, error: null }))
+    case 'side-reply':
+      return reply(state, intent)
     case 'side-list':
       return listSessions(state, intent, port)
     case 'side-inspect':
@@ -172,20 +187,19 @@ function reduceKnown(state: SideChatState, intent: SideChatIntent, port?: SideCh
   }
 }
 
+export const PENDING_REPLY = '正在回答…'
+
 function send(
   state: SideChatState,
   intent: Extract<SideChatIntent, { type: 'side-send' }>,
   port?: SideChatPort,
-): SideChatState {
+): { state: SideChatState; effects: Effect[] } {
   const text = intent.text.trim()
-  if (text.length === 0) return state
-  return patchTab(state, intent.tabId, (tab) => {
+  if (text.length === 0) return { state, effects: [] }
+  const next = patchTab(state, intent.tabId, (tab) => {
     const first = !tab.forked
     const fork = first ? cutFork(port?.log(port.attachedId) ?? []) : tab.fork
     const forkSeq = first ? lastSeq(fork) : tab.forkSeq
-    const reply = first
-      ? '已 Fork 主会话（含本轮工具过程）。这刀冻住了。'
-      : '仍按 Fork 那一刀答。要看现在，察看。'
     return {
       ...tab,
       forked: true,
@@ -193,8 +207,26 @@ function send(
       forkSeq,
       draft: '',
       error: null,
-      messages: [...tab.messages, { kind: 'user', text }, { kind: 'side', text: reply }],
+      messages: [...tab.messages, { kind: 'user', text }, { kind: 'side', text: PENDING_REPLY }],
     }
+  })
+  const tab = next.byTab[intent.tabId]
+  return {
+    state: next,
+    effects: [{ type: 'side-ask', tabId: intent.tabId, text, atSeq: tab?.forkSeq ?? null }],
+  }
+}
+
+function reply(
+  state: SideChatState,
+  intent: Extract<SideChatIntent, { type: 'side-reply' }>,
+): SideChatState {
+  return patchTab(state, intent.tabId, (tab) => {
+    const messages = [...tab.messages]
+    const last = messages[messages.length - 1]
+    if (last?.kind === 'side') messages[messages.length - 1] = { kind: 'side', text: intent.text }
+    else messages.push({ kind: 'side', text: intent.text })
+    return { ...tab, messages, error: null }
   })
 }
 
@@ -370,6 +402,7 @@ function cloneState(state: SideChatState): SideChatState {
   for (const [id, tab] of Object.entries(state.byTab)) {
     byTab[id] = {
       ...tab,
+      forkSessionId: tab.forkSessionId ?? null,
       fork: tab.fork.map(cloneEvent),
       messages: tab.messages.map((msg) => cloneMessage(msg)),
       listed: tab.listed?.map((row) => ({ ...row })) ?? null,

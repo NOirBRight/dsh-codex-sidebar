@@ -1,7 +1,12 @@
-/** Terminal 工具 pane: the human's shell, full pane height, one pty per Tab. */
+/** Terminal 工具 pane: xterm.js over the human pty, one emulator per Tab. */
 
-import { useEffect, useState, type FormEvent, type ReactElement } from 'react'
+import { useEffect, useRef, type ReactElement } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { Intent, SidebarSnapshot } from '../session.ts'
+import { watchTerminalTheme } from './terminal-theme.ts'
+import { terminalFontFamily, terminalOptions } from './terminal-options.ts'
 
 export function TerminalPane({
   snapshot,
@@ -12,14 +17,54 @@ export function TerminalPane({
   onIntent: (intent: Intent) => void
   tabId: string
 }): ReactElement {
-  const [draft, setDraft] = useState('')
+  const hostRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const seqRef = useRef(0)
   const pty = snapshot.terminal.byTab[tabId]
-  const cwd = pty?.cwd ?? ''
-  const output = pty?.output ?? ''
 
   useEffect(() => {
-    onIntent({ type: 'terminal-open', tabId })
-  }, [tabId]) // eslint-disable-line react-hooks/exhaustive-deps -- open once per Tab; onIntent is unstable
+    const host = hostRef.current
+    if (host === null) return
+    seqRef.current = 0
+    const hostFont = getComputedStyle(host).getPropertyValue('--ds-font-family-code').trim()
+    const term = new Terminal(terminalOptions(terminalFontFamily(hostFont)))
+    const fit = new FitAddon()
+    const unicode11 = new Unicode11Addon()
+    term.loadAddon(fit)
+    term.loadAddon(unicode11)
+    term.unicode.activeVersion = '11'
+    term.open(host)
+    const stopTheme = watchTerminalTheme(host, (theme) => {
+      term.options.theme = theme
+    })
+    try { fit.fit() } catch { /* host may still be 0x0 on first paint */ }
+    termRef.current = term
+    const writeSub = term.onData((bytes) => {
+      onIntent({ type: 'terminal-write', tabId, bytes })
+    })
+    const sendSize = (): void => {
+      try { fit.fit() } catch { return }
+      onIntent({ type: 'terminal-resize', tabId, cols: term.cols, rows: term.rows })
+    }
+    onIntent({ type: 'terminal-open', tabId, cols: term.cols, rows: term.rows })
+    const ro = new ResizeObserver(() => { sendSize() })
+    ro.observe(host)
+    term.focus()
+    return () => {
+      stopTheme()
+      ro.disconnect()
+      writeSub.dispose()
+      termRef.current = null
+      term.dispose()
+    }
+  }, [tabId]) // eslint-disable-line react-hooks/exhaustive-deps -- one emulator per Tab; onIntent is unstable
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      onIntent({ type: 'terminal-refresh', tabId, since: seqRef.current })
+    }, 80)
+    return () => { window.clearInterval(timer) }
+  }, [tabId]) // eslint-disable-line react-hooks/exhaustive-deps -- poll this Tab's pty
 
   useEffect(() => {
     const live = new Set(
@@ -31,56 +76,18 @@ export function TerminalPane({
   }, [snapshot.tabs, snapshot.terminal.byTab]) // eslint-disable-line react-hooks/exhaustive-deps -- reap closed Tabs only
 
   useEffect(() => {
-    setDraft('')
-  }, [tabId])
-
-  function onSubmit(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault()
-    const bytes = draft.endsWith('\n') ? draft : `${draft}\n`
-    if (draft.length === 0) return
-    onIntent({ type: 'terminal-write', tabId, bytes })
-    setDraft('')
-  }
+    const seq = pty?.seq ?? 0
+    const chunk = pty?.chunk ?? ''
+    if (seq <= seqRef.current || chunk.length === 0) return
+    termRef.current?.write(chunk)
+    seqRef.current = seq
+  }, [pty?.seq, pty?.chunk])
 
   return (
     <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflow: 'auto',
-        padding: '14px 16px',
-        background: 'var(--dsw-alias-bg-base)',
-        color: 'var(--dsw-alias-label-primary)',
-        fontFamily: 'var(--ds-font-family-code)',
-        fontSize: '12.5px',
-        lineHeight: 1.55,
-      }}
-    >
-      {output.length > 0 && (
-        <pre style={{ margin: 0, font: 'inherit', whiteSpace: 'pre-wrap' }}>{output}</pre>
-      )}
-      <form onSubmit={onSubmit} style={{ display: 'flex' }}>
-        <span style={{ color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre' }}>
-          {cwd.length > 0 ? `${cwd} $ ` : '$ '}
-        </span>
-        <input
-          value={draft}
-          onChange={(event) => { setDraft(event.target.value) }}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoComplete="off"
-          aria-label="Terminal"
-          style={{
-            flex: 1,
-            minWidth: 0,
-            background: 'transparent',
-            border: 0,
-            outline: 'none',
-            color: 'inherit',
-            font: 'inherit',
-          }}
-        />
-      </form>
-    </div>
+      ref={hostRef}
+      className="dcs-term"
+      onClick={() => { termRef.current?.focus() }}
+    />
   )
 }

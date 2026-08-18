@@ -14,6 +14,7 @@ type FakePty = {
   output: string
   destroyed: boolean
   token: string
+  size?: { cols: number; rows: number }
 }
 
 function memoryFiles(files: Record<string, string>): FilesPort {
@@ -69,6 +70,15 @@ function fakePtyPort(workspace: string): { port: TerminalPort; ptys: Map<string,
       if (pty === undefined || pty.destroyed) return
       pty.stdin.push(bytes)
       pty.output += bytes
+    },
+    resize(tabId, cols, rows) {
+      const pty = ptys.get(tabId)
+      if (pty === undefined || pty.destroyed) return
+      pty.size = { cols, rows }
+    },
+    pull(tabId, since) {
+      const output = ptys.get(tabId)?.output ?? ''
+      return { seq: output.length, chunk: output.slice(since) }
     },
     destroy(tabId) {
       const pty = ptys.get(tabId)
@@ -193,9 +203,22 @@ describe('Terminal seam', () => {
     expect(ptys.get(tabId)?.destroyed).toBe(false)
     reopened.dispatch({ type: 'terminal-open', tabId })
     expect(ptys.get(tabId)?.stdin).toEqual(['npm test\n'])
-    expect(reopened.snapshot().terminal.byTab[tabId]?.output).toBe('npm test\n')
+    expect(reopened.snapshot().terminal.byTab[tabId]?.chunk).toBe('npm test\n')
+    expect(reopened.snapshot().terminal.byTab[tabId]?.seq).toBe('npm test\n'.length)
     expect(reopened.snapshot().terminal.byTab[tabId]?.cwd).toBe(WORKSPACE)
     expect(reopened.snapshot().terminal.byTab[tabId]?.token).toBe(ptys.get(tabId)?.token)
+  })
+
+  it('refresh pulls new pty output without writing stdin', () => {
+    const { port, ptys } = fakePtyPort(WORKSPACE)
+    const { box } = session({ terminal: port })
+    const tabId = fillTerminal(box)
+    const pty = ptys.get(tabId)
+    if (pty === undefined) throw new Error('expected pty')
+    pty.output = 'hello from shell\n'
+    box.dispatch({ type: 'terminal-refresh', tabId })
+    expect(box.snapshot().terminal.byTab[tabId]?.output).toBe('hello from shell\n')
+    expect(pty.stdin).toEqual([])
   })
 
   it('opens a pty through RPC with a fake port and does not inject output', () => {
@@ -236,5 +259,57 @@ describe('Terminal seam', () => {
     expect(reply.snapshot.queue).toEqual([])
     expect(ptys.get(tabId)?.cwd).toBe(WORKSPACE)
     expect(ptys.get(tabId)?.stdin).toEqual(['ls\n'])
+  })
+
+  it('open-terminal adds another Tab with its own pty', () => {
+    const { port, ptys } = fakePtyPort(WORKSPACE)
+    const { box } = session({ terminal: port })
+    const first = fillTerminal(box)
+    box.dispatch({ type: 'open-terminal' })
+    const second = box.snapshot().tabs[box.snapshot().tabs.length - 1]?.id as string
+    expect(second).not.toBe(first)
+    expect(box.snapshot().active).toBe(second)
+    expect(box.snapshot().tabs.filter((tab) => tab.kind === 'Terminal')).toHaveLength(2)
+    box.dispatch({ type: 'terminal-open', tabId: second })
+    box.dispatch({ type: 'terminal-write', tabId: first, bytes: 'ls\n' })
+    box.dispatch({ type: 'terminal-write', tabId: second, bytes: 'pwd\n' })
+    expect(ptys.get(first)?.stdin).toEqual(['ls\n'])
+    expect(ptys.get(second)?.stdin).toEqual(['pwd\n'])
+  })
+
+  it('select-tab switches the active Terminal session', () => {
+    const { port } = fakePtyPort(WORKSPACE)
+    const { box } = session({ terminal: port })
+    const first = fillTerminal(box)
+    box.dispatch({ type: 'open-terminal' })
+    const second = box.snapshot().active as string
+    expect(second).not.toBe(first)
+    box.dispatch({ type: 'select-tab', id: first })
+    expect(box.snapshot().active).toBe(first)
+  })
+
+  it('forwards resize to the pty and does not inject it', () => {
+    const { port, ptys } = fakePtyPort(WORKSPACE)
+    const { box } = session({ terminal: port })
+    const tabId = fillTerminal(box)
+    const effects = box.dispatch({ type: 'terminal-resize', tabId, cols: 120, rows: 36 })
+    expect(effects).toEqual([])
+    expect(ptys.get(tabId)?.size).toEqual({ cols: 120, rows: 36 })
+    expect(box.snapshot().attachments).toEqual([])
+  })
+
+  it('refresh since pulls only the new chunk for the emulator', () => {
+    const { port, ptys } = fakePtyPort(WORKSPACE)
+    const { box } = session({ terminal: port })
+    const tabId = fillTerminal(box)
+    const pty = ptys.get(tabId)
+    if (pty === undefined) throw new Error('expected pty')
+    pty.output = 'hello from shell\nmore\n'
+    box.dispatch({ type: 'terminal-refresh', tabId, since: 6 })
+    const rec = box.snapshot().terminal.byTab[tabId]
+    expect(rec?.chunk).toBe('from shell\nmore\n')
+    expect(rec?.seq).toBe(pty.output.length)
+    expect(rec?.output).toBe('')
+    expect(pty.stdin).toEqual([])
   })
 })

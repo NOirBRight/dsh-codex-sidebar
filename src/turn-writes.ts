@@ -3,11 +3,25 @@
 import type { ReviewChange } from './review.ts'
 import type { LogEvent } from './side-chat.ts'
 import { isRecord } from './contract.ts'
+import { reviewChangesFromSnapshot } from './tool-open.ts'
 
 export function turnWritesFromSession(snapshot: unknown): ReviewChange[] {
+  const fromHunks = latestTurnChanges(snapshot)
+  if (fromHunks.length > 0) return fromHunks
   const fromLog = turnWritesFromLog(logEventsFrom(snapshot))
   if (fromLog.length > 0) return fromLog
   return turnWritesFromLog(conversationNodesToEvents(snapshot))
+}
+
+function latestTurnChanges(snapshot: unknown): ReviewChange[] {
+  const nodes = nodesOf(snapshot)
+  if (nodes.length === 0) return reviewChangesFromSnapshot(snapshot)
+  let maxTurn = 1
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.turn === 'number' && node.turn > maxTurn) maxTurn = node.turn
+  }
+  const latest = nodes.filter((node) => !isRecord(node) || typeof node.turn !== 'number' || node.turn === maxTurn)
+  return reviewChangesFromSnapshot({ nodes: latest, runningCalls: isRecord(snapshot) ? snapshot.runningCalls : [] })
 }
 
 export function turnWritesFromLog(events: readonly LogEvent[]): ReviewChange[] {
@@ -18,8 +32,9 @@ export function turnWritesFromLog(events: readonly LogEvent[]): ReviewChange[] {
     if (event.turn !== turn) continue
     for (const path of event.writes ?? []) {
       const prev = byPath.get(path)
-      const after = event.role === 'tool-result' && event.text.length > 0 ? event.text : prev?.after ?? ''
-      byPath.set(path, { path, before: prev?.before ?? '', after })
+      const after = event.after ?? (event.role === 'tool-result' && event.text.length > 0 ? event.text : prev?.after ?? '')
+      const before = prev?.before ?? event.before ?? ''
+      byPath.set(path, { path, before, after })
     }
   }
   return [...byPath.values()]
@@ -169,20 +184,36 @@ function conversationNodesToEvents(snapshot: unknown): LogEvent[] {
       continue
     }
     if (node.kind === 'tool-result' || node.kind === 'tool-call') {
-      const call = isRecord(node.call) ? node.call : node
-      const name = typeof call.name === 'string' ? call.name : ''
-      const argsRaw = typeof call.argsRaw === 'string' ? call.argsRaw : typeof node.argsRaw === 'string' ? node.argsRaw : ''
-      const writes = WRITE_TOOL.test(name) ? pathsFromArgs(argsRaw) : []
-      events.push({
-        seq,
-        turn,
-        role: node.kind === 'tool-call' ? 'tool-call' : 'tool-result',
-        text: nodeText(node) || `${name} ${argsRaw}`.trim(),
-        ...writes.length === 0 ? {} : { writes },
-      })
+      emitTool(node, turn, events, () => { seq += 1; return seq })
     }
   }
   return events
+}
+
+function emitTool(
+  node: Record<string, unknown>,
+  turn: number,
+  events: LogEvent[],
+  nextSeq: () => number,
+): void {
+  const call = isRecord(node.call) ? node.call : node
+  const name = typeof call.name === 'string' ? call.name : typeof node.name === 'string' ? node.name : ''
+  const argsRaw = typeof call.argsRaw === 'string' ? call.argsRaw : typeof node.argsRaw === 'string' ? node.argsRaw : ''
+  const writes = WRITE_TOOL.test(name) ? pathsFromArgs(argsRaw) : []
+  const kind = node.kind === 'tool-call' ? 'tool-call' : 'tool-result'
+  if (writes.length > 0 || WRITE_TOOL.test(name)) {
+    events.push({
+      seq: nextSeq(),
+      turn,
+      role: kind,
+      text: nodeText(node) || `${name} ${argsRaw}`.trim(),
+      ...writes.length === 0 ? {} : { writes },
+    })
+  }
+  if (!Array.isArray(node.subCalls)) return
+  for (const child of node.subCalls) {
+    if (isRecord(child)) emitTool(child, turn, events, nextSeq)
+  }
 }
 
 function nodesOf(snapshot: unknown): unknown[] {

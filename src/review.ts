@@ -3,7 +3,8 @@
 import type { Annotation, Effect } from './session.ts'
 
 export type ReviewIntent =
-  | { type: 'review-switch'; mode: 'turn' | 'tree' }
+  | { type: 'review-switch'; mode: ReviewMode }
+  | { type: 'review-set-branch'; branch: string }
   | { type: 'review-toggle-file'; path: string }
   | { type: 'review-gutter'; mark: string }
   | { type: 'review-set-note-draft'; text: string }
@@ -17,9 +18,17 @@ export type ReviewChange = {
   after: string
 }
 
+export type ReviewMode = 'turn' | 'uncommitted' | 'staged' | 'unstaged' | 'tree'
+
+export type ReviewScopeStats = { added: number; removed: number }
+
 export type ReviewPort = {
   turnWrites(): ReviewChange[]
   workingTree(): ReviewChange[]
+  staged?(): ReviewChange[]
+  unstaged?(): ReviewChange[]
+  branches?(): { current: string; names: string[] }
+  against?(ref: string): ReviewChange[]
   isBusy(): boolean
 }
 
@@ -41,7 +50,15 @@ export type ReviewFile = {
 }
 
 export type ReviewState = {
-  mode: 'turn' | 'tree'
+  mode: ReviewMode
+  scopes: {
+    turn: ReviewScopeStats
+    uncommitted: ReviewScopeStats
+    staged: ReviewScopeStats
+    unstaged: ReviewScopeStats
+  }
+  branch: string
+  branches: { current: string; names: string[] }
   openPath: string | null
   pendingMark: string | null
   noteDraft: string
@@ -54,6 +71,9 @@ export type ReviewState = {
 export function emptyReview(): ReviewState {
   return {
     mode: 'turn',
+    scopes: emptyScopes(),
+    branch: '',
+    branches: { current: '', names: [] },
     openPath: null,
     pendingMark: null,
     noteDraft: '',
@@ -66,10 +86,55 @@ export function emptyReview(): ReviewState {
 
 export function projectReview(state: ReviewState, port?: ReviewPort): ReviewState {
   const base = hydrate(state)
-  const changes = base.mode === 'tree' ? port?.workingTree() ?? [] : port?.turnWrites() ?? []
+  const branches = port?.branches?.() ?? { current: '', names: [] }
+  const branch = base.branch.length > 0 && branches.names.includes(base.branch) ? base.branch : branches.current
+  const vsOther = branch.length > 0 && branch !== branches.current
+  const turn = port?.turnWrites() ?? []
+  const uncommitted = vsOther && port?.against ? port.against(branch) : port?.workingTree() ?? []
+  const staged = vsOther ? [] : port?.staged?.() ?? []
+  const unstaged = vsOther ? uncommitted : port?.unstaged?.() ?? []
+  const changes = changesForMode(base.mode, { turn, uncommitted, staged, unstaged })
   const files = changes.map(toFile)
   const openDiff = files.find((file) => file.path === base.openPath) ?? null
-  return { ...base, files, openDiff }
+  return {
+    ...base,
+    files,
+    openDiff,
+    branch,
+    branches,
+    scopes: {
+      turn: tally(turn),
+      uncommitted: tally(uncommitted),
+      staged: tally(staged),
+      unstaged: tally(unstaged),
+    },
+  }
+}
+
+function changesForMode(
+  mode: ReviewMode,
+  bags: { turn: ReviewChange[]; uncommitted: ReviewChange[]; staged: ReviewChange[]; unstaged: ReviewChange[] },
+): ReviewChange[] {
+  if (mode === 'uncommitted' || mode === 'tree') return bags.uncommitted
+  if (mode === 'staged') return bags.staged
+  if (mode === 'unstaged') return bags.unstaged
+  return bags.turn
+}
+
+function tally(changes: ReviewChange[]): ReviewScopeStats {
+  let added = 0
+  let removed = 0
+  for (const change of changes) {
+    const diff = fileDiff(change.before, change.after)
+    added += diff.added
+    removed += diff.removed
+  }
+  return { added, removed }
+}
+
+function emptyScopes(): ReviewState['scopes'] {
+  const zero = { added: 0, removed: 0 }
+  return { turn: zero, uncommitted: zero, staged: zero, unstaged: zero }
 }
 
 export function reduceReview(
@@ -77,19 +142,29 @@ export function reduceReview(
   intent: { type: string },
   port?: ReviewPort,
 ): { state: ReviewState; effects: Effect[] } | undefined {
+  void port
   const current = hydrate(state)
   switch (intent.type) {
     case 'review-switch': {
       const mode = (intent as ReviewIntent & { type: 'review-switch' }).mode
-      if (mode !== 'turn' && mode !== 'tree') return { state: current, effects: [] }
+      if (mode !== 'turn' && mode !== 'tree' && mode !== 'uncommitted' && mode !== 'staged' && mode !== 'unstaged') {
+        return { state: current, effects: [] }
+      }
       return {
         state: {
           ...current,
-          mode,
+          mode: normalizeMode(mode),
           openPath: null,
           pendingMark: null,
           noteDraft: '',
         },
+        effects: [],
+      }
+    }
+    case 'review-set-branch': {
+      const branch = (intent as ReviewIntent & { type: 'review-set-branch' }).branch
+      return {
+        state: { ...current, branch, openPath: null, pendingMark: null, noteDraft: '' },
         effects: [],
       }
     }
@@ -125,46 +200,23 @@ export function reduceReview(
         state: { ...current, pendingMark: null, noteDraft: '' },
         effects: [],
       }
-    case 'review-note-enter': {
-      if (current.pendingMark === null) return { state: current, effects: [] }
-      const text = current.noteDraft || current.pendingMark
-      const seq = current.seq + 1
-      return {
-        state: {
-          ...current,
-          seq,
-          attachments: [...current.attachments, { id: `r${seq}`, text, from: current.pendingMark }],
-          pendingMark: null,
-          noteDraft: '',
-        },
-        effects: [],
-      }
-    }
-    case 'review-note-ctrl-enter': {
-      if (current.pendingMark === null) return { state: current, effects: [] }
-      const text = current.noteDraft || current.pendingMark
-      const seq = current.seq + 1
-      const payload = [...current.attachments, { id: `r${seq}`, text, from: current.pendingMark }]
-      const next = {
-        ...current,
-        seq,
-        attachments: [],
-        pendingMark: null,
-        noteDraft: '',
-      }
-      if (port?.isBusy()) {
-        return { state: next, effects: [{ type: 'queue', text, attachments: payload }] }
-      }
-      return { state: next, effects: [{ type: 'send', text, attachments: payload }] }
-    }
     default:
       return undefined
   }
 }
 
+function normalizeMode(mode: ReviewMode | undefined): ReviewMode {
+  if (mode === 'tree' || mode === 'uncommitted') return 'uncommitted'
+  if (mode === 'staged' || mode === 'unstaged') return mode
+  return 'turn'
+}
+
 function hydrate(state: ReviewState): ReviewState {
   return {
-    mode: state.mode === 'tree' ? 'tree' : 'turn',
+    mode: normalizeMode(state.mode),
+    scopes: state.scopes ?? emptyScopes(),
+    branch: state.branch ?? '',
+    branches: state.branches ?? { current: '', names: [] },
     openPath: state.openPath ?? null,
     pendingMark: state.pendingMark ?? null,
     noteDraft: state.noteDraft ?? '',
@@ -175,26 +227,29 @@ function hydrate(state: ReviewState): ReviewState {
   }
 }
 
-function toFile(change: ReviewChange): ReviewFile {
-  const slash = change.path.lastIndexOf('/')
-  const name = slash === -1 ? change.path : change.path.slice(slash + 1)
-  const dir = slash === -1 ? '' : change.path.slice(0, slash)
-  const lines = lineDiff(splitLines(change.before), splitLines(change.after))
+export type FileDiff = {
+  added: number
+  removed: number
+  hunk: string
+  lines: DiffLine[]
+}
+
+export function fileDiff(before: string, after: string): FileDiff {
+  const lines = lineDiff(splitLines(before), splitLines(after))
   let added = 0
   let removed = 0
   for (const line of lines) {
     if (line.kind === 'add') added += 1
     if (line.kind === 'del') removed += 1
   }
-  return {
-    path: change.path,
-    name,
-    dir,
-    added,
-    removed,
-    hunk: hunkHeader(lines),
-    lines,
-  }
+  return { added, removed, hunk: hunkHeader(lines), lines }
+}
+
+function toFile(change: ReviewChange): ReviewFile {
+  const slash = change.path.lastIndexOf('/')
+  const name = slash === -1 ? change.path : change.path.slice(slash + 1)
+  const dir = slash === -1 ? '' : change.path.slice(0, slash)
+  return { path: change.path, name, dir, ...fileDiff(change.before, change.after) }
 }
 
 function splitLines(text: string): string[] {

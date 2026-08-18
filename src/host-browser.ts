@@ -1,28 +1,57 @@
-/** BrowserPort: fetch a page snapshot. Never starts the project. */
+/** BrowserPort: iframe-first. A snapshot probe must not block opening a Tab. */
 
-import { Worker } from 'node:worker_threads'
-import type { BrowserPort, PageDocument, PageElement } from './browser.ts'
+import { liveHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
+
+/** Optional HTML snapshot for tests. Production load never waits on the network. */
+export type PageProbe =
+  | { kind: 'html'; html: string }
+  | { kind: 'auth' }
+  | { kind: 'unreachable' }
 
 export function createHostBrowser(opts: {
   isBusy: () => boolean
-  fetchHtml?: (url: string) => string | undefined
+  probe?: (url: string) => PageProbe
   openExternal?: (url: string) => void
+  pickFrameUrl?: (url: string) => string | undefined
 }): BrowserPort {
-  const fetchHtml = opts.fetchHtml ?? fetchHtmlOverHttp
   return {
     load(url) {
-      const html = fetchHtml(url)
-      if (html === undefined) return undefined
-      return pageSnapshot(url, html)
+      const frameUrl = opts.pickFrameUrl?.(url)
+      if (opts.probe !== undefined) return loadFromProbe(url, opts.probe(url), frameUrl)
+      if (liveHref(url) === undefined) return undefined
+      return liveSnapshot(url, frameUrl)
     },
     openExternal(url) {
       opts.openExternal?.(url)
     },
     isBusy: () => opts.isBusy(),
+    ...opts.pickFrameUrl === undefined ? {} : { frameUrl: opts.pickFrameUrl },
   }
 }
 
-export function pageSnapshot(url: string, html: string): PageDocument {
+function loadFromProbe(url: string, result: PageProbe, frameUrl: string | undefined): PageDocument | undefined {
+  if (result.kind === 'auth') return authSnapshot(url, frameUrl)
+  if (result.kind === 'html') {
+    return frameUrl === undefined ? pageSnapshot(url, result.html) : pageSnapshot(url, result.html, frameUrl)
+  }
+  if (liveHref(url) === undefined) return undefined
+  return liveSnapshot(url, frameUrl)
+}
+
+export function liveSnapshot(url: string, frameUrl?: string): PageDocument {
+  return {
+    url,
+    title: url,
+    elements: [{ selector: 'body', text: url }],
+    ...frameUrl === undefined ? {} : { frameUrl },
+  }
+}
+
+export function authSnapshot(url: string, frameUrl?: string): PageDocument {
+  return { ...liveSnapshot(url, frameUrl), requiresAuth: true }
+}
+
+export function pageSnapshot(url: string, html: string, frameUrl?: string): PageDocument {
   const title = firstCapture(html, /<title[^>]*>([^<]*)<\/title>/i) ?? url
   const elements: PageElement[] = []
   const seen = new Set<string>()
@@ -33,7 +62,13 @@ export function pageSnapshot(url: string, html: string): PageDocument {
   collectTag(elements, seen, html, 'a')
   collectIds(elements, seen, html)
   if (elements.length === 0) elements.push({ selector: 'body', text: stripTags(title) })
-  return { url, title: stripTags(title), elements }
+  return {
+    url,
+    title: stripTags(title),
+    html: withBaseHref(url, html),
+    elements,
+    ...frameUrl === undefined ? {} : { frameUrl },
+  }
 }
 
 function collectTag(elements: PageElement[], seen: Set<string>, html: string, tag: string): void {
@@ -78,6 +113,15 @@ function attr(attrs: string, name: string): string | undefined {
   return value === undefined || value.length === 0 ? undefined : value
 }
 
+function withBaseHref(url: string, html: string): string {
+  const cap = 200_000
+  const body = html.length > cap ? html.slice(0, cap) : html
+  if (/<base\b/i.test(body)) return body
+  const tag = `<base href="${url.replace(/"/g, '&quot;')}">`
+  if (/<head[\s>]/i.test(body)) return body.replace(/<head([^>]*)>/i, `<head$1>${tag}`)
+  return `${tag}${body}`
+}
+
 function firstCapture(html: string, pattern: RegExp): string | undefined {
   const match = pattern.exec(html)
   const text = match?.[1]?.trim()
@@ -86,47 +130,4 @@ function firstCapture(html: string, pattern: RegExp): string | undefined {
 
 function stripTags(value: string): string {
   return value.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-}
-
-function fetchHtmlOverHttp(url: string): string | undefined {
-  const max = 1024 * 1024
-  const sab = new SharedArrayBuffer(8 + max)
-  const header = new Int32Array(sab, 0, 2)
-  let worker: Worker
-  try {
-    worker = new Worker(
-      `
-      const { workerData } = require('node:worker_threads')
-      const { sab, url } = workerData
-      const header = new Int32Array(sab, 0, 2)
-      const bytes = new Uint8Array(sab, 8)
-      fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(5000) })
-        .then(async (res) => {
-          if (!res.ok) {
-            Atomics.store(header, 0, 2)
-            Atomics.notify(header, 0)
-            return
-          }
-          const buf = Buffer.from(await res.text(), 'utf8')
-          const n = Math.min(buf.length, bytes.length)
-          bytes.set(buf.subarray(0, n))
-          Atomics.store(header, 1, n)
-          Atomics.store(header, 0, 1)
-          Atomics.notify(header, 0)
-        })
-        .catch(() => {
-          Atomics.store(header, 0, 2)
-          Atomics.notify(header, 0)
-        })
-      `,
-      { eval: true, workerData: { sab, url } },
-    )
-  } catch {
-    return undefined
-  }
-  Atomics.wait(header, 0, 0, 6000)
-  void worker.terminate()
-  if (Atomics.load(header, 0) !== 1) return undefined
-  const n = Atomics.load(header, 1)
-  return Buffer.from(new Uint8Array(sab, 8, n)).toString('utf8')
 }
