@@ -69,6 +69,18 @@ export function TerminalRail({
           >
             <Ico name="terminal" size={13} />
             <span className="dcs-term-session-name">{tab.title || 'bash'}</span>
+            <span
+              className="dcs-term-session-x"
+              role="button"
+              aria-label={t('closeTab')}
+              title={t('closeTab')}
+              onClick={(event) => {
+                event.stopPropagation()
+                onIntent({ type: 'close-tab', id: tab.id })
+              }}
+            >
+              <Ico name="x" size={11} />
+            </span>
           </button>
         ))}
       </div>

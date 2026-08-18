@@ -456,7 +456,18 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 }
 .dcs-term-session:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .dcs-term-session[data-on] { background: var(--dsw-alias-interactive-bg-active, var(--dsw-alias-bg-layer-2)); }
-.dcs-term-session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcs-term-session-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcs-term-session-x {
+  opacity: 0;
+  flex-shrink: 0;
+  width: 18px; height: 18px; margin-left: auto;
+  display: grid; place-items: center;
+  border: 0; border-radius: 4px; background: transparent;
+  color: var(--dsw-alias-label-tertiary); cursor: pointer; padding: 0;
+}
+.dcs-term-session:hover .dcs-term-session-x,
+.dcs-term-session:focus-within .dcs-term-session-x { opacity: 1; }
+.dcs-term-session-x:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
 .dcs-term {
   flex: 1; min-height: 0; overflow: hidden; padding: 8px 10px;
   background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
