@@ -10,6 +10,7 @@ import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-br
 import { createFsFiles } from './host-files.ts'
 import { createFilePersist } from './host-persist.ts'
 import { createHostReview } from './host-review.ts'
+import { AnnotationSendStore, installAnnotationSend, type AnnotationSendHost } from './host-annotation-send.ts'
 import { handleSidebarRpcAsync } from './host-rpc.ts'
 import { createHostSideChat } from './host-side-chat.ts'
 import { createHostTerminal } from './host-terminal.ts'
@@ -26,7 +27,7 @@ export {
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
 } from './contract.ts'
-export { formatDelivery, formatSend } from './send-text.ts'
+export { formatDelivery, formatEvidenceSend, formatHumanSend, formatSend } from './send-text.ts'
 
 export const name = 'dsh-codex-sidebar'
 export const inject = ['connection']
@@ -65,11 +66,16 @@ type HostContext = EffectContext & {
     tools?: ToolsHost
     systemPrompt?: PromptHost
     webServer?: WebServerHost
+    agents?: { get(id: string): unknown }
+    attachments?: { saveImage(input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }): Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }> }
   }) => void) => void
 }
 
 export function apply(ctx: HostContext): void {
   const filesBySession = new Map<string, FilesPort>()
+  const annotationSend = new AnnotationSendStore()
+  let agentLive = (_id: string): boolean => false
+  let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
   const managedBrowser = new ManagedBrowserRuntime()
   const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
@@ -115,6 +121,13 @@ export function apply(ctx: HostContext): void {
           browserStream: managedStream,
           managedBrowser,
           browserEvidence: managedEvidence,
+          annotationSend,
+          annotationPortsFor: (sessionId) => ({
+            readFile: (path) => filesBySession.get(sessionId)?.read(path),
+            ...saveImage === undefined ? {} : { saveImage: saveImage as never },
+            readEvidence: (id, evidence) => managedEvidence.read(id, evidence),
+            agentLive,
+          }),
         })
       },
       { authority: 'loopback' },
@@ -132,6 +145,15 @@ export function apply(ctx: HostContext): void {
       })
     }), 'dsh-codex-sidebar: Browser tools')
     console.info('[dsh-codex-sidebar] browser_tabs/open/snapshot/click/fill registered')
+  })
+  ctx.inject(['attachments'], (wired) => {
+    if (wired.attachments === undefined) return
+    saveImage = (input) => wired.attachments!.saveImage(input)
+  })
+  ctx.inject(['agents'], (wired) => {
+    if (wired.agents === undefined) return
+    agentLive = (id) => wired.agents?.get(id) !== undefined
+    wired.effect(() => installAnnotationSend(wired as unknown as AnnotationSendHost, annotationSend), 'dsh-codex-sidebar: annotation send')
   })
   ctx.inject(['systemPrompt'], (wired) => {
     if (wired.systemPrompt === undefined) return

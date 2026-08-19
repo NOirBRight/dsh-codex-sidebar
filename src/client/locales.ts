@@ -24,6 +24,15 @@ export const en = {
   expandTerminals: 'Show terminals',
   occupantError: 'The sidebar hit a display error. It stayed here instead of yielding Details.',
   occupantRetry: 'Retry',
+  openMark: 'Open annotation {n}: {from}',
+  copyMessage: 'Copy',
+  image: 'Image',
+  imageOpen: 'Open original image',
+  imageOpenNamed: 'Open {label}',
+  imageLoading: 'Loading image',
+  imageLoadFailed: 'Could not load image',
+  imageDialog: 'Original image',
+  imageClose: 'Close',
 } as const
 
 export type SidebarKey = keyof typeof en
@@ -50,4 +59,13 @@ export const zh: Record<SidebarKey, string> = {
   expandTerminals: '展开终端列表',
   occupantError: '侧栏显示出错，已留在这里，没有退回默认 Details。',
   occupantRetry: '重试',
+  openMark: '打开批注 {n}：{from}',
+  copyMessage: '复制',
+  image: '图片',
+  imageOpen: '打开原图',
+  imageOpenNamed: '打开 {label}',
+  imageLoading: '正在加载图片',
+  imageLoadFailed: '无法加载图片',
+  imageDialog: '原图',
+  imageClose: '关闭',
 }

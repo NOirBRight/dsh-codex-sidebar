@@ -6,15 +6,16 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   SIDEBAR_BROWSER_CAPTURE_ENDPOINT,
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
-  SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT,
   SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
+  SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
+  SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT,
   SIDEBAR_TERMINAL_PULL_ENDPOINT,
   isRecord,
 } from '../contract.ts'
-import { formatDelivery, formatSend } from '../send-text.ts'
+import { formatDelivery, formatHumanSend } from '../send-text.ts'
 import { stripAnnotationDraftSentinel } from './annotation-draft.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
@@ -322,16 +323,18 @@ export class SidebarController {
   }
 
 
-  async #browserImages(sessionId: string, attachments: readonly Annotation[]): Promise<Array<Extract<PromptPart, { type: 'image' }>>> {
-    const evidence = attachments.flatMap((item) => item.source === 'browser' && item.evidence !== undefined ? [item.evidence] : [])
-    if (evidence.length > 20) throw new Error('A prompt can contain at most 20 Browser screenshots')
-    const images: Array<Extract<PromptPart, { type: 'image' }>> = []
-    for (const item of evidence) {
-      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, { sessionId, evidence: item })
-      if (!result.ok || !imageReply(result.value)) throw new Error('Cannot read Browser screenshot evidence')
-      images.push({ type: 'image', mediaType: result.value.mediaType, data: result.value.data, name: 'browser-' + item.id + '.jpg' })
+  async #stageAnnotations(sessionId: string, attachments: readonly Annotation[]): Promise<void> {
+    if (attachments.length === 0) return
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT, { sessionId, attachments })
+    if (!result.ok) throw new Error((result as { error?: { message?: string } }).error?.message ?? 'Cannot stage 批注')
+  }
+
+  async #unstageAnnotations(sessionId: string): Promise<void> {
+    try {
+      await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT, { sessionId })
+    } catch {
+      // staging is host-side; a failed unstage leaves a TTL'd sidecar
     }
-    return images
   }
 
   async #applyEffects(sessionId: string, effects: Effect[]): Promise<void> {
@@ -346,12 +349,15 @@ export class SidebarController {
       if (effect.type === 'side-ask') continue
       const binding = this.#ctx.sessions.binding(sessionId as never)
       if (binding === undefined) continue
-      const text = formatSend(effect.text, effect.attachments)
+      const text = formatHumanSend(effect.text, effect.attachments)
       if (text.length === 0) continue
-      const parts: PromptPart[] = [{ type: 'text', text }, ...await this.#browserImages(sessionId, effect.attachments)]
+      await this.#stageAnnotations(sessionId, effect.attachments)
       this.#effectPrompt.add(sessionId)
       try {
-        await binding.session.prompt(parts, 'queue')
+        await binding.session.prompt([{ type: 'text', text }], 'queue')
+      } catch (error) {
+        await this.#unstageAnnotations(sessionId)
+        throw error
       } finally {
         this.#effectPrompt.delete(sessionId)
       }
@@ -372,12 +378,16 @@ export class SidebarController {
       const parts = content as PromptPart[]
       const text = stripAnnotationDraftSentinel(parts.filter((part): part is Extract<PromptPart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('\n'))
       const existingImages = parts.filter((part): part is Extract<PromptPart, { type: 'image' }> => part.type === 'image')
-      const browserImages = await this.#browserImages(sessionId, snapshot.attachments)
-      if (existingImages.length + browserImages.length > 20) throw new Error('A prompt can contain at most 20 images')
-      const merged: PromptPart[] = [{ type: 'text', text: formatSend(text, snapshot.attachments) }, ...existingImages, ...browserImages]
-      const result = await original(merged, mode)
-      await this.dispatch(sessionId, { type: 'composer-send', text }, false)
-      return result
+      const human = formatHumanSend(text, snapshot.attachments)
+      await this.#stageAnnotations(sessionId, snapshot.attachments)
+      try {
+        const result = await original([{ type: 'text', text: human }, ...existingImages], mode)
+        await this.dispatch(sessionId, { type: 'composer-send', text }, false)
+        return result
+      } catch (error) {
+        await this.#unstageAnnotations(sessionId)
+        throw error
+      }
     }
     this.#wrapped.add(sessionId)
   }
@@ -406,9 +416,6 @@ function browserEvidence(value: unknown): value is BrowserEvidence {
     && typeof value.height === 'number'
 }
 
-function imageReply(value: unknown): value is { mediaType: 'image/jpeg'; data: string } {
-  return isRecord(value) && value.mediaType === 'image/jpeg' && typeof value.data === 'string'
-}
 
 function relativize(path: string, cwd: string): string {
   if (cwd.length === 0) return path

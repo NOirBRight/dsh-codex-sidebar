@@ -108,6 +108,7 @@ export type Intent =
   | { type: 'restore-attachments'; attachments: Annotation[] }
   | { type: 'set-note-draft'; text: string }
   | { type: 'edit-attachment'; id: string; x?: number; y?: number }
+  | { type: 'reveal-mark'; mark: Annotation }
   | { type: 'remove-attachment'; id: string }
   | { type: 'reorder-tabs'; from: number; to: number }
   | ReviewIntent
@@ -146,6 +147,7 @@ export type SidebarSnapshot = {
   terminal: TerminalState
   sideChat: SideChatState
   attachments: Annotation[]
+  deliveredMarks: Annotation[]
   queue: Array<{ text: string; attachments: Annotation[] }>
 }
 
@@ -170,6 +172,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   const saved = opts.persist.load(opts.sessionId)
   let seq = saved ? saved.tabs.reduce((n, t) => Math.max(n, Number(t.id.slice(1)) || 0), 0) : 0
   let attachments: Annotation[] = (saved?.attachments ?? []).map(hydrateAnnotation)
+  let deliveredMarks: Annotation[] = (saved?.deliveredMarks ?? []).map(hydrateAnnotation)
   let queue: Array<{ text: string; attachments: Annotation[] }> = saved?.queue ?? []
   let collapsed = saved?.collapsed ?? true
   const retiredTabs = retireSideChatTabs(saved?.tabs ?? [], saved?.active ?? null)
@@ -249,7 +252,14 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     foldAttachments()
     const payload = attachments
     attachments = []
+    deliver(payload)
     return payload
+  }
+
+  function deliver(payload: readonly Annotation[]): void {
+    if (payload.length === 0) return
+    const known = new Set(deliveredMarks.map((item) => item.id))
+    deliveredMarks = [...deliveredMarks, ...payload.filter((item) => !known.has(item.id))]
   }
 
   function projectFiles(): SidebarSnapshot['files'] {
@@ -311,6 +321,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       terminal: projectTerminal(terminal),
       sideChat: projectSideChat(sideChat, opts.sideChat),
       attachments: attachments.map((a) => ({ ...a })),
+      deliveredMarks: deliveredMarks.map((a) => ({ ...a })),
       queue: queue.map((q) => ({ text: q.text, attachments: q.attachments.map((a) => ({ ...a })) })),
     }
   }
@@ -590,6 +601,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         if (files.editingId !== null) detachNote(files.editingId)
         const text = noteBody(files.noteDraft)
         const payload = [item]
+        deliver(payload)
         if (opts.isBusy()) {
           queue = [...queue, { text, attachments: payload }]
           effects.push({ type: 'queue', text, attachments: payload })
@@ -601,7 +613,10 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       }
       case 'restore-attachments': {
         const known = new Set(attachments.map((item) => item.id))
-        attachments = [...attachments, ...intent.attachments.filter((item) => !known.has(item.id))]
+        const incoming = intent.attachments.filter((item) => !known.has(item.id))
+        attachments = [...attachments, ...incoming]
+        const restored = new Set(incoming.map((item) => item.id))
+        deliveredMarks = deliveredMarks.filter((item) => !restored.has(item.id))
         break
       }
       case 'composer-send': {
@@ -612,6 +627,61 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           effects.push({ type: 'queue', text: intent.text, attachments: payload })
         } else {
           effects.push({ type: 'send', text: intent.text, attachments: payload })
+        }
+        break
+      }
+      case 'reveal-mark': {
+        const item = hydrateAnnotation(intent.mark)
+        expand()
+        if (item.source === 'files' && item.path !== undefined) {
+          fillOrOpen('Files', item.path)
+          files = {
+            ...files,
+            path: item.path,
+            annotate: true,
+            pendingMark: item.selector ?? item.from,
+            pendingRect: item.rect ?? null,
+            pendingSelection: item.selection ?? null,
+            notePos: null,
+            noteDraft: '',
+            editingId: null,
+          }
+          break
+        }
+        if (item.source === 'browser') {
+          const url = item.url ?? tabs.find((tab) => tab.kind === 'Browser')?.target ?? ''
+          fillOrOpen('Browser', url)
+          const tabId = browserTabId()
+          if (tabId === undefined) break
+          let current = pages[tabId] ?? emptyBrowser()
+          if (current.url.length === 0 && url.length > 0) {
+            current = reduceBrowser(current, { type: 'open-url', url } as BrowserIntent, opts.browser)?.state ?? current
+            opts.browser?.manage?.(tabId, current.url, 'open')
+          }
+          putBrowser(tabId, {
+            ...current,
+            annotate: true,
+            pendingMark: item.from,
+            pendingSelector: item.selector ?? null,
+            pendingRect: item.rect ?? null,
+            pendingCaptureId: item.evidence?.captureId ?? null,
+            pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingEvidence: item.evidence ?? null,
+            notePos: null,
+            noteDraft: '',
+            editingId: null,
+          })
+          break
+        }
+        if (item.source === 'review') {
+          fillOrOpen('Review')
+          review = {
+            ...review,
+            openPath: item.path ?? review.openPath,
+            pendingMark: item.selector ?? item.from,
+            noteDraft: '',
+            editingId: null,
+          }
         }
         break
       }
@@ -742,6 +812,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         if (current.editingId !== null) detachNote(current.editingId)
         const text = noteBody(current.noteDraft)
         const payload = [item]
+        deliver(payload)
         putBrowser(id, {
           ...current,
           seq: nextSeq,
@@ -778,6 +849,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         if (review.editingId !== null) detachNote(review.editingId)
         const text = noteBody(review.noteDraft)
         const payload = [item]
+        deliver(payload)
         review = { ...review, seq: nextSeq, pendingMark: null, noteDraft: '', editingId: null }
         if (opts.review?.isBusy() ?? opts.isBusy()) {
           queue = [...queue, { text, attachments: payload }]

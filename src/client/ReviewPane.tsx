@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
 import type { ReviewMode, ReviewScopeStats } from '../review.ts'
+import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
 import { Ico } from './icons.tsx'
 import { isImeKey, useImeSafeDraft } from './ime-draft.ts'
@@ -273,7 +274,7 @@ export function ReviewPane({
                     const mark = `${file.path}:${lineNo ?? index}`
                     const showPlus = hover === mark
                     const pending = review.pendingMark === mark
-                    const stacked = reviewBadge(snapshot.attachments, mark)
+                    const stacked = reviewBadge(visibleAnnotations(snapshot), mark)
                     return (
                       <div key={index}>
                         <div
@@ -291,7 +292,12 @@ export function ReviewPane({
                                 aria-label={`编辑批注 ${stacked.n}`}
                                 onClick={(event) => {
                                   event.stopPropagation()
-                                  onIntent({ type: 'edit-attachment', id: stacked.id })
+                                  if (snapshot.attachments.some((item) => item.id === stacked.id)) {
+                                    onIntent({ type: 'edit-attachment', id: stacked.id })
+                                    return
+                                  }
+                                  const delivered = snapshot.deliveredMarks.find((item) => item.id === stacked.id)
+                                  if (delivered !== undefined) onIntent({ type: 'reveal-mark', mark: delivered })
                                 }}
                               >
                                 {stacked.n}

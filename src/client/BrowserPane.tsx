@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactElement } from 'react'
 import { liveHref } from '../browser.ts'
+import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
 import { Ico } from './icons.tsx'
@@ -153,10 +154,15 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
               })
             }}
           />
-          <StackedBadges attachments={snapshot.attachments} url={browser.url} onEdit={(id, event) => {
+          <StackedBadges attachments={visibleAnnotations(snapshot)} url={browser.url} onEdit={(id, event) => {
             const body = bodyRef.current
             const box = body?.getBoundingClientRect()
-            onIntent({ type: 'edit-attachment', id, x: box === undefined ? 180 : event.clientX - box.left, y: box === undefined ? 72 : event.clientY - box.top })
+            if (snapshot.attachments.some((item) => item.id === id)) {
+              onIntent({ type: 'edit-attachment', id, x: box === undefined ? 180 : event.clientX - box.left, y: box === undefined ? 72 : event.clientY - box.top })
+              return
+            }
+            const delivered = snapshot.deliveredMarks.find((item) => item.id === id)
+            if (delivered !== undefined) onIntent({ type: 'reveal-mark', mark: delivered })
           }} />
           {capturing && <div className="dcs-b-capturing">Capturing screenshot…</div>}
         </div>

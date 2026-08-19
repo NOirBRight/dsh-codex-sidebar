@@ -381,6 +381,30 @@ describe('Files seam', () => {
       attachments: stacked,
     }])
     expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().deliveredMarks).toEqual(stacked)
+  })
+
+  it('reveals a delivered file mark without putting it back in the composer', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
+    box.dispatch({ type: 'set-note-draft', text: 'heading' })
+    box.dispatch({ type: 'note-send' })
+    const mark = box.snapshot().deliveredMarks[0]
+    expect(mark?.path).toBe('src/Login.tsx')
+    box.dispatch({ type: 'toggle-collapsed' })
+    box.dispatch({ type: 'reveal-mark', mark: mark! })
+    expect(box.snapshot().collapsed).toBe(false)
+    expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().files).toMatchObject({
+      path: 'src/Login.tsx',
+      annotate: true,
+      pendingMark: 'src/Login.tsx:1',
+      editingId: null,
+      noteDraft: '',
+      notePos: null,
+    })
   })
 
   it('keeps an empty composer send inert when there are no 批注', () => {

@@ -47,6 +47,39 @@ describe('Files preview rendering', () => {
     expect(blocks[0]).toMatchObject({ type: 'h', level: 1, line: 6 })
   })
 
+  it('keeps execute-plan XML sections and unfenced Dart readable', () => {
+    const blocks = parseMarkdown([
+      '---',
+      'phase: 06-quick-wins',
+      '---',
+      '',
+      '<objective>',
+      'Wire AddSingleGameFlow after game selection.',
+      '',
+      'Purpose: Close the orphaned page.',
+      '</objective>',
+      '',
+      '<interfaces>',
+      '<!-- From app_router.dart -->',
+      'GoRoute(',
+      "  path: '/library/metadata-editor',",
+      '  child: MetadataEditorPage(folderPath: folderPath),',
+      ')',
+      '</interfaces>',
+      '',
+      '<name>Task 1: Replace inline step</name>',
+    ].join('\n'))
+    expect(blocks.map((block) => block.type)).toEqual(['h', 'p', 'p', 'h', 'quote', 'code', 'p'])
+    expect(blocks[0]).toMatchObject({ type: 'h', level: 2, inlines: [{ kind: 'text', text: 'Objective' }] })
+    expect(blocks[5]).toMatchObject({ type: 'code' })
+    expect(blocks[5] && blocks[5].type === 'code' ? blocks[5].text : '').toContain('GoRoute(')
+    expect(blocks[5] && blocks[5].type === 'code' ? blocks[5].text : '').toContain('MetadataEditorPage')
+    expect(blocks[6]).toMatchObject({
+      type: 'p',
+      inlines: [{ kind: 'strong', text: 'Name' }, { kind: 'text', text: ': Task 1: Replace inline step' }],
+    })
+  })
+
   it('parses verification-report tables without swallowing the following heading', () => {
     const blocks = parseMarkdown([
       '### Required Artifacts',

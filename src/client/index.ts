@@ -5,12 +5,13 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import { SidebarController } from './controller.ts'
 import { ensureSidebarStyles } from './css.ts'
 import { en, NS, zh, type SidebarKey } from './locales.ts'
 import { SidebarPanel, type SidebarFace } from './Sidebar.tsx'
-import { SidebarToggle } from './Toggle.tsx'
+import { UserAnnotationBubble } from './UserAnnotationBubble.tsx'
 import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
 import { installToolStats } from './tool-stats.ts'
@@ -75,14 +76,20 @@ export function apply(ctx: ClientContext): void {
       if (timer !== undefined) clearTimeout(timer)
     }
   }, 'dsh-codex-sidebar: edit +/− on tool rows')
-  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'codex-sidebar-toggle',
-    order: 80,
+  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+    name: 'conversation.chat.node',
+    key: 'user',
+    priority: -1,
     locale: NS,
     inject: face,
-  }, SidebarToggle))
-
+  }, UserAnnotationBubble))
+  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+    name: 'conversation.chat.node',
+    key: 'steering',
+    priority: -1,
+    locale: NS,
+    inject: face,
+  }, UserAnnotationBubble))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'codex-sidebar-attachments',

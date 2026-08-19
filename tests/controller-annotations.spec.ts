@@ -3,9 +3,9 @@ import { createSidebarSession, type Annotation, type FilesPort } from '../src/se
 import { SidebarController } from '../src/client/controller.ts'
 import {
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
-  SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_SNAPSHOT_ENDPOINT,
+  SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
 } from '../src/contract.ts'
 
 const files: FilesPort = {
@@ -177,7 +177,7 @@ describe('annotation effect prompts', () => {
     const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
       if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
       if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) return { ok: true, value: evidence }
-      if (endpoint === SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT) return { ok: true, value: { mediaType: 'image/jpeg', data: 'jpeg-base64' } }
+      if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
       if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
         const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
         const effects = box.dispatch(intent)
@@ -189,8 +189,7 @@ describe('annotation effect prompts', () => {
     await controller.refresh('sess-a')
     await controller.dispatch('sess-a', { type: 'browser-note-send' })
     expect(prompted).toHaveLength(1)
-    expect(prompted[0]?.[0]).toMatchObject({ type: 'text', text: expect.stringContaining('fix this') })
-    expect(prompted[0]?.[1]).toEqual({ type: 'image', mediaType: 'image/jpeg', data: 'jpeg-base64', name: 'browser-e1.jpg' })
+    expect(prompted[0]).toEqual([{ type: 'text', text: 'fix this' }])
   })
 
   it('recovers the expanded 侧栏 after a transient snapshot RPC failure', async () => {

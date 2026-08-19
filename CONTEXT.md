@@ -57,8 +57,8 @@ A 工具 whose Agent is a Fork of the 主会话. It answers in its own Tab witho
 _Avoid_: /side, subagent inspector, 侧聊, 子Agent 聊天, 第二条输入框
 
 **批注**:
-A mark a human puts on a previewed file or page by clicking that content, intended as guidance for the 主会话. The composer appears at the mark; it is not a resident bar.
-_Avoid_: comment, highlight, annotation note, dock, floating input
+A mark a human puts on a previewed file or page by clicking that content, intended as guidance for the 主会话. The composer appears at the mark; it is not a resident bar. After Send, the 主会话 bubble shows the human note plus chips; locators and screenshots are evidence on that same user message, not dumped into the bubble.
+_Avoid_: comment, highlight, annotation note, dock, floating input, inject-as-context
 
 **投递**:
 A message a Side Chat sends to a 主会话. In that 主会话 it appears as a labeled card naming the source Side Chat and source 主会话; the receiving model sees it as a sourced 投递, never as the human's user message.

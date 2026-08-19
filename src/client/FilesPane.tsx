@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
 import type { DiffLine } from '../review.ts'
 import type { Annotation, AnnotationRect, AnnotationTextRange, Intent, SidebarSnapshot } from '../session.ts'
-import { fileCaption, parsePathLine } from '../annotation.ts'
+import { fileCaption, parsePathLine, visibleAnnotations } from '../annotation.ts'
 import { ancestorsOf, visibleTree } from '../file-tree.ts'
 import { highlightSource, parseMarkdown, type Inline, type MdBlock, type Token } from '../preview.ts'
 import { FileGlyph, Ico } from './icons.tsx'
@@ -46,7 +46,8 @@ export function FilesPane({
   const showDiff = files.view === 'diff' && files.diff !== null
   const lines = !empty && image === undefined && !markdown && !missing && !showDiff ? (files.preview ?? '').split('\n') : []
   const tokens = lines.length > 0 ? highlightSource(files.path, files.preview ?? '') : []
-  const surfaceMarks = fileBadges(snapshot.attachments, files.path)
+  const paneMarks = visibleAnnotations(snapshot)
+  const surfaceMarks = fileBadges(paneMarks, files.path)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<Set<string>>(() => ancestorsOf(files.path))
   const [query, setQuery] = useState('')
@@ -65,7 +66,7 @@ export function FilesPane({
     showFileSelectionHighlights(
       [...selections.values()].map((selection) => restoreTextRange(surface, selection)).filter((range): range is Range => range !== null),
     )
-  }, [files.path, files.pendingSelection, markdown, snapshot.attachments])
+  }, [files.path, files.pendingSelection, markdown, paneMarks])
 
   useEffect(() => () => { clearFileSelectionHighlight() }, [])
 
@@ -151,12 +152,17 @@ export function FilesPane({
     const pane = bodyRef.current
     if (pane === null) return
     const box = pane.getBoundingClientRect()
-    onIntent({
-      type: 'edit-attachment',
-      id,
-      x: event.clientX - box.left,
-      y: event.clientY - box.top,
-    })
+    if (snapshot.attachments.some((item) => item.id === id)) {
+      onIntent({
+        type: 'edit-attachment',
+        id,
+        x: event.clientX - box.left,
+        y: event.clientY - box.top,
+      })
+      return
+    }
+    const delivered = snapshot.deliveredMarks.find((item) => item.id === id)
+    if (delivered !== undefined) onIntent({ type: 'reveal-mark', mark: delivered })
   }
 
   function toggleDir(path: string): void {
@@ -301,7 +307,7 @@ export function FilesPane({
                 lines={files.diff.lines}
                 annotate={files.annotate}
                 pendingMark={files.pendingMark}
-                attachments={snapshot.attachments}
+                attachments={paneMarks}
                 onMark={markLine}
                 onEdit={editMark}
               />
@@ -315,7 +321,7 @@ export function FilesPane({
               </div>
             ) : (
               lines.map((line, index) => {
-                const marks = lineBadges(snapshot.attachments, files.path, index + 1)
+                const marks = lineBadges(paneMarks, files.path, index + 1)
                 return (
                 <div
                   key={index}

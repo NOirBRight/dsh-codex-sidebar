@@ -7,6 +7,8 @@ import {
   SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_SNAPSHOT_ENDPOINT,
+  SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
+  SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT,
   SIDEBAR_TERMINAL_PULL_ENDPOINT,
   decodeDispatchRequest,
   decodeSnapshotRequest,
@@ -17,6 +19,12 @@ import type { ManagedBrowserStream } from './managed-browser-stream.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
 import type { BrowserEvidence } from './session.ts'
+import {
+  AnnotationSendStore,
+  buildStagedBatch,
+  decodeAnnotationList,
+  type AnnotationSendPorts,
+} from './host-annotation-send.ts'
 
 type Registry = ReturnType<typeof createRegistry>
 
@@ -30,6 +38,8 @@ export type SidebarRpcServices = {
   browserStream?: ManagedBrowserStream
   managedBrowser?: ManagedBrowserRuntime
   browserEvidence?: ManagedBrowserEvidenceStore
+  annotationSend?: AnnotationSendStore
+  annotationPortsFor?: (sessionId: string) => AnnotationSendPorts
 }
 
 const snapCache = new Map<string, { at: number; snapshot: unknown }>()
@@ -78,6 +88,21 @@ export async function handleSidebarRpcAsync(
       if (evidence === undefined) return fail('invalid Browser evidence descriptor')
       if (services.browserEvidence === undefined) return fail('Browser evidence read is unavailable')
       return { ok: true, value: await services.browserEvidence.read(payload.sessionId, evidence) }
+    }
+    if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string') return fail('invalid sidebar stage-annotations request')
+      const attachments = decodeAnnotationList(payload.attachments)
+      if (attachments === undefined) return fail('invalid 批注 list')
+      if (services.annotationSend === undefined) return fail('annotation send is unavailable')
+      const ports = services.annotationPortsFor?.(payload.sessionId) ?? {}
+      const batch = await buildStagedBatch(payload.sessionId, attachments, ports)
+      services.annotationSend.stage(batch)
+      return { ok: true, value: { staged: true } }
+    }
+    if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) {
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string') return fail('invalid sidebar unstage-annotations request')
+      services.annotationSend?.unstage(payload.sessionId)
+      return { ok: true, value: { unstaged: true } }
     }
     synchronizeManagedState(registry, payload, services)
     return handleSidebarRpc(registry, endpoint, payload, services)

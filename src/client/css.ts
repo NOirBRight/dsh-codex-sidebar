@@ -66,18 +66,30 @@ export const SIDEBAR_CSS = `
   min-height: 0;
   height: auto;
 }
-.dcs-col[data-dragging],
-.dcs-col[data-dragging] * { user-select: none; }
+.dcs-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none !important;
+  z-index: 4;
+}
+.dcs-overlay > .dcs-toggle {
+  position: absolute;
+  top: var(--dcs-toggle-pad);
+  right: var(--dcs-toggle-pad);
+  z-index: 6;
+  pointer-events: auto;
+}
+body:has(.dcs-col-handle[data-dragging]) { user-select: none; cursor: col-resize; }
 .dcs-col-handle {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
-  z-index: 4;
+  z-index: 5;
   width: 8px;
   margin-left: -4px;
   cursor: col-resize;
   touch-action: none;
+  pointer-events: auto;
 }
 .dcs-col-handle::after {
   content: '';
@@ -95,7 +107,7 @@ export const SIDEBAR_CSS = `
   transition: opacity var(--ds-transition-duration-slow, 0.2s) var(--ds-ease-in-out, ease),
     background var(--ds-transition-duration-slow, 0.2s) var(--ds-ease-in-out, ease);
 }
-.dcs-col:hover .dcs-col-handle::after,
+[class*="detailsCol"]:hover ~ [data-shell-overlay] .dcs-col-handle::after,
 .dcs-col-handle:hover::after,
 .dcs-col-handle[data-dragging]::after { opacity: 1; }
 .dcs-col-handle:hover::after,
@@ -107,7 +119,7 @@ export const SIDEBAR_CSS = `
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 8px;
+  padding: 0 calc(var(--dcs-toggle-size) + var(--dcs-toggle-pad)) 0 8px;
   box-sizing: border-box;
   height: var(--dcs-tabbar-height);
   min-height: var(--dcs-tabbar-height);
@@ -729,6 +741,12 @@ button.dcs-toggle {
   padding-top: var(--dcs-toggle-pad) !important;
   padding-right: var(--dcs-toggle-pad) !important;
 }
+[class$="_frame"]:not([data-dcs-open]) [class*="centerCol"] [class$="_header"] {
+  padding-right: calc(var(--dcs-toggle-size) + var(--dcs-toggle-pad) * 2) !important;
+}
+[data-dcs-open] [class*="centerCol"] [class$="_header"] {
+  padding-right: var(--dcs-toggle-pad) !important;
+}
 .dcs-toggle:hover, .dcs-toggle[data-on] {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
@@ -741,8 +759,6 @@ button.dcs-toggle {
 }
 [class$="_frame"]:has([data-shell-overlay]) {
   grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
-}
-[class$="_frame"]:has([data-shell-overlay]):not([data-details-collapsed]) {
   transition: none !important;
 }
 [data-side="details"] { display: none !important; }
@@ -818,6 +834,61 @@ button.dcs-toggle {
   font-size: 11px; font-weight: 700; line-height: 1;
   transform: translate(-50%, -100%);
   margin-top: -2px;
+}
+.dcs-user-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.dcs-user-stack {
+  max-width: min(80%, 560px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.dcs-user-bubble {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.dcs-user-text { white-space: pre-wrap; }
+.dcs-user-images { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.dcs-user-thumb { max-width: 180px; max-height: 180px; border-radius: 10px; object-fit: cover; }
+.dcs-msg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+button.dcs-msg-chip {
+  border: 0;
+  cursor: pointer;
+  max-width: 240px;
+}
+.dcs-user-copy {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 28px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.dcs-user-copy:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
 }
 
 `

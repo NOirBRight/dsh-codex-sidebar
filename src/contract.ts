@@ -12,6 +12,8 @@ export const SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT = 'sidebar/browser-stream-ti
 export const SIDEBAR_BROWSER_CAPTURE_ENDPOINT = 'sidebar/browser-capture'
 export const SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT = 'sidebar/browser-evidence-commit'
 export const SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT = 'sidebar/browser-evidence-read'
+export const SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT = 'sidebar/stage-annotations'
+export const SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT = 'sidebar/unstage-annotations'
 
 export type SnapshotRequest = {
   sessionId: string

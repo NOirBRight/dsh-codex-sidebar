@@ -15,14 +15,8 @@ import { TerminalPane } from './TerminalPane.tsx'
 import { TerminalRail } from './TerminalRail.tsx'
 import type { BrowserCaptureReply, SidebarStore } from './controller.ts'
 import { SidebarController } from './controller.ts'
-import {
-  clampDrawerWidth,
-  peekDrawerWidth,
-  publishDrawerWidth,
-} from './drawer-width.ts'
 import { AttachmentStrip } from './AttachmentChips.tsx'
 import { OccupantBoundary } from './OccupantBoundary.tsx'
-import { SidebarToggleButton } from './Toggle.tsx'
 
 export interface SidebarFace {
   hooks: { sidebar: ObservableSnapshot<SidebarStore> }
@@ -55,7 +49,6 @@ export function SidebarPanel({
     >
       {snapshot !== undefined && !snapshot.collapsed && (
         <div className="dcs-col">
-          <SidebarResizeHandle label={t('resizeDrawer')} />
           <SidebarChrome
             snapshot={snapshot}
             workspaceName={workspaceName}
@@ -267,11 +260,6 @@ function SidebarChrome({
           </button>
           {menu && <AddMenu onPick={pick} />}
         </div>
-        <SidebarToggleButton
-          collapsed={snapshot.collapsed}
-          t={t}
-          onClick={() => { onIntent({ type: 'toggle-collapsed' }) }}
-        />
       </div>
       <AttachmentStrip
         attachments={snapshot.attachments}
@@ -345,64 +333,3 @@ function basename(cwd: string | undefined): string {
   return parts[parts.length - 1] ?? 'workspace'
 }
 
-function SidebarResizeHandle({ label }: { label: string }): ReactElement {
-  const [dragging, setDragging] = useState(false)
-  const drag = useRef<{ originX: number; startWidth: number } | null>(null)
-  const viewportRef = useRef(typeof window === 'undefined' ? 1280 : window.innerWidth)
-
-  useEffect(() => {
-    const frame = document.querySelector('[data-shell-overlay]')?.parentElement
-    const read = (): void => {
-      const next = (frame ?? document.body).getBoundingClientRect().width
-      if (next > 0) viewportRef.current = next
-    }
-    read()
-    if (frame === null || frame === undefined) return
-    const observer = new ResizeObserver(read)
-    observer.observe(frame)
-    return () => { observer.disconnect() }
-  }, [])
-
-  function onPointerDown(event: PointerEvent<HTMLDivElement>): void {
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    drag.current = {
-      originX: event.clientX,
-      startWidth: peekDrawerWidth(viewportRef.current),
-    }
-    setDragging(true)
-  }
-
-  function onPointerMove(event: PointerEvent<HTMLDivElement>): void {
-    if (drag.current === null || !event.currentTarget.hasPointerCapture(event.pointerId)) return
-    const next = clampDrawerWidth(
-      drag.current.startWidth + (drag.current.originX - event.clientX),
-      viewportRef.current,
-    )
-    publishDrawerWidth(next, viewportRef.current)
-  }
-
-  function onPointerUp(event: PointerEvent<HTMLDivElement>): void {
-    if (drag.current === null) return
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    drag.current = null
-    setDragging(false)
-    publishDrawerWidth(peekDrawerWidth(viewportRef.current), viewportRef.current)
-  }
-
-  return (
-    <div
-      className="dcs-col-handle"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={label}
-      data-dragging={dragging || undefined}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    />
-  )
-}

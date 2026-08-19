@@ -278,6 +278,38 @@ export function parseMarkdown(source: string): MdBlock[] {
       i += 1
       continue
     }
+    const xml = xmlLine(line)
+    if (xml !== undefined) {
+      if (xml.kind === 'open') {
+        blocks.push({ type: 'h', level: 2, line: lineNo, inlines: [{ kind: 'text', text: displayTag(xml.name) }] })
+      } else if (xml.kind === 'pair') {
+        blocks.push({
+          type: 'p',
+          line: lineNo,
+          inlines: [{ kind: 'strong', text: displayTag(xml.name) }, { kind: 'text', text: ': ' + xml.body }],
+        })
+      }
+      i += 1
+      continue
+    }
+    if (/^\s*<!--/.test(line)) {
+      blocks.push({ type: 'quote', line: lineNo, inlines: parseInlines(line.replace(/^\s*<!--\s?/, '').replace(/\s*-->\s*$/, '')) })
+      i += 1
+      continue
+    }
+    if (looksLikeCode(line)) {
+      const body: string[] = [line]
+      i += 1
+      while (i < raw.length) {
+        const next = raw[i] ?? ''
+        if (markdownBreak(raw, i) || xmlLine(next) !== undefined) break
+        if (/^\s*$/.test(next) && !looksLikeCode(raw[i + 1] ?? '')) break
+        body.push(next)
+        i += 1
+      }
+      blocks.push({ type: 'code', line: lineNo, lang: '', text: body.join('\n') })
+      continue
+    }
     if (/^\s*>\s?/.test(line)) {
       blocks.push({ type: 'quote', line: lineNo, inlines: parseInlines(line.replace(/^\s*>\s?/, '')) })
       i += 1
@@ -308,16 +340,53 @@ export function parseMarkdown(source: string): MdBlock[] {
     i += 1
     while (i < raw.length) {
       const next = raw[i] ?? ''
-      if (/^\s*$/.test(next)) break
-      if (/^(#{1,3})\s+/.test(next) || /^\s*[-*]\s+/.test(next) || /^\s*\d+\.\s+/.test(next)) break
-      if (tableHeader(raw, i) !== undefined) break
-      if (/^\s*>\s?/.test(next) || /^\s*```/.test(next) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(next)) break
+      if (markdownBreak(raw, i) || xmlLine(next) !== undefined || looksLikeCode(next)) break
       para.push(next)
       i += 1
     }
     blocks.push({ type: 'p', line: start, inlines: parseInlines(para.join(' ')) })
   }
   return blocks
+}
+
+function markdownBreak(raw: readonly string[], index: number): boolean {
+  const next = raw[index] ?? ''
+  if (/^\s*$/.test(next)) return true
+  if (/^(#{1,3})\s+/.test(next) || /^\s*[-*]\s+/.test(next) || /^\s*\d+\.\s+/.test(next)) return true
+  if (tableHeader(raw, index) !== undefined) return true
+  if (/^\s*>\s?/.test(next) || /^\s*```/.test(next) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(next)) return true
+  if (/^\s*<!--/.test(next)) return true
+  return false
+}
+
+type XmlLine =
+  | { kind: 'open'; name: string }
+  | { kind: 'close'; name: string }
+  | { kind: 'pair'; name: string; body: string }
+
+function xmlLine(line: string): XmlLine | undefined {
+  const trimmed = line.trim()
+  const open = trimmed.match(/^<([a-z][\w-]*)(?:\s+[^>]*)?>$/i)
+  if (open) return { kind: 'open', name: open[1] ?? '' }
+  const close = trimmed.match(/^<\/([a-z][\w-]*)>$/i)
+  if (close) return { kind: 'close', name: close[1] ?? '' }
+  const pair = trimmed.match(/^<([a-z][\w-]*)(?:\s+[^>]*)?>(.*)<\/\1>$/i)
+  if (pair) return { kind: 'pair', name: pair[1] ?? '', body: (pair[2] ?? '').trim() }
+  return undefined
+}
+
+function displayTag(name: string): string {
+  return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase())
+}
+
+function looksLikeCode(line: string): boolean {
+  const t = line.trim()
+  if (t.length === 0) return false
+  if (/^(\/\/|\/\*|\*\s|<!--)/.test(t)) return true
+  if (/^(class |mixin |enum |extension |typedef |void |final |const |var |late |import |export |part |library |GoRoute\(|return |if \(|for \(|while \(|switch \(|case |factory |@override|function |public |private |protected )/.test(t)) return true
+  if (/[{};]$/.test(t)) return true
+  if (t.includes('=>') && /[)(]/.test(t)) return true
+  return false
 }
 
 function tableHeader(raw: readonly string[], index: number): { headers: string[] } | undefined {
