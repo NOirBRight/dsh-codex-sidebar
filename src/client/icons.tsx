@@ -80,7 +80,6 @@ export function tabIcon(kind: string | null): IconName {
   if (kind === 'Terminal') return 'terminal'
   if (kind === 'Browser') return 'globe'
   if (kind === 'Files') return 'folder'
-  if (kind === 'Side Chat') return 'chat'
   return 'file'
 }
 

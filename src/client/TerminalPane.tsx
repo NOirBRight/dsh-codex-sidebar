@@ -12,10 +12,12 @@ export function TerminalPane({
   snapshot,
   onIntent,
   tabId,
+  onPull,
 }: {
   snapshot: SidebarSnapshot
   onIntent: (intent: Intent) => void
   tabId: string
+  onPull?: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
 }): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -61,10 +63,18 @@ export function TerminalPane({
 
   useEffect(() => {
     const timer = window.setInterval(() => {
+      if (onPull !== undefined) {
+        void onPull(tabId, seqRef.current).then((pulled) => {
+          if (pulled === undefined || pulled.seq <= seqRef.current || pulled.chunk.length === 0) return
+          termRef.current?.write(pulled.chunk)
+          seqRef.current = pulled.seq
+        })
+        return
+      }
       onIntent({ type: 'terminal-refresh', tabId, since: seqRef.current })
     }, 80)
     return () => { window.clearInterval(timer) }
-  }, [tabId]) // eslint-disable-line react-hooks/exhaustive-deps -- poll this Tab's pty
+  }, [tabId, onPull]) // eslint-disable-line react-hooks/exhaustive-deps -- poll this Tab's pty
 
   useEffect(() => {
     const live = new Set(

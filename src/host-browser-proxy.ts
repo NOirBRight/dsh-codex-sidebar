@@ -5,13 +5,18 @@ import http from 'node:http'
 import net from 'node:net'
 import type { Duplex } from 'node:stream'
 import {
+  DCS_DRIVE_REPLY,
+  DCS_DRIVE_WAIT,
   DCS_PICK_SCRIPT_SRC,
   injectPickScript,
   isLoopbackHttpUrl,
+  liveUrlFromFrameSrc,
   pickProxyPath,
   resolveProxyUpstream,
 } from './browser-pick.ts'
 import { DCS_PICK_SCRIPT } from './browser-pick-script.ts'
+import { createDriveHub, snapshotFromUnknown, type DriveHub } from './host-browser-drive.ts'
+import type { DriveResult } from './browser-drive.ts'
 
 const STRIP = new Set([
   'content-security-policy',
@@ -38,6 +43,8 @@ export type LocalPickProxy = {
   ready: Promise<void>
   frameUrl(liveUrl: string): string | undefined
   close(): void
+  drive: DriveHub
+  handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void>
 }
 
 export function createLocalPickProxy(opts?: {
@@ -46,8 +53,9 @@ export function createLocalPickProxy(opts?: {
 }): LocalPickProxy {
   const bindHost = opts?.bindHost ?? '127.0.0.1'
   const listen = opts?.listen ?? listenEphemeral
+  const drive = createDriveHub()
   const server = http.createServer((req, res) => {
-    void handleHttp(req, res, bindHost, () => port)
+    void handleHttp(req, res, bindHost, () => port, drive)
   })
   server.on('upgrade', (req, socket, head) => {
     handleUpgrade(req, socket, head)
@@ -78,6 +86,10 @@ export function createLocalPickProxy(opts?: {
     close() {
       server.close()
     },
+    drive,
+    handleHttp(req, res) {
+      return handleHttp(req, res, bindHost, () => port, drive)
+    },
   }
 }
 
@@ -106,14 +118,108 @@ function listenEphemeral(server: http.Server, host: string): Promise<number> {
   })
 }
 
+async function handleDrive(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+  drive: DriveHub,
+): Promise<void> {
+  if (url.pathname === DCS_DRIVE_WAIT) {
+    const live = liveFromDriveQuery(url)
+    if (live === undefined) {
+      res.writeHead(400).end()
+      return
+    }
+    const closed = new Promise<null>((resolve) => {
+      req.once('aborted', () => { resolve(null) })
+      res.once('close', () => {
+        if (!res.writableEnded) resolve(null)
+      })
+    })
+    const cmd = await Promise.race([drive.wait(live), sleep(25_000), closed])
+    if (cmd === null) {
+      drive.cancelWait(live)
+      if (!res.destroyed && !res.writableEnded) res.writeHead(204).end()
+      return
+    }
+    // A disconnected response leaves the command pending; the guest's next wait picks it up.
+    if (res.destroyed || res.writableEnded) return
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(cmd))
+    return
+  }
+  if (url.pathname === DCS_DRIVE_REPLY && (req.method ?? 'GET') === 'POST') {
+    const body = await readBody(req)
+    const parsed = parseDriveReply(body?.toString('utf8') ?? '')
+    if (parsed === undefined) {
+      res.writeHead(400).end()
+      return
+    }
+    drive.reply(parsed.id, parsed.result)
+    res.writeHead(204).end()
+    return
+  }
+  res.writeHead(404).end()
+}
+
+function liveFromDriveQuery(url: URL): string | undefined {
+  const src = url.searchParams.get('src') ?? ''
+  if (src.length === 0) return undefined
+  return liveUrlFromFrameSrc(src) ?? src
+}
+
+function parseDriveReply(raw: string): { id: string; result: DriveResult } | undefined {
+  try {
+    const value = JSON.parse(raw) as { id?: unknown; result?: unknown }
+    if (typeof value.id !== 'string' || value.id.length === 0) return undefined
+    const result = asDriveResult(value.result)
+    if (result === undefined) return undefined
+    return { id: value.id, result }
+  } catch {
+    return undefined
+  }
+}
+
+function asDriveResult(value: unknown): DriveResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const rec = value as Record<string, unknown>
+  if (rec.ok === true) {
+    const snapshot = snapshotFromUnknown(rec.snapshot)
+    return snapshot === undefined ? { ok: true } : { ok: true, snapshot }
+  }
+  if (rec.ok !== false || typeof rec.code !== 'string' || typeof rec.message !== 'string') return undefined
+  if (
+    rec.code !== 'not-loopback'
+    && rec.code !== 'not-connected'
+    && rec.code !== 'unknown-ref'
+    && rec.code !== 'no-browser'
+    && rec.code !== 'forbidden'
+  ) return undefined
+  return { ok: false, code: rec.code, message: rec.message }
+}
+
+function sleep(ms: number): Promise<null> {
+  return new Promise((resolve) => { setTimeout(() => { resolve(null) }, ms) })
+}
+
 async function handleHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   bindHost: string,
   portOf: () => number | undefined,
+  drive: DriveHub,
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? '/', `http://${bindHost}`)
+    if (url.pathname === '/__dcs/probe') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(injectPickScript('<!doctype html><html><head><title>DCS Probe</title></head><body><h1>DCS Probe</h1><a id="next" href="/__dcs/probe?step=2">Next</a><button id="go">Go</button><input name="q" value=""></body></html>'))
+      return
+    }
+    if (url.pathname === DCS_DRIVE_WAIT || url.pathname === DCS_DRIVE_REPLY) {
+      await handleDrive(req, res, url, drive)
+      return
+    }
     if (url.pathname === DCS_PICK_SCRIPT_SRC) {
       res.writeHead(200, {
         'content-type': 'application/javascript; charset=utf-8',
@@ -161,7 +267,10 @@ async function handleHttp(
     res.writeHead(forwarded.status, headers)
     res.end(buf)
   } catch {
-    if (!res.headersSent) res.writeHead(502).end()
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(injectPickScript('<html><head></head><body><h1>无法连接上游</h1></body></html>'))
+    }
   }
 }
 

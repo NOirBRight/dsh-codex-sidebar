@@ -13,6 +13,7 @@ import { SidebarPanel, type SidebarFace } from './Sidebar.tsx'
 import { SidebarToggle } from './Toggle.tsx'
 import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
+import { startHiddenBrowserPump } from './browser-pump.ts'
 import { installToolStats } from './tool-stats.ts'
 import { statsFromSnapshot } from '../tool-open.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
@@ -35,6 +36,7 @@ export function apply(ctx: ClientContext): void {
     controller,
   })
   occupyDetails(ctx.slots, face, SidebarPanel, NS)
+  ctx.effect(() => startHiddenBrowserPump({ controller, sessions: ctx.sessions }), 'dsh-codex-sidebar: hidden browser pump')
   try {
     controller.installPathTakeover()
   } catch (err) {

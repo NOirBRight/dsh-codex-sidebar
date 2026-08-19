@@ -1,6 +1,6 @@
 # dsh-codex-sidebar
 
-Codex-app-style 侧栏 for one DeepSeek Harness 主会话. Files, Review, Browser, Terminal, and Side Chat share one Tab strip on the current session.
+Codex-app-style 侧栏 for one DeepSeek Harness 主会话. Files, Review, Browser, and Terminal share one Tab strip on the current session.
 
 ## Local install (Web)
 
@@ -30,9 +30,9 @@ Then open a 主会话. The 侧栏开关 is in the conversation header. Click a w
 
 - **Files** — read-only preview (source, Markdown, images), tree, 批注 at the mark
 - **Review** — 本轮变更 from the 主会话 log, then working-tree leftovers; no stage/revert/commit
-- **Browser** — iframe of the URL, 批注 overlay; the 侧栏 does not start the project
+- **Browser** — iframe of the URL, 批注 overlay; the 侧栏 does not start the project. The 主会话 can `browser_tabs` / `browser_open` / `browser_snapshot` / `browser_click` / `browser_fill` on loopback http pages in that same Tab, whether the 侧栏 is open or closed. Opening the 侧栏 later shows the same document.
 - **Terminal** — human pty (`script` when present)
-- **Side Chat** — Fork at first send, 列出 / 察看 / 投递 to other 主会话s (投递 is labeled text queued on the target)
+- Side Chat 已退场；跨会话问答由 DeepSeek 小管家的“引用任务”承担，侧栏不再创建会话 fork。
 
 Chrome follows the DSH host theme. Tabs persist with that 主会话.
 

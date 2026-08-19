@@ -68,6 +68,18 @@ export type ReviewState = {
   openDiff: ReviewFile | null
 }
 
+/** Keep composer fields, skip git-backed files/scopes until Review is open. */
+export function rememberReview(state: ReviewState): ReviewState {
+  const base = hydrate(state)
+  return {
+    ...base,
+    files: [],
+    openDiff: null,
+    scopes: emptyScopes(),
+    branches: { current: '', names: [] },
+  }
+}
+
 export function emptyReview(): ReviewState {
   return {
     mode: 'turn',

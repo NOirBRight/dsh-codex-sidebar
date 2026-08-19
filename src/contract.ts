@@ -7,6 +7,7 @@ import type { LogEvent, RosterEntry } from './side-chat.ts'
 export const SIDEBAR_RPC_CHANNEL = '/codex-sidebar'
 export const SIDEBAR_SNAPSHOT_ENDPOINT = 'sidebar/snapshot'
 export const SIDEBAR_DISPATCH_ENDPOINT = 'sidebar/dispatch'
+export const SIDEBAR_TERMINAL_PULL_ENDPOINT = 'sidebar/terminal-pull'
 
 export type SnapshotRequest = {
   sessionId: string

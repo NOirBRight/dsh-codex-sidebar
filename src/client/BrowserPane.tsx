@@ -10,6 +10,7 @@ import {
   type RefObject,
 } from 'react'
 import { liveHref } from '../browser.ts'
+import { browserFrameKey, browserFrames } from './browser-frames.ts'
 import {
   clampRect,
   DCS_NAV,
@@ -73,16 +74,12 @@ const BROWSER_CSS = `
   background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base);
 }
 .dcs-b-page {
-  flex: 1; background: #fff; position: relative; min-height: 0; width: 100%;
-  overflow: hidden;
+  flex: 1; background: transparent; position: relative; z-index: 4; min-height: 0; width: 100%;
+  overflow: hidden; pointer-events: none;
 }
-.dcs-b-frame {
-  position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff;
-  z-index: 0;
-}
-.dcs-b-page[data-gate] .dcs-b-frame { visibility: hidden; }
-.dcs-b-page[data-mark] .dcs-b-frame { pointer-events: none; }
-.dcs-b-gate { position: absolute; inset: 0; z-index: 1; }
+.dcs-b-well { position: fixed; inset: 0; overflow: visible; pointer-events: none; z-index: 3; }
+.dcs-b-frame { position: fixed; border: 0; background: #fff; z-index: 0; }
+.dcs-b-gate { position: absolute; inset: 0; z-index: 1; pointer-events: auto; }
 .dcs-b-mask {
   position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%;
   cursor: crosshair; background: transparent;
@@ -210,8 +207,10 @@ export function BrowserPane({
   const [caption, setCaption] = useState('')
   const hasPage = browser.url.trim().length > 0
   const href = liveHref(browser.url)
-  const frameSrc = liveHref(browser.page?.frameUrl ?? '') ?? href
+  const tabId = snapshot.tabs.find((tab) => tab.id === snapshot.active && tab.kind === 'Browser')?.id
+  const frameKey = tabId === undefined ? undefined : browserFrameKey(snapshot.sessionId, tabId)
   const needsAuth = browser.page?.requiresAuth === true
+  const directExternal = href !== undefined && !isLoopbackHttpUrl(href)
 
   useEffect(() => {
     setDraft(browser.draft)
@@ -221,6 +220,33 @@ export function BrowserPane({
     setGate('live')
     return () => { window.clearTimeout(blankTimer.current) }
   }, [href, reload])
+
+  useEffect(() => {
+    let request = 0
+    let attempts = 0
+    const loaded = (): void => { onFrameLoad() }
+    const failed = (): void => { onFrameError() }
+    const bind = (): void => {
+      const frame = frameKey === undefined ? undefined : browserFrames().get(frameKey)
+      frameRef.current = frame ?? null
+      if (frame === undefined) {
+        attempts += 1
+        if (href !== undefined && attempts < 4) request = window.requestAnimationFrame(bind)
+        return
+      }
+      frame.onload = loaded
+      frame.onerror = failed
+      onFrameLoad()
+    }
+    bind()
+    return () => {
+      window.cancelAnimationFrame(request)
+      const frame = frameRef.current
+      if (frame?.onload === loaded) frame.onload = null
+      if (frame?.onerror === failed) frame.onerror = null
+      frameRef.current = null
+    }
+  }, [href, reload, frameKey, needsAuth])
 
   useEffect(() => {
     if (!browser.annotate) return
@@ -242,7 +268,7 @@ export function BrowserPane({
       const href = typeof event.data.href === 'string' ? event.data.href : ''
       const live = liveUrlFromFrameSrc(href) ?? href
       if (!/^https?:\/\//i.test(live)) return
-      onIntent({ type: 'open-url', url: live })
+      onIntent({ type: 'browser-follow', url: live })
     }
     window.addEventListener('message', onNav)
     return () => { window.removeEventListener('message', onNav) }
@@ -309,6 +335,7 @@ export function BrowserPane({
           data-on={hasPage || undefined}
           disabled={!hasPage}
           onClick={() => {
+            if (frameKey !== undefined) browserFrames().reload(frameKey)
             setReload((n) => n + 1)
             onIntent({ type: 'browser-refresh' })
           }}
@@ -379,22 +406,15 @@ export function BrowserPane({
         <div
           className="dcs-b-page"
           ref={pageRef}
+          data-dcs-browser-dock={frameKey}
           data-mark={browser.annotate || undefined}
           data-gate={gate === 'live' ? undefined : gate}
         >
-          <iframe
-            key={`${frameSrc}#${reload}`}
-            ref={frameRef}
-            className="dcs-b-frame"
-            title={browser.page?.title ?? browser.url}
-            src={frameSrc}
-            style={browser.annotate ? { pointerEvents: 'none' } : { pointerEvents: 'auto' }}
-            onLoad={onFrameLoad}
-            onError={onFrameError}
-          />
-          {needsAuth && (
+          {(needsAuth || directExternal) && (
             <div className="dcs-b-auth">
-              该站点要求登录，请在页面里的登录框中填写凭据
+              {needsAuth
+                ? '该站点要求登录，请在页面里的登录框中填写凭据'
+                : '外部站点可能拒绝嵌入；若页面空白，请用右上角按钮在新窗口打开'}
             </div>
           )}
           {gate === 'blocked' && (

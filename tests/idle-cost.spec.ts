@@ -1,0 +1,123 @@
+import { describe, expect, it } from 'vitest'
+import { browserDockBox, browserSurface, pumpSessionId } from '../src/client/browser-pump.ts'
+import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT, SIDEBAR_TERMINAL_PULL_ENDPOINT } from '../src/contract.ts'
+import { handleSidebarRpc } from '../src/host-rpc.ts'
+import { createRegistry } from '../src/registry.ts'
+import { createSidebarSession } from '../src/session.ts'
+import type { FilesPort, PersistPort } from '../src/session.ts'
+import type { TerminalPort } from '../src/terminal.ts'
+
+function memoryPersist(): PersistPort {
+  const map = new Map<string, string>()
+  return {
+    load(sessionId) {
+      const raw = map.get(sessionId)
+      return raw === undefined ? undefined : JSON.parse(raw)
+    },
+    save(sessionId, snapshot) { map.set(sessionId, JSON.stringify(snapshot)) },
+  }
+}
+
+function fakePty(): TerminalPort {
+  return {
+    cwd: () => '/work',
+    create: (tabId) => tabId,
+    write() {},
+    destroy() {},
+    read() { return 'hello' },
+    pull(_tabId, since) { return { seq: since + 5, chunk: 'world' } },
+  }
+}
+
+describe('idle-cost seams', () => {
+  it('never enumerates every session id for the hidden browser pump', () => {
+    expect(pumpSessionId({ current: 'sess-a' }, false)).toBe('sess-a')
+    expect(pumpSessionId({ current: 'sess-a' }, true)).toBeUndefined()
+    expect(pumpSessionId({}, false)).toBeUndefined()
+    expect(browserDockBox({ left: 1, top: 2, width: 0, height: 720 })).toBeUndefined()
+    const box = browserDockBox({ left: 12, top: 24, width: 640, height: 480 })
+    expect(box).toEqual({ x: 12, y: 24, w: 640, h: 480 })
+    expect(browserSurface(box, true, false)).toMatchObject({ mode: 'dock', pointerEvents: 'none', visibility: 'visible' })
+    expect(browserSurface(box, false, true)).toMatchObject({ mode: 'dock', pointerEvents: 'none', visibility: 'hidden' })
+  })
+
+  it('pulls terminal bytes without recomputing the Files tree', () => {
+    let trees = 0
+    const files: FilesPort = {
+      read() { return '' },
+      tree() {
+        trees += 1
+        return []
+      },
+    }
+    const registry = createRegistry({
+      persist: memoryPersist(),
+      filesFor: () => files,
+      terminalFor: () => fakePty(),
+    })
+    handleSidebarRpc(registry, SIDEBAR_TERMINAL_PULL_ENDPOINT, {
+      sessionId: 'sess-a',
+      tabId: 't1',
+      since: 0,
+    })
+    const afterCreate = trees
+    const pulled = handleSidebarRpc(registry, SIDEBAR_TERMINAL_PULL_ENDPOINT, {
+      sessionId: 'sess-a',
+      tabId: 't1',
+      since: 0,
+    })
+    expect(pulled).toEqual({ ok: true, value: { seq: 5, chunk: 'world' } })
+    expect(trees).toBe(afterCreate)
+  })
+
+  it('reuses a snapshot computed in the same 200ms window', () => {
+    let trees = 0
+    const files: FilesPort = {
+      read() { return 'x' },
+      tree() {
+        trees += 1
+        return []
+      },
+    }
+    const registry = createRegistry({ persist: memoryPersist(), filesFor: () => files })
+    const gate = { sessionId: 'sess-a', cwd: '/w', busy: false }
+    handleSidebarRpc(registry, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
+    const afterFirst = trees
+    for (let client = 0; client < 4; client += 1) {
+      handleSidebarRpc(registry, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
+    }
+    expect(trees).toBe(afterFirst)
+    handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent: { type: 'pick-tool', kind: 'Files' } })
+    handleSidebarRpc(registry, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
+    expect(trees).toBeGreaterThan(1)
+  })
+  it('skips Files tree and Review git when those tabs are closed', () => {
+    let trees = 0
+    let git = 0
+    const box = createSidebarSession({
+      sessionId: 'sess-idle',
+      persist: memoryPersist(),
+      files: {
+        read() { return '' },
+        tree() { trees += 1; return [] },
+        stats() { git += 1; return {} },
+      },
+      review: {
+        turnWrites() { return [] },
+        workingTree() { git += 1; return [] },
+        isBusy() { return false },
+      },
+      isBusy: () => false,
+    })
+    box.snapshot()
+    expect(trees).toBe(0)
+    expect(git).toBe(0)
+    box.dispatch({ type: 'pick-tool', kind: 'Terminal' })
+    box.snapshot()
+    expect(trees).toBe(0)
+    expect(git).toBe(0)
+    box.dispatch({ type: 'pick-tool', kind: 'Files' })
+    box.snapshot()
+    expect(trees).toBeGreaterThan(0)
+  })
+})

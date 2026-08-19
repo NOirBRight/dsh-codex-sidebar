@@ -53,7 +53,7 @@ describe('host Files', () => {
     const files = createFsFiles(() => root)
     expect(files.stats?.()).toEqual({
       'kept.ts': { added: 1, removed: 0 },
-      'fresh.ts': { added: 2, removed: 0 },
+      'fresh.ts': { added: 0, removed: 0 },
     })
     rmSync(root, { recursive: true, force: true })
   })

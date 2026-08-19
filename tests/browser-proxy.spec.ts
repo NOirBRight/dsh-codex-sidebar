@@ -9,7 +9,9 @@ describe('localhost pick proxy', () => {
     expect(DCS_PICK_SCRIPT).toContain(DCS_PICK_HIT)
     expect(DCS_PICK_SCRIPT).toContain('elementFromPoint')
     expect(DCS_PICK_SCRIPT).toContain('dcs-nav')
+    expect(DCS_PICK_SCRIPT).toContain('/__dcs/drive/wait')
     expect(injectPickScript('<html><body>app</body></html>')).toContain('/__dcs/pick.js')
+    expect(injectPickScript('<html><head><meta http-equiv="Content-Security-Policy" content="script-src none"></head><body></body></html>')).not.toContain('Content-Security-Policy')
 
     const proxy = createLocalPickProxy({
       listen: () => 9,

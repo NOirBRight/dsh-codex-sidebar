@@ -10,7 +10,6 @@ import { NS, type SidebarKey } from './locales.ts'
 import { AddMenu, Palette } from './Palette.tsx'
 import { BrowserPane } from './BrowserPane.tsx'
 import { ReviewPane } from './ReviewPane.tsx'
-import { SideChatPane } from './SideChatPane.tsx'
 import { TerminalPane } from './TerminalPane.tsx'
 import { TerminalRail } from './TerminalRail.tsx'
 import type { SidebarStore } from './controller.ts'
@@ -56,6 +55,7 @@ export function SidebarPanel({
         workspaceName={workspaceName}
         t={t}
         onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
+        onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
       />
     </div>
   )
@@ -84,15 +84,17 @@ function SidebarChrome({
   workspaceName,
   t,
   onIntent,
+  onPullTerminal,
 }: {
   snapshot: SidebarSnapshot
   workspaceName: string
   t: (key: SidebarKey) => string
   onIntent: (intent: Intent) => void
+  onPullTerminal: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
 }): ReactElement {
   const active = snapshot.tabs.find((tab) => tab.id === snapshot.active)
   const fill = active?.kind === 'Files' || active?.kind === 'Review' || active?.kind === 'Terminal'
-    || active?.kind === 'Browser' || active?.kind === 'Side Chat'
+    || active?.kind === 'Browser'
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [menu, setMenu] = useState(false)
   const tabPointer = useRef<TabPointer | null>(null)
@@ -287,12 +289,9 @@ function SidebarChrome({
         )}
         {!snapshot.showPalette && active?.kind === 'Terminal' && (
           <div className="dcs-term-wrap">
-            <TerminalPane snapshot={snapshot} onIntent={onIntent} tabId={active.id} />
+            <TerminalPane snapshot={snapshot} onIntent={onIntent} tabId={active.id} onPull={onPullTerminal} />
             <TerminalRail snapshot={snapshot} onIntent={onIntent} tabId={active.id} t={t} />
           </div>
-        )}
-        {!snapshot.showPalette && active?.kind === 'Side Chat' && (
-          <SideChatPane snapshot={snapshot} onIntent={onIntent} />
         )}
       </div>
     </section>

@@ -9,7 +9,6 @@ export const TOOL_ROWS: ReadonlyArray<{ kind: ToolKind; icon: IconName; shortcut
   { kind: 'Terminal', icon: 'terminal', shortcut: 'Ctrl+`' },
   { kind: 'Browser', icon: 'globe', shortcut: 'Ctrl+T' },
   { kind: 'Files', icon: 'folder', shortcut: 'Ctrl+P' },
-  { kind: 'Side Chat', icon: 'chat', shortcut: 'Ctrl+Alt+S' },
 ]
 
 export function Palette({ onPick }: { onPick: (kind: ToolKind) => void }): ReactElement {

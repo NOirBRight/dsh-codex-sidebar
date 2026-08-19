@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DCS_PICK_SCRIPT } from '../src/browser-pick-script.ts'
 import {
   PICK_DRAG_THRESHOLD,
   clampRect,
@@ -25,6 +26,10 @@ import {
 } from '../src/browser-pick.ts'
 
 describe('Browser 批注 pick gesture', () => {
+  it('ships syntactically valid injected guest JavaScript', () => {
+    expect(() => new Function(DCS_PICK_SCRIPT)).not.toThrow()
+  })
+
   it('treats movement under the threshold as a click and 5px+ as 圈选', () => {
     expect(PICK_DRAG_THRESHOLD).toBe(5)
     expect(isLassoGesture(0, 0)).toBe(false)
@@ -140,6 +145,10 @@ describe('Browser 批注 pick gesture', () => {
       path: '/chat',
     })
     expect(parsePickProxyPath('/__dcs/up/example.com/80/x')).toBeUndefined()
+    expect(liveUrlFromFrameSrc('/__dcs/up/127.0.0.1/3082/')).toBe('http://127.0.0.1:3082/')
+    expect(liveUrlFromFrameSrc('/__dcs/up/127.0.0.1/3082/probe?opened=1#ok')).toBe(
+      'http://127.0.0.1:3082/probe?opened=1#ok',
+    )
     expect(liveUrlFromFrameSrc('http://127.0.0.1:9/__dcs/up/127.0.0.1/43169/login')).toBe(
       'http://127.0.0.1:43169/login',
     )
@@ -148,9 +157,8 @@ describe('Browser 批注 pick gesture', () => {
       .toEqual({ host: '127.0.0.1', port: 1420, path: '/@vite/client' })
     expect(resolveProxyUpstream({ pathname: '/src/App.tsx', cookie: 'dcs_up=localhost:5173' }))
       .toEqual({ host: 'localhost', port: 5173, path: '/src/App.tsx' })
-    expect(injectPickScript('<html><head><title>App</title></head><body></body></html>')).toContain(
-      '<script src="/__dcs/pick.js" data-dcs-pick></script>',
-    )
+    expect(injectPickScript('<html><head><title>App</title></head><body></body></html>')).toContain('data-dcs-pick')
+    expect(injectPickScript('<html><head><title>App</title></head><body></body></html>')).toContain('/__dcs/pick.js')
     expect(injectPickScript('<html><head><script src="/__dcs/pick.js" data-dcs-pick></script></head></html>'))
       .not.toMatch(/data-dcs-pick[\s\S]*data-dcs-pick/)
   })

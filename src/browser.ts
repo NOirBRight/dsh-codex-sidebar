@@ -20,7 +20,7 @@ export type PageDocument = {
 export type BrowserStatus = 'empty' | 'loaded' | 'unreachable'
 
 export type BrowserIntent =
-  | { type: 'open-url'; url: string }
+  | { type: 'open-url'; url: string; reveal?: boolean }
   | { type: 'browser-follow'; url: string }
   | { type: 'browser-back' }
   | { type: 'browser-forward' }

@@ -7,6 +7,7 @@ import {
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
+  SIDEBAR_TERMINAL_PULL_ENDPOINT,
 } from '../contract.ts'
 import { formatDelivery, formatSend } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
@@ -23,17 +24,9 @@ export type SidebarStore = {
 
 type PromptPart = { type: string; text?: string }
 
-type LiveSession = {
-  prompt: (content: Array<{ type: 'text'; text: string }>, mode: 'queue' | 'steer') => Promise<unknown>
-  getSnapshot: () => unknown
-  subscribe: (listener: () => void) => () => void
-}
-
 export class SidebarController {
   #store: SidebarStore = { bySession: {} }
   #listeners = new Set<() => void>()
-  #forks = new Map<string, string>()
-  #watching = new Set<string>()
   #wrapped = new Set<string>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
@@ -58,11 +51,25 @@ export class SidebarController {
     return this.#store.bySession[sessionId]
   }
 
+  async pullTerminal(sessionId: string, tabId: string, since: number): Promise<{ seq: number; chunk: string } | undefined> {
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_TERMINAL_PULL_ENDPOINT, {
+      sessionId,
+      tabId,
+      since,
+    })
+    if (!result.ok || result.value === undefined || typeof result.value !== 'object' || result.value === null) {
+      return undefined
+    }
+    const rec = result.value as { seq?: unknown; chunk?: unknown }
+    if (typeof rec.seq !== 'number' || typeof rec.chunk !== 'string') return undefined
+    return { seq: rec.seq, chunk: rec.chunk }
+  }
+
   async refresh(sessionId: string): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const gate = this.#gate(sessionId)
       if (gate === undefined) return undefined
-      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, { ...gate, logs: {} })
       if (!result.ok) return undefined
       const snapshot = (result.value as { snapshot: SidebarSnapshot }).snapshot
       this.#put(snapshot)
@@ -74,7 +81,7 @@ export class SidebarController {
 
   async dispatch(sessionId: string, intent: Intent, applyEffects = true): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
-      const gate = this.#gate(sessionId)
+      const gate = this.#gate(sessionId, true)
       if (gate === undefined) return undefined
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent })
       if (!result.ok) return undefined
@@ -161,7 +168,7 @@ export class SidebarController {
     }, true)
   }
 
-  #gate(sessionId: string): {
+  #gate(sessionId: string, includeLogs = false): {
     sessionId: string
     cwd: string
     busy: boolean
@@ -175,7 +182,7 @@ export class SidebarController {
     const busy = binding?.session.getSnapshot().running === true
     const archived = archivedIds(this.#ctx)
     const roster = rosterFromList(list, archived)
-    const logs = logsFromList(this.#ctx, list.ids as string[])
+    const logs = includeLogs ? logsFromList(this.#ctx, list.ids as string[]) : {}
     const turnWrites = turnWritesFromSession(binding?.session.getSnapshot())
     return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
   }
@@ -231,82 +238,13 @@ export class SidebarController {
         await target.session.prompt([{ type: 'text', text }], 'queue')
         continue
       }
-      if (effect.type === 'side-ask') {
-        await this.#askSide(sessionId, effect)
-        continue
-      }
+      if (effect.type === 'side-ask') continue
       const binding = this.#ctx.sessions.binding(sessionId as never)
       if (binding === undefined) continue
       const text = formatSend(effect.text, effect.attachments)
       if (text.length === 0) continue
       await binding.session.prompt([{ type: 'text', text }], 'queue')
     }
-  }
-
-  async #askSide(
-    sessionId: string,
-    effect: { tabId: string; text: string; atSeq: number | null },
-  ): Promise<void> {
-    try {
-      const key = `${sessionId}:${effect.tabId}`
-      const bound = this.snap(sessionId)?.sideChat.byTab[effect.tabId]?.forkSessionId
-      let childId = bound ?? this.#forks.get(key)
-      if (childId === undefined || childId.length === 0) {
-        const forked = await this.#ctx.sessions.fork({
-          sessionId: sessionId as never,
-          ...effect.atSeq === null ? {} : { atSeq: effect.atSeq },
-        }) as unknown
-        childId = typeof forked === 'string'
-          ? forked
-          : String((forked as { id?: string } | null)?.id ?? forked ?? '')
-        if (childId.length === 0) {
-          await this.dispatch(sessionId, {
-            type: 'side-reply',
-            tabId: effect.tabId,
-            text: '无法创建侧栏问答，请再试一次。',
-          }, false)
-          return
-        }
-        this.#forks.set(key, childId)
-        await this.dispatch(sessionId, { type: 'side-bind-fork', tabId: effect.tabId, sessionId: childId }, false)
-      }
-      const binding = this.#ctx.sessions.binding(childId as never)
-      if (binding === undefined) {
-        await this.dispatch(sessionId, {
-          type: 'side-reply',
-          tabId: effect.tabId,
-          text: '无法连接到该会话，请再试一次。',
-        }, false)
-        return
-      }
-      const live = binding.session as unknown as LiveSession
-      this.#watchFork(sessionId, effect.tabId, live)
-      await live.prompt([{ type: 'text', text: effect.text }], 'queue')
-    } catch (err) {
-      const text = err instanceof Error && err.message.length > 0
-        ? err.message
-        : '提问失败，请再试一次。'
-      await this.dispatch(sessionId, { type: 'side-reply', tabId: effect.tabId, text }, false)
-    }
-  }
-
-  #watchFork(sessionId: string, tabId: string, live: LiveSession): void {
-    const key = `${sessionId}:${tabId}`
-    if (this.#watching.has(key)) return
-    this.#watching.add(key)
-    const start = logEventsFromSession(live.getSnapshot())
-    const baseline = start.reduce((max, event) => Math.max(max, event.seq), 0)
-    let last = ''
-    const pull = (): void => {
-      const events = logEventsFromSession(live.getSnapshot())
-      const assistant = [...events].reverse().find((event) => event.role === 'assistant' && event.seq > baseline)
-      const text = assistant?.text ?? ''
-      if (text.length === 0 || text === last) return
-      last = text
-      void this.dispatch(sessionId, { type: 'side-reply', tabId, text }, false)
-    }
-    live.subscribe(pull)
-    pull()
   }
 
   #wrapPrompt(sessionId: string): void {

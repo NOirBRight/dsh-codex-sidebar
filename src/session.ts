@@ -10,13 +10,21 @@ import {
 import type { BrowserIntent, BrowserPort, BrowserState } from './browser.ts'
 import { emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser } from './browser.ts'
 import type { FileDiff, ReviewIntent, ReviewPort, ReviewState } from './review.ts'
-import { emptyReview, fileDiff, projectReview, reduceReview } from './review.ts'
+import { emptyReview, fileDiff, projectReview, reduceReview, rememberReview } from './review.ts'
 import type { SideChatIntent, SideChatPort, SideChatState } from './side-chat.ts'
 import { emptySideChat, projectSideChat, reduceSideChat } from './side-chat.ts'
 import type { TerminalIntent, TerminalPort, TerminalState } from './terminal.ts'
 import { emptyTerminal, projectTerminal, reduceTerminal } from './terminal.ts'
 
-export const PALETTE = ['Review', 'Terminal', 'Browser', 'Files', 'Side Chat'] as const
+export const PALETTE = ['Review', 'Terminal', 'Browser', 'Files'] as const
+
+export function retireSideChatTabs(tabs: readonly Tab[], active: string | null): { tabs: Tab[]; active: string | null } {
+  const kept = tabs.filter((tab) => (tab.kind as string | null) !== 'Side Chat')
+  return {
+    tabs: kept,
+    active: kept.some((tab) => tab.id === active) ? active : (kept[0]?.id ?? null),
+  }
+}
 export type ToolKind = (typeof PALETTE)[number]
 
 export type Tab = {
@@ -136,6 +144,7 @@ export type SessionOptions = {
 export type SidebarSession = {
   snapshot(): SidebarSnapshot
   dispatch(intent: Intent): Effect[]
+  pullTerminal(tabId: string, since: number): { seq: number; chunk: string }
 }
 
 export function createSidebarSession(opts: SessionOptions): SidebarSession {
@@ -144,12 +153,13 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   let attachments: Annotation[] = (saved?.attachments ?? []).map(hydrateAnnotation)
   let queue: Array<{ text: string; attachments: Annotation[] }> = saved?.queue ?? []
   let collapsed = saved?.collapsed ?? true
-  let tabs: Tab[] = saved?.tabs ?? []
-  let active = saved?.active ?? null
+  const retiredTabs = retireSideChatTabs(saved?.tabs ?? [], saved?.active ?? null)
+  let tabs: Tab[] = retiredTabs.tabs
+  let active = retiredTabs.active
   let files = saved?.files ?? {
     path: '',
     preview: undefined,
-    tree: opts.files.tree(),
+    tree: [],
     treeOpen: false,
     treeWidth: 240,
     view: 'preview',
@@ -160,10 +170,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     notePos: null,
     noteDraft: '',
   }
+  const filesOpenAtLoad = tabs.some((tab) => tab.kind === 'Files')
   files = {
     ...files,
-    tree: opts.files.tree(),
-    preview: files.path ? opts.files.read(files.path) : undefined,
+    tree: filesOpenAtLoad ? opts.files.tree() : (files.tree ?? []),
+    preview: filesOpenAtLoad && files.path ? opts.files.read(files.path) : files.preview,
     treeOpen: false,
     treeWidth: clampTreeWidth(files.treeWidth),
     view: files.view === 'diff' ? 'diff' : 'preview',
@@ -233,6 +244,14 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     opts.persist.save(opts.sessionId, { ...snap, terminal: { byTab } })
   }
 
+  function wantFiles(): boolean {
+    return tabs.some((tab) => tab.kind === 'Files')
+  }
+
+  function wantReview(): boolean {
+    return tabs.some((tab) => tab.kind === 'Review')
+  }
+
   function snapshot(): SidebarSnapshot {
     foldAttachments()
     const activeTab = tabs.find((t) => t.id === active)
@@ -245,9 +264,14 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       active,
       showPalette,
       palette: PALETTE,
-      files: projectFiles(),
-      fileStats: opts.files.stats?.() ?? {},
-      review: projectReview(review, opts.review),
+      files: wantFiles() ? projectFiles() : {
+        ...files,
+        tree: files.tree ?? [],
+        preview: files.preview,
+        diff: files.diff ?? null,
+      },
+      fileStats: wantFiles() ? (opts.files.stats?.() ?? {}) : {},
+      review: wantReview() ? projectReview(review, opts.review) : rememberReview(review),
       browser: projectBrowser(currentBrowser, opts.browser),
       browsers: projectPages(),
       terminal: projectTerminal(terminal),
@@ -327,8 +351,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
 
   restoreBrowserTargets()
 
-  function fillOrOpen(kind: ToolKind, target = ''): void {
-    expand()
+  function fillOrOpen(kind: ToolKind, target = '', reveal = true): void {
+    if (reveal) expand()
     if (target) {
       const reuse = tabs.find((t) => t.kind === kind && sameTarget(kind, t.target, target))
       if (reuse) {
@@ -582,7 +606,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       default: {
         if (intent.type === 'open-url') {
           const url = normalizeUrl((intent as { url: string }).url)
-          fillOrOpen('Browser', url)
+          const reveal = (intent as { reveal?: boolean }).reveal !== false
+          fillOrOpen('Browser', url, reveal)
         }
         const nextReview = reduceReview(review, intent, opts.review)
         if (nextReview !== undefined) {
@@ -614,7 +639,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     return effects
   }
 
-  return { snapshot, dispatch }
+  function pullTerminal(tabId: string, since: number): { seq: number; chunk: string } {
+    return opts.terminal?.pull?.(tabId, since) ?? { seq: 0, chunk: '' }
+  }
+
+  return { snapshot, dispatch, pullTerminal }
 }
 
 function nextTerminalTitle(list: Array<{ kind: string | null }>): string {

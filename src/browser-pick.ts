@@ -109,6 +109,8 @@ export const DCS_PICK_SCAN = 'dcs-pick-scan'
 export const DCS_PICK_SCAN_HIT = 'dcs-pick-scan-hit'
 export const DCS_NAV = 'dcs-nav'
 export const DCS_PICK_SCRIPT_SRC = '/__dcs/pick.js'
+export const DCS_DRIVE_WAIT = '/__dcs/drive/wait'
+export const DCS_DRIVE_REPLY = '/__dcs/drive/reply'
 
 const PILL_H = 18
 
@@ -228,13 +230,13 @@ export function parsePickProxyPath(pathname: string): { host: string; port: numb
 /** Map a loopback pick-proxy iframe src back to the live http URL. */
 export function liveUrlFromFrameSrc(frameSrc: string): string | undefined {
   try {
-    const url = new URL(frameSrc)
+    const url = frameSrc.startsWith('/') ? new URL(frameSrc, 'http://127.0.0.1') : new URL(frameSrc)
     const parsed = parsePickProxyPath(url.pathname)
     if (parsed === undefined) {
       return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : undefined
     }
     const port = parsed.port === 80 ? '' : `:${parsed.port}`
-    return `http://${parsed.host}${port}${parsed.path}${url.hash}`
+    return `http://${parsed.host}${port}${parsed.path}${url.search}${url.hash}`
   } catch {
     return undefined
   }
@@ -258,11 +260,16 @@ export function resolveProxyUpstream(input: {
 }
 
 export function injectPickScript(html: string, scriptSrc = DCS_PICK_SCRIPT_SRC): string {
-  if (html.includes('data-dcs-pick') || html.includes(scriptSrc)) return html
-  const tag = `<script src="${scriptSrc}" data-dcs-pick></script>`
-  if (/<head[\s>]/i.test(html)) return html.replace(/<head([^>]*)>/i, `<head$1>${tag}`)
-  if (/<html[\s>]/i.test(html)) return html.replace(/<html([^>]*)>/i, `<html$1>${tag}`)
-  return `${tag}${html}`
+  if (html.includes('data-dcs-pick')) return html
+  const stripped = stripMetaCsp(html)
+  const tag = '<script data-dcs-pick src="' + scriptSrc + '"></script>'
+  if (/<head[\s>]/i.test(stripped)) return stripped.replace(/<head([^>]*)>/i, '<head$1>' + tag)
+  if (/<html[\s>]/i.test(stripped)) return stripped.replace(/<html([^>]*)>/i, '<html$1>' + tag)
+  return tag + stripped
+}
+
+function stripMetaCsp(html: string): string {
+  return html.replace(/<meta\b[^>]*http-equiv\s*=\s*["']content-security-policy["'][^>]*>/gi, '')
 }
 
 function preferredDataName(attrs: Readonly<Record<string, string>>): string {

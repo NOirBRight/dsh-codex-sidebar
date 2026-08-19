@@ -160,5 +160,100 @@ export const DCS_PICK_SCRIPT = `(function () {
     var out = String(text).replace(/\\s+/g, ' ').trim();
     return out.length <= max ? out : out.slice(0, max - 1).replace(/\\s+$/, '') + '…';
   }
+
+  var refs = {};
+  startDrive();
+
+  function startDrive() {
+    pump();
+    function pump() {
+      var src = '';
+      try { src = location.href; } catch (err) { src = ''; }
+      fetch('/__dcs/drive/wait?src=' + encodeURIComponent(src), { cache: 'no-store' }).then(function (res) {
+        if (!res.ok || res.status === 204) {
+          setTimeout(pump, res.status === 204 ? 0 : 800);
+          return;
+        }
+        return res.json().then(function (cmd) {
+          var result = runDrive(cmd);
+          return fetch('/__dcs/drive/reply', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: cmd.id, result: result }),
+          });
+        }).then(function () { pump(); }, function () { setTimeout(pump, 800); });
+      }).catch(function () { setTimeout(pump, 1200); });
+    }
+  }
+
+  function runDrive(cmd) {
+    if (!cmd || !cmd.type) return { ok: false, code: 'unknown-ref', message: 'bad command' };
+    if (cmd.type === 'snapshot') return { ok: true, snapshot: takeSnapshot() };
+    var el = refs[cmd.ref];
+    if (!el || !el.isConnected) return { ok: false, code: 'unknown-ref', message: 'missing ' + cmd.ref };
+    if (cmd.type === 'click') {
+      el.click();
+      return { ok: true };
+    }
+    if (cmd.type === 'fill') {
+      var value = cmd.text == null ? '' : String(cmd.text);
+      el.focus();
+      if ('value' in el) el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true };
+    }
+    return { ok: false, code: 'unknown-ref', message: 'bad command' };
+  }
+
+  function takeSnapshot() {
+    refs = {};
+    var nodes = [];
+    var list = document.querySelectorAll('a, button, input, textarea, select, h1, h2, h3, [role], label');
+    for (var i = 0; i < list.length && nodes.length < 80; i++) {
+      var el = list[i];
+      var box = el.getBoundingClientRect();
+      if (box.width < 1 || box.height < 1) continue;
+      var ref = '@e' + (nodes.length + 1);
+      refs[ref] = el;
+      var role = driveRole(el);
+      var name = compact(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.textContent || el.id || '', 80);
+      nodes.push({ ref: ref, role: role, name: name || selectorOf(el), selector: selectorOf(el) });
+    }
+    var title = document.title || location.href;
+    return { url: location.href, title: title, driveable: true, nodes: nodes, text: formatTree(title, nodes) };
+  }
+
+  function driveRole(el) {
+    var explicit = (el.getAttribute('role') || '').trim();
+    if (explicit) return explicit;
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'h1' || tag === 'h2' || tag === 'h3') return 'heading';
+    if (tag === 'label') return 'label';
+    if (tag === 'input') {
+      var typ = (el.getAttribute('type') || 'text').toLowerCase();
+      if (typ === 'submit' || typ === 'button') return 'button';
+      if (typ === 'checkbox') return 'checkbox';
+      if (typ === 'radio') return 'radio';
+      return 'textbox';
+    }
+    return tag;
+  }
+
+  function formatTree(title, nodes) {
+    var lines = ['document "' + esc(title) + '"'];
+    for (var i = 0; i < nodes.length; i++) {
+      lines.push('  ' + nodes[i].role + ' "' + esc(nodes[i].name) + '" [ref=' + nodes[i].ref + ']');
+    }
+    return lines.join('\\n');
+  }
+
+  function esc(value) {
+    return JSON.stringify(String(value)).slice(1, -1);
+  }
 })();
 `

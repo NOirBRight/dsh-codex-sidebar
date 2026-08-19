@@ -17,6 +17,7 @@ vi.mock('../src/client/Sidebar.tsx', () => ({ SidebarPanel: function SidebarPane
 vi.mock('../src/client/Toggle.tsx', () => ({ SidebarToggle: function SidebarToggle() { return null } }))
 vi.mock('../src/client/AttachmentChips.tsx', () => ({ AttachmentChips: function AttachmentChips() { return null } }))
 vi.mock('../src/client/NarrowDrawer.tsx', () => ({ NarrowDrawer: function NarrowDrawer() { return null } }))
+vi.mock('../src/client/browser-pump.ts', () => ({ startHiddenBrowserPump: () => () => {} }))
 vi.mock('../src/client/tool-stats.ts', () => ({ installToolStats: () => ({ paint() {}, stop() {} }) }))
 vi.mock('../src/client/controller.ts', () => ({
   SidebarController: class SidebarController {
