@@ -45,7 +45,7 @@ type ScreencastPayload = {
 }
 
 type BrowserInput =
-  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
+  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; selector?: string }
   | { type: 'down' | 'up' | 'move'; x: number; y: number; pressed?: boolean }
   | { type: 'keyDown' | 'keyUp'; key: string; code: string; modifiers?: number }
   | { type: 'text'; text: string }
@@ -164,7 +164,7 @@ export class ManagedBrowserStream {
     cdp.on('Page.screencastFrame', onFrame)
     socket.on('message', (data, isBinary) => {
       if (isBinary) return
-      void this.#onMessage(tab, cdp, data.toString()).catch(() => undefined)
+      void this.#onMessage(socket, tab, cdp, data.toString()).catch(() => undefined)
     })
     socket.once('close', () => { void detach() })
     socket.once('error', () => { void detach() })
@@ -183,14 +183,31 @@ export class ManagedBrowserStream {
     }
   }
 
-  async #onMessage(tab: ManagedTabKey, cdp: ManagedCdpSession, raw: string): Promise<void> {
+  async #onMessage(socket: WebSocket, tab: ManagedTabKey, cdp: ManagedCdpSession, raw: string): Promise<void> {
     const message = JSON.parse(raw) as { type?: unknown; input?: unknown; width?: unknown; height?: unknown }
+    if (message.type === 'outline') {
+      const outline = await this.#runtime.outline(tab)
+      if ('nodes' in outline && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'outline',
+          documentId: outline.documentId,
+          nodes: outline.nodes.filter((node) => node.rect !== undefined),
+        }))
+      }
+      return
+    }
     if (message.type === 'resize' && typeof message.width === 'number' && typeof message.height === 'number') {
       await this.#runtime.resize(tab, message.width, message.height)
       return
     }
     if (message.type !== 'input' || !validInput(message.input)) return
     await dispatchInput(cdp, message.input)
+    if (message.input.type === 'wheel' && message.input.selector !== undefined) {
+      const tracked = await this.#runtime.trackRect(tab, message.input.selector)
+      if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'tracked-rect', ...tracked }))
+      }
+    }
   }
 
   #pruneTickets(): void {
@@ -265,8 +282,9 @@ function validInput(value: unknown): value is BrowserInput {
   const input = value as { x?: unknown; y?: unknown }
   if (typeof input.x !== 'number' || typeof input.y !== 'number') return false
   if (type === 'wheel') {
-    const wheel = value as { deltaX?: unknown; deltaY?: unknown }
+    const wheel = value as { deltaX?: unknown; deltaY?: unknown; selector?: unknown }
     return typeof wheel.deltaX === 'number' && typeof wheel.deltaY === 'number'
+      && (wheel.selector === undefined || typeof wheel.selector === 'string')
   }
   return type === 'down' || type === 'up' || type === 'move'
 }

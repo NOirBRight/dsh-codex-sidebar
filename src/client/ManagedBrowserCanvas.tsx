@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type WheelEvent } from 'react'
-import { browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
 import type { AnnotationRect } from '../session.ts'
 
 type StreamTicket = { path: string; expiresAt: number }
@@ -15,6 +15,8 @@ type ManagedProjection = {
 type ManagedBrowserCanvasProps = {
   tabId: string
   annotate: boolean
+  selectedRect: AnnotationRect | null
+  selectedSelector: string | null
   requestTicket: (tabId: string) => Promise<StreamTicket | undefined>
   onPick: (rect: AnnotationRect, anchor: Point) => void | Promise<void>
   onState: (projection: ManagedProjection) => void
@@ -22,7 +24,7 @@ type ManagedBrowserCanvasProps = {
 
 type Point = { x: number; y: number }
 
-export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, onState }: ManagedBrowserCanvasProps): ReactElement {
+export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState }: ManagedBrowserCanvasProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const ticketRef = useRef(requestTicket)
   const stateRef = useRef(onState)
@@ -30,6 +32,12 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
   stateRef.current = onState
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  const annotateRef = useRef(annotate)
+  const selectedSelectorRef = useRef(selectedSelector)
+  const documentRef = useRef<string>()
+  const outlineTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  annotateRef.current = annotate
+  selectedSelectorRef.current = selectedSelector
   const dragRef = useRef<{ point: Point; pointerId: number } | null>(null)
   const inputQueueRef = useRef<ReturnType<typeof createBrowserInputCoalescer> | null>(null)
   if (inputQueueRef.current === null) {
@@ -38,7 +46,39 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
     })
   }
   const [selection, setSelection] = useState<AnnotationRect | null>(null)
+  const [outlineNodes, setOutlineNodes] = useState<BrowserOutlineNode[]>([])
+  const [hovered, setHovered] = useState<AnnotationRect | null>(null)
+  const [selectedLiveRect, setSelectedLiveRect] = useState<AnnotationRect | null>(selectedRect)
   const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
+
+
+
+  const requestOutline = (delay = 0): void => {
+    if (outlineTimerRef.current !== undefined) clearTimeout(outlineTimerRef.current)
+    outlineTimerRef.current = undefined
+    if (!annotateRef.current) return
+    outlineTimerRef.current = setTimeout(() => {
+      outlineTimerRef.current = undefined
+      send(socketRef.current, { type: 'outline' })
+    }, delay)
+  }
+
+  useEffect(() => {
+    setOutlineNodes([])
+    setHovered(null)
+    if (annotate) requestOutline()
+    return () => {
+      if (outlineTimerRef.current !== undefined) clearTimeout(outlineTimerRef.current)
+      outlineTimerRef.current = undefined
+    }
+  }, [annotate, tabId])
+
+
+
+  useEffect(() => {
+    setSelectedLiveRect(selectedRect)
+    if (selectedSelector !== null) requestOutline()
+  }, [selectedRect?.x, selectedRect?.y, selectedRect?.w, selectedRect?.h, selectedSelector])
 
   useEffect(() => {
     let stopped = false
@@ -87,11 +127,17 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
       socketRef.current = socket
       socket.onopen = () => {
         attempt = 0
+        if (annotateRef.current) requestOutline()
         const canvas = canvasRef.current
         if (canvas !== null) {
           resize = new ResizeObserver(() => {
             const bounds = canvas.getBoundingClientRect()
             send(socket, { type: 'resize', width: bounds.width, height: bounds.height })
+            if (annotateRef.current) {
+              setOutlineNodes([])
+              setHovered(null)
+              requestOutline(180)
+            }
           })
           resize.observe(canvas)
         }
@@ -99,10 +145,36 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
       socket.onmessage = (event) => {
         if (browserStreamSignalsReady(event.data)) setStatus('ready')
         if (typeof event.data === 'string') {
+          const tracked = decodeBrowserTrackedRect(event.data)
+          if (tracked !== undefined) {
+            if ((documentRef.current === undefined || documentRef.current === tracked.documentId) && selectedSelectorRef.current === tracked.selector) {
+              setSelectedLiveRect((current) => updateBrowserSelectedRect(current, { type: 'tracked', rect: tracked.rect }))
+            }
+            return
+          }
+          const outline = decodeBrowserOutline(event.data)
+          if (outline !== undefined) {
+            if (documentRef.current === undefined || documentRef.current === outline.documentId) {
+              documentRef.current = outline.documentId
+              setOutlineNodes(outline.nodes)
+              const selector = selectedSelectorRef.current
+              if (selector !== null) setSelectedLiveRect(browserSelectedRectForOutline(selector, outline.nodes))
+            }
+            return
+          }
           try {
             const message = JSON.parse(event.data) as { type?: unknown; projection?: unknown }
             if (message.type === 'ready') setStatus('ready')
-            if (message.type === 'state' && managedProjection(message.projection)) stateRef.current(message.projection)
+            if (message.type === 'state' && managedProjection(message.projection)) {
+              if (documentRef.current !== undefined && documentRef.current !== message.projection.documentId) {
+                setOutlineNodes([])
+                setHovered(null)
+                setSelectedLiveRect(null)
+              }
+              documentRef.current = message.projection.documentId
+              stateRef.current(message.projection)
+              if (annotateRef.current && message.projection.status === 'ready') requestOutline()
+            }
           } catch { setStatus('error') }
           return
         }
@@ -148,6 +220,7 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
     const at = point(event)
     if (annotate) {
       dragRef.current = { point: at, pointerId: event.pointerId }
+      setHovered(null)
       setSelection({ x: at.x, y: at.y, w: 0, h: 0 })
       return
     }
@@ -157,8 +230,9 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
   const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
     const at = point(event)
     const drag = dragRef.current
-    if (annotate && drag?.pointerId === event.pointerId) {
-      setSelection(rectFrom(drag.point, at))
+    if (annotate) {
+      if (drag?.pointerId === event.pointerId) setSelection(rectFrom(drag.point, at))
+      else setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
       return
     }
     input({ type: 'move', ...at, pressed: event.buttons === 1 })
@@ -171,6 +245,7 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
       const rect = rectFrom(drag.point, at)
       dragRef.current = null
       setSelection(null)
+      setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
       const canvasBounds = event.currentTarget.getBoundingClientRect()
       void onPick(
         rect.w < 4 && rect.h < 4 ? { x: at.x - 8, y: at.y - 8, w: 16, h: 16 } : rect,
@@ -184,7 +259,14 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
   const onWheel = (event: WheelEvent<HTMLCanvasElement>): void => {
     event.preventDefault()
     const at = point(event)
-    input({ type: 'wheel', ...at, deltaX: event.deltaX, deltaY: event.deltaY })
+    if (annotate) {
+      setOutlineNodes([])
+      setHovered(null)
+      setSelectedLiveRect((current) => updateBrowserSelectedRect(current, { type: 'wheel' }))
+      requestOutline(180)
+    }
+    const selector = selectedSelectorRef.current
+    input({ type: 'wheel', ...at, deltaX: event.deltaX, deltaY: event.deltaY, ...selector === null ? {} : { selector } })
   }
 
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>, type: 'keyDown' | 'keyUp'): void => {
@@ -193,6 +275,8 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
       event.preventDefault()
     }
   }
+
+  const highlights = browserAnnotationHighlightRects(selectedLiveRect, hovered)
 
   return (
     <div className="dcs-managed-browser">
@@ -203,9 +287,12 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={() => { dragRef.current = null; setSelection(null) }}
+        onPointerCancel={() => { dragRef.current = null; setSelection(null); setHovered(null) }}
+        onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
         onWheel={onWheel}
       />
+      {annotate && selection === null && highlights.selected !== null && <div className="dcs-managed-selected" style={selectionStyle(highlights.selected, canvasRef.current)} />}
+      {annotate && selection === null && highlights.hovered !== null && <div className="dcs-managed-hover" style={selectionStyle(highlights.hovered, canvasRef.current)} />}
       {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, canvasRef.current)} />}
       <textarea
         ref={inputRef}

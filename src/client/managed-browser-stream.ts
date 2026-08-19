@@ -23,6 +23,101 @@ export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
 }
 
 
+
+
+export type BrowserOutlineNode = {
+  ref: string
+  role: string
+  name: string
+  selector: string
+  rect: { x: number; y: number; w: number; h: number }
+}
+
+export type BrowserOutline = {
+  documentId: string
+  nodes: BrowserOutlineNode[]
+}
+
+export function decodeBrowserOutline(value: string): BrowserOutline | undefined {
+  try {
+    const message = JSON.parse(value) as { type?: unknown; documentId?: unknown; nodes?: unknown }
+    if (message.type !== 'outline' || typeof message.documentId !== 'string' || !Array.isArray(message.nodes)) return undefined
+    const nodes: BrowserOutlineNode[] = []
+    for (const value of message.nodes) {
+      if (!browserOutlineNode(value)) return undefined
+      nodes.push(value)
+    }
+    return { documentId: message.documentId, nodes }
+  } catch {
+    return undefined
+  }
+}
+
+
+
+export type BrowserAnnotationRect = { x: number; y: number; w: number; h: number }
+
+
+
+
+
+export type BrowserTrackedRect = {
+  documentId: string
+  selector: string
+  rect: BrowserAnnotationRect | null
+}
+
+export function decodeBrowserTrackedRect(value: string): BrowserTrackedRect | undefined {
+  try {
+    const message = JSON.parse(value) as { type?: unknown; documentId?: unknown; selector?: unknown; rect?: unknown }
+    if (message.type !== 'tracked-rect' || typeof message.documentId !== 'string' || typeof message.selector !== 'string') return undefined
+    if (message.rect === null) return { documentId: message.documentId, selector: message.selector, rect: null }
+    if (!browserAnnotationRect(message.rect)) return undefined
+    return { documentId: message.documentId, selector: message.selector, rect: message.rect }
+  } catch {
+    return undefined
+  }
+}
+
+export function updateBrowserSelectedRect(current: BrowserAnnotationRect | null, update: { type: 'wheel' } | { type: 'tracked'; rect: BrowserAnnotationRect | null }): BrowserAnnotationRect | null {
+  return update.type === 'tracked' ? update.rect : current
+}
+
+export function browserAnnotationHighlightRects(selected: BrowserAnnotationRect | null, hovered: BrowserAnnotationRect | null): { selected: BrowserAnnotationRect | null; hovered: BrowserAnnotationRect | null } {
+  return { selected, hovered: sameBrowserAnnotationRect(selected, hovered) ? null : hovered }
+}
+
+function sameBrowserAnnotationRect(left: BrowserAnnotationRect | null, right: BrowserAnnotationRect | null): boolean {
+  return left !== null && right !== null && left.x === right.x && left.y === right.y && left.w === right.w && left.h === right.h
+}
+
+function browserAnnotationRect(value: unknown): value is BrowserAnnotationRect {
+  if (typeof value !== 'object' || value === null) return false
+  const rect = value as { x?: unknown; y?: unknown; w?: unknown; h?: unknown }
+  return [rect.x, rect.y, rect.w, rect.h].every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate))
+}
+
+export function browserSelectedRectForOutline(selector: string, nodes: readonly BrowserOutlineNode[]): BrowserAnnotationRect | null {
+  return nodes.find((node) => node.selector === selector)?.rect ?? null
+}
+
+export function browserAnnotationNodeAt(nodes: readonly BrowserOutlineNode[], point: { x: number; y: number }): BrowserOutlineNode | undefined {
+  return nodes
+    .filter((node) => node.rect.w > 0 && node.rect.h > 0
+      && point.x >= node.rect.x && point.x <= node.rect.x + node.rect.w
+      && point.y >= node.rect.y && point.y <= node.rect.y + node.rect.h)
+    .sort((left, right) => left.rect.w * left.rect.h - right.rect.w * right.rect.h)[0]
+}
+
+function browserOutlineNode(value: unknown): value is BrowserOutlineNode {
+  if (typeof value !== 'object' || value === null) return false
+  const node = value as { ref?: unknown; role?: unknown; name?: unknown; selector?: unknown; rect?: unknown }
+  if (typeof node.ref !== 'string' || typeof node.role !== 'string' || typeof node.name !== 'string' || typeof node.selector !== 'string') return false
+  if (typeof node.rect !== 'object' || node.rect === null) return false
+  const rect = node.rect as { x?: unknown; y?: unknown; w?: unknown; h?: unknown }
+  return [rect.x, rect.y, rect.w, rect.h].every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate))
+}
+
 export function browserStreamSignalsReady(value: unknown): boolean {
   if (value instanceof ArrayBuffer) return true
   if (typeof value !== 'string') return false

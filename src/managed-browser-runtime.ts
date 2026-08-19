@@ -1,7 +1,7 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 
 import { constants } from 'node:fs'
-import { access, mkdir, readlink, unlink } from 'node:fs/promises'
+import { access, mkdir, readlink, readdir, unlink } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
@@ -31,6 +31,17 @@ export type ManagedBrowserProjection = {
 export type ManagedBrowserActionResult =
   | { ok: true }
   | { ok: false; code: 'not-ready' | 'stale-ref' | 'unknown-ref' | 'navigation-failed'; message: string }
+
+export type ManagedBrowserOutline = {
+  documentId: string
+  nodes: DriveNode[]
+}
+
+export type ManagedBrowserTrackedRect = {
+  documentId: string
+  selector: string
+  rect: { x: number; y: number; w: number; h: number } | null
+}
 
 export type ManagedBrowserCapture = {
   captureId: string
@@ -89,6 +100,7 @@ type LaunchContext = (profileDir: string, opts: {
   executablePath: string
   headless: boolean
   viewport: { width: number; height: number }
+  ignoreDefaultArgs: string[]
 }) => Promise<ContextLike>
 
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
@@ -204,6 +216,30 @@ export class ManagedBrowserRuntime {
     }
   }
 
+  async outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.status !== 'ready') return notReady()
+    return { documentId: record.documentId, nodes: await this.#outlineNodes(record) }
+  }
+
+
+
+  async trackRect(tab: ManagedTabKey, selector: string): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.status !== 'ready') return notReady()
+    const encoded = JSON.stringify(selector)
+    const rect = await record.page.evaluate<{ x: number; y: number; w: number; h: number } | null>(String.raw`(() => {
+      try {
+        const element = document.querySelector(${encoded});
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1 || rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) return null;
+        return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+      } catch { return null; }
+    })()`)
+    return { documentId: record.documentId, selector, rect }
+  }
+
   async click(tab: ManagedTabKey, ref: string): Promise<ManagedBrowserActionResult> {
     return this.#act(tab, ref, (locator) => locator.click())
   }
@@ -215,7 +251,7 @@ export class ManagedBrowserRuntime {
   async capture(tab: ManagedTabKey): Promise<ManagedBrowserCapture | ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
-    const nodes = await this.#nodes(record)
+    const nodes = await this.#outlineNodes(record)
     const image = await record.page.screenshot({ type: 'jpeg', quality: EVIDENCE_QUALITY })
     const viewport = record.page.viewportSize() ?? DEFAULT_VIEWPORT
     this.#captureSeq += 1
@@ -316,6 +352,7 @@ export class ManagedBrowserRuntime {
         executablePath,
         headless: this.headless,
         viewport: DEFAULT_VIEWPORT,
+        ignoreDefaultArgs: ['--disable-dev-shm-usage'],
       })
     })()
     this.#context = pending
@@ -385,6 +422,19 @@ export class ManagedBrowserRuntime {
     })
   }
 
+
+
+  async #outlineNodes(record: PageRecord): Promise<DriveNode[]> {
+    const raw = await record.page.evaluate<Array<{ role: string; name: string; selector: string; rect?: { x: number; y: number; w: number; h: number } }>>(OUTLINE_EXPRESSION)
+    return raw.slice(0, 800).map((node, index) => ({
+      ref: '@d' + record.documentSeq + 'o' + (index + 1),
+      role: node.role,
+      name: node.name,
+      selector: node.selector,
+      ...node.rect === undefined ? {} : { rect: node.rect },
+    }))
+  }
+
   async #act(tab: ManagedTabKey, ref: string, action: (locator: LocatorLike) => Promise<void>): Promise<ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
@@ -410,7 +460,7 @@ export class ManagedBrowserRuntime {
 }
 
 export async function findBrowserExecutable(explicit?: string): Promise<string> {
-  const candidates = explicit === undefined ? browserCandidates() : [explicit]
+  const candidates = explicit === undefined ? await browserCandidates() : [explicit]
   for (const candidate of candidates) {
     try {
       await access(candidate, constants.X_OK)
@@ -424,10 +474,12 @@ export async function findBrowserExecutable(explicit?: string): Promise<string> 
     : 'Configured browser executable is not runnable: ' + explicit)
 }
 
-function browserCandidates(): string[] {
+async function browserCandidates(): Promise<string[]> {
   const env = process.env
+  const cached = await installedPlaywrightChromiumCandidates(playwrightCacheRoot(env))
   const values = [
     env.DSH_CODEX_BROWSER_EXECUTABLE,
+    ...cached,
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium',
@@ -439,6 +491,25 @@ function browserCandidates(): string[] {
     env['PROGRAMFILES(X86)'] === undefined ? undefined : join(env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   ]
   return values.filter((value): value is string => value !== undefined && value.length > 0)
+}
+
+export async function installedPlaywrightChromiumCandidates(cacheRoot: string): Promise<string[]> {
+  const entries = await readdir(cacheRoot, { withFileTypes: true }).catch(() => [])
+  const revisions = entries
+    .filter((entry) => entry.isDirectory() && /^chromium-\d+$/.test(entry.name))
+    .sort((left, right) => Number(right.name.slice('chromium-'.length)) - Number(left.name.slice('chromium-'.length)))
+  const relativeExecutables = process.platform === 'win32'
+    ? [join('chrome-win64', 'chrome.exe'), join('chrome-win', 'chrome.exe')]
+    : process.platform === 'darwin'
+      ? [join('chrome-mac-arm64', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'), join('chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')]
+      : [join('chrome-linux64', 'chrome'), join('chrome-linux', 'chrome')]
+  return revisions.flatMap((entry) => relativeExecutables.map((relative) => join(cacheRoot, entry.name, relative)))
+}
+
+function playwrightCacheRoot(env: NodeJS.ProcessEnv): string {
+  const configured = env.PLAYWRIGHT_BROWSERS_PATH
+  if (configured !== undefined && configured.length > 0 && configured !== '0') return resolve(configured)
+  return join(homedir(), '.cache', 'ms-playwright')
 }
 
 
@@ -485,12 +556,14 @@ async function launchPlaywright(profileDir: string, opts: {
   executablePath: string
   headless: boolean
   viewport: { width: number; height: number }
+  ignoreDefaultArgs: string[]
 }): Promise<ContextLike> {
   await mkdir(dirname(profileDir), { recursive: true, mode: 0o700 })
   const context = await chromium.launchPersistentContext(profileDir, {
     executablePath: opts.executablePath,
     headless: opts.headless,
     viewport: opts.viewport,
+    ignoreDefaultArgs: opts.ignoreDefaultArgs,
   })
   return context as unknown as ContextLike
 }
@@ -521,6 +594,48 @@ function formatTree(nodes: readonly DriveNode[], title: string): string {
   for (const node of nodes) lines.push('  ' + node.role + ' "' + node.name.replace(/"/g, '\"') + '" [ref=' + node.ref + ']')
   return lines.join('\n')
 }
+
+
+
+const OUTLINE_EXPRESSION = String.raw`(() => {
+  const skipped = new Set(['HTML','BODY','SCRIPT','STYLE','META','LINK','BR','NOSCRIPT','TEMPLATE','SOURCE','PATH','G','DEFS','CLIPPATH']);
+  const semantic = new Set(['A','BUTTON','INPUT','TEXTAREA','SELECT','IMG','SVG','VIDEO','CANVAS','H1','H2','H3','H4','H5','H6','P','LI','TD','TH','LABEL','SUMMARY']);
+  const selectorOf = (el) => {
+    if (el.id) {
+      const selector = '#' + CSS.escape(el.id);
+      if (document.querySelectorAll(selector).length === 1) return selector;
+    }
+    const test = el.getAttribute('data-testid');
+    if (test) {
+      const selector = '[data-testid="' + CSS.escape(test) + '"]';
+      if (document.querySelectorAll(selector).length === 1) return selector;
+    }
+    const parts = [];
+    let current = el;
+    while (current && current !== document.documentElement && parts.length < 8) {
+      const parent = current.parentElement;
+      const same = parent ? Array.from(parent.children).filter((child) => child.tagName === current.tagName) : [current];
+      parts.unshift(current.tagName.toLowerCase() + ':nth-of-type(' + (same.indexOf(current) + 1) + ')');
+      const selector = parts.join(' > ');
+      if (document.querySelectorAll(selector).length === 1) return selector;
+      current = parent;
+    }
+    return parts.join(' > ');
+  };
+  const roles = {A:'link',BUTTON:'button',INPUT:'textbox',TEXTAREA:'textbox',SELECT:'combobox',IMG:'image',SVG:'image',VIDEO:'video',CANVAS:'canvas',H1:'heading',H2:'heading',H3:'heading',H4:'heading',H5:'heading',H6:'heading',P:'paragraph',LI:'listitem',TD:'cell',TH:'columnheader',LABEL:'label',SUMMARY:'button'};
+  return Array.from(document.querySelectorAll('*')).flatMap((el) => {
+    if (skipped.has(el.tagName)) return [];
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2 || rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) return [];
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return [];
+    const rawName = el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || el.getAttribute('placeholder') || el.textContent || el.getAttribute('value') || '';
+    const name = rawName.trim().replace(/\s+/g, ' ').slice(0, 160);
+    if (name.length === 0 && !semantic.has(el.tagName) && !el.hasAttribute('role')) return [];
+    const role = el.getAttribute('role') || roles[el.tagName] || el.tagName.toLowerCase();
+    return [{ role, name: name || role, selector: selectorOf(el), rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height } }];
+  });
+})()`
 
 const SNAPSHOT_EXPRESSION = String.raw`(() => {
   const all = Array.from(document.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable="true"],h1,h2,h3'));

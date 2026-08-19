@@ -24,7 +24,10 @@ const BROWSER_CSS = `
 .dcs-managed-browser-canvas { width:100%; height:100%; display:block; touch-action:none; user-select:none; outline:none; }
 .dcs-managed-ime { position:absolute; left:-10000px; top:0; width:1px; height:1px; opacity:0; }
 .dcs-managed-browser-status { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-bg-base); font-size:13px; }
-.dcs-managed-selection { position:absolute; pointer-events:none; box-sizing:border-box; border:1.5px solid #38bdf8; background:rgba(56,189,248,.18); z-index:2; }
+.dcs-managed-selected, .dcs-managed-hover, .dcs-managed-selection { position:absolute; pointer-events:none; box-sizing:border-box; z-index:2; }
+.dcs-managed-selected { border:2px solid #0ea5e9; background:rgba(14,165,233,.2); box-shadow:0 0 0 1px rgba(255,255,255,.7) inset; }
+.dcs-managed-hover { border:1.5px solid #38bdf8; background:rgba(56,189,248,.1); }
+.dcs-managed-selection { border:1.5px solid #38bdf8; background:rgba(56,189,248,.18); }
 .dcs-b-chrome > .dcs-tool[data-on] { background:var(--dsw-alias-label-primary); color:var(--dsw-alias-bg-base); }
 .dcs-b-capturing { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); z-index:5; pointer-events:none; padding:5px 10px; border-radius:999px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l2); color:var(--dsw-alias-label-secondary); font-size:12px; }
 .dcs-b-badge { position:absolute; z-index:4; border:0; border-radius:999px; min-width:18px; height:18px; padding:0 5px; transform:translate(-50%,-100%); background:#38bdf8; color:#0f172a; font-size:11px; font-weight:700; cursor:pointer; }
@@ -134,6 +137,8 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
           <ManagedBrowserCanvas
             tabId={tabId}
             annotate={browser.annotate}
+            selectedRect={browser.pendingRect}
+            selectedSelector={browser.pendingSelector}
             requestTicket={requestTicket}
             onPick={pick}
             onState={(projection) => {

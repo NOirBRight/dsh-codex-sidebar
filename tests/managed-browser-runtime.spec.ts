@@ -1,8 +1,8 @@
-import { lstat, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { findBrowserExecutable, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -116,6 +116,46 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.dispose()
   })
 
+
+
+  it('outlines non-interactive page elements and captures the same selector', async () => {
+    class OutlinePage extends FakePage {
+      override async evaluate<T>(expression?: string): Promise<T> {
+        if (expression?.includes('document.querySelector("#logo")')) {
+          return { x: 300, y: 84, w: 120, h: 45 } as T
+        }
+        if (expression?.includes("querySelectorAll('*')")) {
+          return [{ role: 'image', name: 'Baidu logo', selector: '#logo', rect: { x: 300, y: 120, w: 120, h: 45 } }] as T
+        }
+        return super.evaluate<T>()
+      }
+    }
+    const page = new OutlinePage()
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-outline-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'outline', tabId: 'browser' }
+    await runtime.ensure(tab, 'https://example.com')
+    await expect(runtime.outline(tab)).resolves.toMatchObject({
+      documentId: 'outline:browser:d1',
+      nodes: [{ role: 'image', name: 'Baidu logo', selector: '#logo' }],
+    })
+    await expect(runtime.capture(tab)).resolves.toMatchObject({
+      nodes: [{ role: 'image', name: 'Baidu logo', selector: '#logo' }],
+    })
+    await expect(runtime.trackRect(tab, '#logo')).resolves.toEqual({
+      documentId: 'outline:browser:d1', selector: '#logo', rect: { x: 300, y: 84, w: 120, h: 45 },
+    })
+    await runtime.dispose()
+  })
+
   it('captures one exact viewport image with the current nodes', async () => {
     const box = harness()
     const tab = { sessionId: 's2', tabId: 'browser-2' }
@@ -128,7 +168,7 @@ describe('ManagedBrowserRuntime', () => {
       width: 720,
       height: 860,
       image: new Uint8Array([1, 2, 3]),
-      nodes: [{ ref: '@d1e1', selector: '#save' }],
+      nodes: [{ ref: '@d1o1', selector: '#save' }],
     })
     await box.runtime.dispose()
   })
@@ -183,6 +223,51 @@ describe('ManagedBrowserRuntime', () => {
     expect(contexts).toHaveLength(2)
     expect(pages).toHaveLength(2)
     await runtime.dispose()
+  })
+
+
+
+
+
+  it('keeps Chromium font shared memory on /dev/shm', async () => {
+    let ignored: string[] | undefined
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-shm-' + Math.random().toString(36).slice(2),
+      launch: async (_profileDir, options) => {
+        ignored = (options as { ignoreDefaultArgs?: string[] }).ignoreDefaultArgs
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() {},
+        }
+      },
+    })
+    await runtime.ensure({ sessionId: 'shm', tabId: 'tab' }, 'https://example.com')
+    expect(ignored).toContain('--disable-dev-shm-usage')
+    await runtime.dispose()
+  })
+
+  it('prefers an installed Playwright Chromium over system Chrome', async () => {
+    const cacheRoot = await mkdtemp(join(tmpdir(), 'dcs-playwright-cache-'))
+    const executable = join(cacheRoot, 'chromium-1223', 'chrome-linux64', 'chrome')
+    await mkdir(join(cacheRoot, 'chromium-1223', 'chrome-linux64'), { recursive: true })
+    await writeFile(executable, '#!/bin/sh\n')
+    await chmod(executable, 0o755)
+    const previousCache = process.env.PLAYWRIGHT_BROWSERS_PATH
+    const previousExplicit = process.env.DSH_CODEX_BROWSER_EXECUTABLE
+    process.env.PLAYWRIGHT_BROWSERS_PATH = cacheRoot
+    delete process.env.DSH_CODEX_BROWSER_EXECUTABLE
+    try {
+      await expect(findBrowserExecutable()).resolves.toBe(executable)
+    } finally {
+      if (previousCache === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = previousCache
+      if (previousExplicit === undefined) delete process.env.DSH_CODEX_BROWSER_EXECUTABLE
+      else process.env.DSH_CODEX_BROWSER_EXECUTABLE = previousExplicit
+      await rm(cacheRoot, { recursive: true, force: true })
+    }
   })
 
   it('removes a dead Chromium singleton before relaunching the persistent profile', async () => {
