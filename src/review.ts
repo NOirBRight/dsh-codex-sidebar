@@ -8,8 +8,8 @@ export type ReviewIntent =
   | { type: 'review-toggle-file'; path: string }
   | { type: 'review-gutter'; mark: string }
   | { type: 'review-set-note-draft'; text: string }
-  | { type: 'review-note-enter' }
-  | { type: 'review-note-ctrl-enter' }
+  | { type: 'review-note-add' }
+  | { type: 'review-note-send' }
   | { type: 'review-dismiss-note' }
 
 export type ReviewChange = {
@@ -62,6 +62,7 @@ export type ReviewState = {
   openPath: string | null
   pendingMark: string | null
   noteDraft: string
+  editingId: string | null
   attachments: Annotation[]
   seq: number
   files: ReviewFile[]
@@ -89,6 +90,7 @@ export function emptyReview(): ReviewState {
     openPath: null,
     pendingMark: null,
     noteDraft: '',
+    editingId: null,
     attachments: [],
     seq: 0,
     files: [],
@@ -169,6 +171,7 @@ export function reduceReview(
           openPath: null,
           pendingMark: null,
           noteDraft: '',
+          editingId: null,
         },
         effects: [],
       }
@@ -176,7 +179,7 @@ export function reduceReview(
     case 'review-set-branch': {
       const branch = (intent as ReviewIntent & { type: 'review-set-branch' }).branch
       return {
-        state: { ...current, branch, openPath: null, pendingMark: null, noteDraft: '' },
+        state: { ...current, branch, openPath: null, pendingMark: null, noteDraft: '', editingId: null },
         effects: [],
       }
     }
@@ -189,6 +192,7 @@ export function reduceReview(
           openPath,
           pendingMark: openPath === null ? null : current.pendingMark,
           noteDraft: openPath === null ? '' : current.noteDraft,
+          editingId: openPath === null ? null : current.editingId,
         },
         effects: [],
       }
@@ -196,7 +200,7 @@ export function reduceReview(
     case 'review-gutter': {
       const mark = (intent as ReviewIntent & { type: 'review-gutter' }).mark
       return {
-        state: { ...current, pendingMark: mark, noteDraft: '' },
+        state: { ...current, pendingMark: mark, noteDraft: '', editingId: null },
         effects: [],
       }
     }
@@ -209,7 +213,7 @@ export function reduceReview(
     }
     case 'review-dismiss-note':
       return {
-        state: { ...current, pendingMark: null, noteDraft: '' },
+        state: { ...current, pendingMark: null, noteDraft: '', editingId: null },
         effects: [],
       }
     default:
@@ -232,6 +236,7 @@ function hydrate(state: ReviewState): ReviewState {
     openPath: state.openPath ?? null,
     pendingMark: state.pendingMark ?? null,
     noteDraft: state.noteDraft ?? '',
+    editingId: state.editingId ?? null,
     attachments: state.attachments ?? [],
     seq: state.seq ?? 0,
     files: state.files ?? [],

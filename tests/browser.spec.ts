@@ -34,8 +34,19 @@ function memoryPersist(): PersistPort {
 const PAGE_URL = 'http://localhost:5173'
 const OTHER_URL = 'http://localhost:3000'
 const DEAD_URL = 'http://127.0.0.1:9'
-const LOOPBACK_URL = 'http://127.0.0.1:43169/'
 const NON_HTTP_URL = 'ftp://example.com'
+
+function browserEvidence(n: number) {
+  return {
+    id: 'e' + n,
+    captureId: 'sess-a:t1:d1:c' + n,
+    documentId: 'sess-a:t1:d1',
+    ref: '0123456789abcdefabcd/' + String(n).padStart(32, '0') + '.jpg',
+    mediaType: 'image/jpeg' as const,
+    width: 720,
+    height: 860,
+  }
+}
 
 const LOGIN_PAGE: PageDocument = {
   url: PAGE_URL,
@@ -227,10 +238,10 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'browser-set-annotate', on: true })
     expect(box.snapshot().browser.annotate).toBe(true)
     expect(box.snapshot().browser.pendingMark).toBeNull()
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80 })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80, captureId: 'c1', documentId: 'd1' })
     expect(box.snapshot().browser.pendingMark).toBe('button.submit')
     expect(box.snapshot().browser.notePos).toEqual({ x: 40, y: 80 })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20 })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20, captureId: 'c2', documentId: 'd1' })
     expect(box.snapshot().browser.pendingMark).toBe('h1.signin')
     expect(box.snapshot().browser.notePos).toEqual({ x: 12, y: 20 })
     box.dispatch({ type: 'browser-dismiss-note' })
@@ -272,33 +283,103 @@ describe('Browser seam', () => {
     expect(browser.opened).toEqual([OTHER_URL])
   })
 
-  it('stacks 批注 on Enter and sends them to the 主会话 on Ctrl+Enter', () => {
+  it('adds one Browser 批注 and directly sends only the next one', () => {
     const box = session(fakeBrowser())
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1 })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make this heading red' })
-    expect(box.dispatch({ type: 'browser-note-enter' })).toEqual([])
+    expect(box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
-      { id: 'b1', text: 'make this heading red', from: 'h1.signin', source: 'browser' },
+      { id: 'b1', text: 'make this heading red', from: 'h1.signin', source: 'browser', url: PAGE_URL, evidence: browserEvidence(1) },
     ])
     expect(box.snapshot().browser.pendingMark).toBeNull()
     expect(box.snapshot().browser.attachments).toEqual([])
 
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2 })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
     box.dispatch({ type: 'browser-set-note-draft', text: 'and the button' })
-    const sent = box.dispatch({ type: 'browser-note-ctrl-enter' })
+    const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
     expect(sent).toEqual([{
       type: 'send',
       text: 'and the button',
       attachments: [
-        { id: 'b1', text: 'make this heading red', from: 'h1.signin', source: 'browser' },
-        { id: 'b2', text: 'and the button', from: 'button.submit', source: 'browser' },
+        { id: 'b2', text: 'and the button', from: 'button.submit', source: 'browser', url: PAGE_URL, evidence: browserEvidence(2) },
       ],
     }])
-    expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]?.id).toBe('b1')
     expect(box.snapshot().browser.attachments).toEqual([])
+  })
+
+  it('directly sends only the current Browser 批注 and keeps earlier stacked marks', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({
+      type: 'browser-click-content',
+      mark: 'h1.signin',
+      x: 1,
+      y: 1,
+      captureId: browserEvidence(1).captureId,
+      documentId: browserEvidence(1).documentId,
+      selector: 'h1.signin',
+      rect: { x: 10, y: 20, w: 100, h: 30 },
+    })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'keep stacked' })
+    box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })
+
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, selector: 'button.submit' })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'send this' })
+    const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      type: 'send',
+      text: 'send this',
+      attachments: [{ text: 'send this', selector: 'button.submit', url: PAGE_URL }],
+    })
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]).toMatchObject({ text: 'keep stacked', url: PAGE_URL })
+  })
+
+  it('opens a Browser badge for editing, updates it in place, and can delete it', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({
+      type: 'browser-click-content',
+      mark: 'h1.signin',
+      x: 1,
+      y: 1,
+      captureId: browserEvidence(1).captureId,
+      documentId: browserEvidence(1).documentId,
+      selector: 'h1.signin',
+      rect: { x: 10, y: 20, w: 100, h: 30 },
+    })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'old copy' })
+    box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })
+    const id = box.snapshot().attachments[0]?.id as string
+
+    box.dispatch({ type: 'edit-attachment', id, x: 30, y: 40 })
+    expect(box.snapshot().browser).toMatchObject({
+      url: PAGE_URL,
+      annotate: true,
+      pendingMark: 'h1.signin',
+      pendingSelector: 'h1.signin',
+      pendingRect: { x: 10, y: 20, w: 100, h: 30 },
+      notePos: { x: 30, y: 40 },
+      noteDraft: 'old copy',
+      editingId: id,
+    })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'new copy' })
+    box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]).toMatchObject({ id, text: 'new copy' })
+
+    box.dispatch({ type: 'edit-attachment', id })
+    box.dispatch({ type: 'remove-attachment', id })
+    expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().browser.editingId).toBeNull()
   })
 
   it('queues 批注 the same way as Files when the 主会话 is busy', () => {
@@ -307,17 +388,17 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1 })
-    const queued = box.dispatch({ type: 'browser-note-ctrl-enter' })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
+    const queued = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(1) })
     expect(queued).toEqual([{
       type: 'queue',
       text: '',
-      attachments: [{ id: 'b1', text: '', from: 'button.submit', source: 'browser' }],
+      attachments: [{ id: 'b1', text: '', from: 'button.submit', source: 'browser', url: PAGE_URL, evidence: browserEvidence(1) }],
     }])
     busy = false
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2 })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make the heading larger' })
-    expect(box.dispatch({ type: 'browser-note-ctrl-enter' })[0]?.type).toBe('send')
+    expect(box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })[0]?.type).toBe('send')
   })
 
   it('loads a page snapshot from fetched HTML and still loads when an http probe fails', () => {
@@ -352,29 +433,6 @@ describe('Browser seam', () => {
     expect(opened).toEqual([PAGE_URL])
   })
 
-  it('lets the iframe try when a localhost or loopback probe is empty or failed', () => {
-    const browser = createHostBrowser({
-      isBusy: () => false,
-      probe: () => ({ kind: 'unreachable' }),
-      pickFrameUrl: (url) => {
-        if (url.startsWith('http://127.0.0.1:43169')) {
-          return 'http://127.0.0.1:9/__dcs/up/127.0.0.1/43169/'
-        }
-        return undefined
-      },
-    })
-    const box = session(browser)
-    box.dispatch({ type: 'open-url', url: PAGE_URL })
-    expect(box.snapshot().browser.status).toBe('loaded')
-    expect(box.snapshot().browser.page?.html).toBeUndefined()
-
-    box.dispatch({ type: 'open-url', url: LOOPBACK_URL })
-    const loopback = box.snapshot().browser
-    expect(loopback.status).toBe('loaded')
-    expect(loopback.url).toBe(LOOPBACK_URL)
-    expect(loopback.page?.frameUrl).toBe('http://127.0.0.1:9/__dcs/up/127.0.0.1/43169/')
-  })
-
   it('treats an empty 2xx probe as a loadable page, not a dead host', () => {
     const box = session(createHostBrowser({
       isBusy: () => false,
@@ -395,18 +453,6 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.page).toBeNull()
   })
 
-  it('keeps an auth-gated origin loadable so the iframe can prompt for credentials', () => {
-    const box = session(createHostBrowser({
-      isBusy: () => false,
-      probe: () => ({ kind: 'auth' }),
-    }))
-    box.dispatch({ type: 'open-url', url: PAGE_URL })
-    const loaded = box.snapshot().browser
-    expect(loaded.status).toBe('loaded')
-    expect(loaded.page?.requiresAuth).toBe(true)
-    expect(loaded.page?.html).toBeUndefined()
-  })
-
   it('opens a Browser Tab from an empty 侧栏 and reuses it for the same URL', () => {
     const box = session(fakeBrowser())
     expect(box.snapshot().tabs).toEqual([])
@@ -423,23 +469,6 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'open-url', url: OTHER_URL })
     expect(box.snapshot().tabs).toHaveLength(2)
     expect(box.snapshot().tabs[1]?.target).toBe(OTHER_URL)
-  })
-
-  it('points the iframe at a loopback pick proxy while chrome keeps the typed URL', () => {
-    const html = '<html><title>CodexHub</title><ul><li>row</li></ul></html>'
-    const browser = createHostBrowser({
-      isBusy: () => false,
-      probe: () => ({ kind: 'html', html }),
-      pickFrameUrl: (url) => url.replace('http://127.0.0.1:1420', 'http://127.0.0.1:9/__dcs/up/127.0.0.1/1420'),
-    })
-    const box = session(browser)
-    box.dispatch({ type: 'pick-tool', kind: 'Browser' })
-    box.dispatch({ type: 'open-url', url: 'http://127.0.0.1:1420' })
-    const loaded = box.snapshot().browser
-    expect(loaded.url).toBe('http://127.0.0.1:1420')
-    expect(loaded.draft).toBe('http://127.0.0.1:1420')
-    expect(loaded.status).toBe('loaded')
-    expect(loaded.page?.frameUrl).toBe('http://127.0.0.1:9/__dcs/up/127.0.0.1/1420')
   })
 
   it('classifies loopback host:port as a page URL and leaves workspace paths alone', () => {
@@ -459,7 +488,6 @@ describe('Browser seam', () => {
   it('opens an http Tab without waiting on a host HTML probe', () => {
     const browser = createHostBrowser({
       isBusy: () => false,
-      pickFrameUrl: (url) => `${url}#proxy`,
     })
     const started = Date.now()
     const box = session(browser)
@@ -467,7 +495,6 @@ describe('Browser seam', () => {
     expect(Date.now() - started).toBeLessThan(200)
     expect(box.snapshot().browser.status).toBe('loaded')
     expect(box.snapshot().browser.page?.html).toBeUndefined()
-    expect(box.snapshot().browser.page?.frameUrl).toBe(`${PAGE_URL}#proxy`)
   })
 
   it('fills http:// for a host:port URL', () => {

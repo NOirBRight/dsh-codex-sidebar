@@ -13,7 +13,7 @@ import { BrowserPane } from './BrowserPane.tsx'
 import { ReviewPane } from './ReviewPane.tsx'
 import { TerminalPane } from './TerminalPane.tsx'
 import { TerminalRail } from './TerminalRail.tsx'
-import type { SidebarStore } from './controller.ts'
+import type { BrowserCaptureReply, SidebarStore } from './controller.ts'
 import { SidebarController } from './controller.ts'
 import {
   clampDrawerWidth,
@@ -37,7 +37,9 @@ export function SidebarPanel({
   sessionId, useSessions, useSidebar, controller, t,
 }: SidebarProps): ReactNode {
   useEffect(() => {
-    void controller.refresh(String(sessionId))
+    const abort = new AbortController()
+    void controller.refresh(String(sessionId), abort.signal)
+    return () => { abort.abort() }
   }, [controller, sessionId])
 
   const snapshot = useSidebar((state) => state.bySession[String(sessionId)])
@@ -57,6 +59,8 @@ export function SidebarPanel({
         t={t}
         onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
         onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
+        onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
+        onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
       />
     </div>
   )
@@ -86,12 +90,16 @@ function SidebarChrome({
   t,
   onIntent,
   onPullTerminal,
+  onBrowserTicket,
+  onBrowserCapture,
 }: {
   snapshot: SidebarSnapshot
   workspaceName: string
   t: (key: SidebarKey) => string
   onIntent: (intent: Intent) => void
   onPullTerminal: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
+  onBrowserTicket: (tabId: string) => Promise<{ path: string; expiresAt: number } | undefined>
+  onBrowserCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
 }): ReactElement {
   const active = snapshot.tabs.find((tab) => tab.id === snapshot.active)
   const fill = active?.kind === 'Files' || active?.kind === 'Review' || active?.kind === 'Terminal'
@@ -262,6 +270,8 @@ function SidebarChrome({
       </div>
       <AttachmentStrip
         attachments={snapshot.attachments}
+        onEdit={(id) => { onIntent({ type: 'edit-attachment', id }) }}
+        onSend={() => { onIntent({ type: 'composer-send', text: '' }) }}
         onRemove={(id) => { onIntent({ type: 'remove-attachment', id }) }}
       />
       <div className="dcs-body" data-center={snapshot.showPalette || undefined} data-fill={fill && !snapshot.showPalette || undefined}>
@@ -277,7 +287,7 @@ function SidebarChrome({
             notePlaceholder={t('notePlaceholder')}
             sendLabel={t('noteSend')}
             addLabel={t('noteAdd')}
-            sendTip={t('noteSendTip')}
+            deleteLabel={t('noteDelete')}
             previewLabel={t('filesPreview')}
             diffLabel={t('filesDiff')}
           />
@@ -289,9 +299,11 @@ function SidebarChrome({
           <BrowserPane
             snapshot={snapshot}
             onIntent={onIntent}
+            requestTicket={onBrowserTicket}
+            requestCapture={onBrowserCapture}
             sendLabel={t('noteSend')}
             addLabel={t('noteAdd')}
-            sendTip={t('noteSendTip')}
+            deleteLabel={t('noteDelete')}
           />
         )}
         {!snapshot.showPalette && active?.kind === 'Terminal' && (

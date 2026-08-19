@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { browserDockBox, browserSurface, pumpSessionId } from '../src/client/browser-pump.ts'
 import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT, SIDEBAR_TERMINAL_PULL_ENDPOINT } from '../src/contract.ts'
 import { handleSidebarRpc } from '../src/host-rpc.ts'
 import { createRegistry } from '../src/registry.ts'
@@ -30,17 +29,6 @@ function fakePty(): TerminalPort {
 }
 
 describe('idle-cost seams', () => {
-  it('never enumerates every session id for the hidden browser pump', () => {
-    expect(pumpSessionId({ current: 'sess-a' }, false)).toBe('sess-a')
-    expect(pumpSessionId({ current: 'sess-a' }, true)).toBeUndefined()
-    expect(pumpSessionId({}, false)).toBeUndefined()
-    expect(browserDockBox({ left: 1, top: 2, width: 0, height: 720 })).toBeUndefined()
-    const box = browserDockBox({ left: 12, top: 24, width: 640, height: 480 })
-    expect(box).toEqual({ x: 12, y: 24, w: 640, h: 480 })
-    expect(browserSurface(box, true, false)).toMatchObject({ mode: 'dock', pointerEvents: 'none', visibility: 'visible' })
-    expect(browserSurface(box, false, true)).toMatchObject({ mode: 'dock', pointerEvents: 'none', visibility: 'hidden' })
-  })
-
   it('pulls terminal bytes without recomputing the Files tree', () => {
     let trees = 0
     const files: FilesPort = {

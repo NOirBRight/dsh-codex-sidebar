@@ -21,8 +21,8 @@ export type DrawerProps =
 export function NarrowDrawer(props: DrawerProps): ReactElement | null {
   const sessionId = props.useSessions((list) => list.current)
   const collapsed = props.useSidebar((state) => (
-    sessionId === undefined ? true : state.bySession[String(sessionId)]?.collapsed
-  )) ?? true
+    sessionId === undefined ? undefined : state.bySession[String(sessionId)]?.collapsed
+  ))
   usePinFrameColumns(sessionId !== undefined, collapsed)
   useLayoutEffect(() => {
     if (sessionId === undefined) return
@@ -31,7 +31,7 @@ export function NarrowDrawer(props: DrawerProps): ReactElement | null {
   return null
 }
 
-function usePinFrameColumns(active: boolean, collapsed: boolean): void {
+function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): void {
   useLayoutEffect(() => {
     if (!active) return
     const overlay = document.querySelector('[data-shell-overlay]')
@@ -46,7 +46,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean): void {
         frame.style.setProperty('--dcs-sidebar-track', sidebar)
       }
       const details = detailsTrackPx(collapsed, peekDrawerWidth(viewport))
-      if (frame.style.getPropertyValue('--dcs-details-track') !== details) {
+      if (details !== undefined && frame.style.getPropertyValue('--dcs-details-track') !== details) {
         frame.style.setProperty('--dcs-details-track', details)
       }
     }

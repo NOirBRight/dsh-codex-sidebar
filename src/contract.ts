@@ -8,6 +8,10 @@ export const SIDEBAR_RPC_CHANNEL = '/codex-sidebar'
 export const SIDEBAR_SNAPSHOT_ENDPOINT = 'sidebar/snapshot'
 export const SIDEBAR_DISPATCH_ENDPOINT = 'sidebar/dispatch'
 export const SIDEBAR_TERMINAL_PULL_ENDPOINT = 'sidebar/terminal-pull'
+export const SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT = 'sidebar/browser-stream-ticket'
+export const SIDEBAR_BROWSER_CAPTURE_ENDPOINT = 'sidebar/browser-capture'
+export const SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT = 'sidebar/browser-evidence-commit'
+export const SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT = 'sidebar/browser-evidence-read'
 
 export type SnapshotRequest = {
   sessionId: string

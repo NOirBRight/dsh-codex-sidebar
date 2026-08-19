@@ -199,14 +199,14 @@ describe('Review seam', () => {
     expect(box.snapshot().review.files.map((file) => file.path)).toEqual(['src/Login.tsx', 'notes.md'])
   })
 
-  it('stacks a gutter 批注 on Enter and sends it to the 主会话 on Ctrl+Enter', () => {
+  it('adds a gutter 批注 and directly sends only the current one', () => {
     const box = session(fakeReview({ turn: [LOGIN_TURN] }))
     box.dispatch({ type: 'pick-tool', kind: 'Review' })
     box.dispatch({ type: 'review-toggle-file', path: 'src/Login.tsx' })
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
     expect(box.snapshot().review.pendingMark).toBe('src/Login.tsx:2')
     box.dispatch({ type: 'review-set-note-draft', text: 'restore the deleted OK button' })
-    expect(box.dispatch({ type: 'review-note-enter' })).toEqual([])
+    expect(box.dispatch({ type: 'review-note-add' })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
       {
         id: 'r1',
@@ -223,32 +223,22 @@ describe('Review seam', () => {
 
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
     box.dispatch({ type: 'review-set-note-draft', text: 'keep the Sign in heading' })
-    const sent = box.dispatch({ type: 'review-note-ctrl-enter' })
+    const sent = box.dispatch({ type: 'review-note-send' })
     expect(sent).toEqual([{
       type: 'send',
       text: 'keep the Sign in heading',
-      attachments: [
-        {
-          id: 'r1',
-          text: 'restore the deleted OK button',
-          from: 'Login.tsx:2',
-          source: 'review',
-          selector: 'src/Login.tsx:2',
-          path: 'src/Login.tsx',
-          line: 2,
-        },
-        {
-          id: 'r2',
-          text: 'keep the Sign in heading',
-          from: 'Login.tsx:2',
-          source: 'review',
-          selector: 'src/Login.tsx:2',
-          path: 'src/Login.tsx',
-          line: 2,
-        },
-      ],
+      attachments: [{
+        id: 'r2',
+        text: 'keep the Sign in heading',
+        from: 'Login.tsx:2',
+        source: 'review',
+        selector: 'src/Login.tsx:2',
+        path: 'src/Login.tsx',
+        line: 2,
+      }],
     }])
-    expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]?.id).toBe('r1')
     expect(box.snapshot().review.attachments).toEqual([])
   })
 
@@ -258,7 +248,7 @@ describe('Review seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Review' })
     box.dispatch({ type: 'review-toggle-file', path: 'src/Login.tsx' })
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
-    const queued = box.dispatch({ type: 'review-note-ctrl-enter' })
+    const queued = box.dispatch({ type: 'review-note-send' })
     expect(queued).toEqual([{
       type: 'queue',
       text: '',
@@ -275,7 +265,7 @@ describe('Review seam', () => {
     busy = false
     box.dispatch({ type: 'review-gutter', mark: 'src/Login.tsx:2' })
     box.dispatch({ type: 'review-set-note-draft', text: 'restore OK' })
-    expect(box.dispatch({ type: 'review-note-ctrl-enter' })[0]?.type).toBe('send')
+    expect(box.dispatch({ type: 'review-note-send' })[0]?.type).toBe('send')
   })
 
   it('moves the 批注 composer to a later gutter click and dismisses it with Esc', () => {

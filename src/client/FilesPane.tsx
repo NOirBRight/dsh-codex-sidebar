@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
 import type { DiffLine } from '../review.ts'
-import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
-import { fileCaption } from '../annotation.ts'
+import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
+import { fileCaption, parsePathLine } from '../annotation.ts'
 import { ancestorsOf, visibleTree } from '../file-tree.ts'
 import { highlightSource, parseMarkdown, type Inline, type MdBlock, type Token } from '../preview.ts'
 import { FileGlyph, Ico } from './icons.tsx'
@@ -19,7 +19,7 @@ export function FilesPane({
   notePlaceholder,
   sendLabel,
   addLabel,
-  sendTip,
+  deleteLabel,
   previewLabel,
   diffLabel,
 }: {
@@ -32,7 +32,7 @@ export function FilesPane({
   notePlaceholder: string
   sendLabel: string
   addLabel: string
-  sendTip: string
+  deleteLabel: string
   previewLabel: string
   diffLabel: string
 }): ReactElement {
@@ -46,9 +46,20 @@ export function FilesPane({
   const showDiff = files.view === 'diff' && files.diff !== null
   const lines = !empty && image === undefined && !markdown && !missing && !showDiff ? (files.preview ?? '').split('\n') : []
   const tokens = lines.length > 0 ? highlightSource(files.path, files.preview ?? '') : []
+  const surfaceMarks = fileBadges(snapshot.attachments, files.path)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<Set<string>>(() => ancestorsOf(files.path))
   const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    clearFileSelectionHighlight()
+  }, [files.path])
+
+  useEffect(() => {
+    if (files.pendingMark === null) clearFileSelectionHighlight()
+  }, [files.pendingMark])
+
+  useEffect(() => () => { clearFileSelectionHighlight() }, [])
 
   useEffect(() => {
     const ancestors = ancestorsOf(files.path)
@@ -64,7 +75,6 @@ export function FilesPane({
     })
   }, [files.path])
   const [searching, setSearching] = useState(false)
-  const [menu, setMenu] = useState(false)
   const [dragW, setDragW] = useState<number | null>(null)
   const [localW, setLocalW] = useState<number | null>(null)
   const crumbs = crumbsOf(empty ? '' : files.path)
@@ -107,6 +117,39 @@ export function FilesPane({
     })
   }
 
+  function markSurface(event: MouseEvent<HTMLElement>): void {
+    if (!files.annotate) return
+    const target = event.target instanceof Element ? event.target : null
+    if (target !== null && target.closest('.dcs-file-surface-badges') !== null) return
+    const pane = bodyRef.current
+    if (pane === null) return
+    const paneBox = pane.getBoundingClientRect()
+    const anchor = surfaceAnchor(event)
+    showFileSelectionHighlight(anchor.range)
+    window.getSelection()?.removeAllRanges()
+    onIntent({
+      type: 'click-content',
+      mark: `${files.path}:${anchor.line}`,
+      x: event.clientX - paneBox.left,
+      y: event.clientY - paneBox.top,
+      rect: anchor.rect,
+    })
+  }
+
+  function editMark(id: string, event: MouseEvent<HTMLElement>): void {
+    event.preventDefault()
+    event.stopPropagation()
+    const pane = bodyRef.current
+    if (pane === null) return
+    const box = pane.getBoundingClientRect()
+    onIntent({
+      type: 'edit-attachment',
+      id,
+      x: event.clientX - box.left,
+      y: event.clientY - box.top,
+    })
+  }
+
   function toggleDir(path: string): void {
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -124,7 +167,6 @@ export function FilesPane({
       if (on) setQuery('')
       return !on
     })
-    setMenu(false)
   }
 
   function onCrumb(path: string, last: boolean): void {
@@ -189,31 +231,16 @@ export function FilesPane({
               </button>
             </div>
           )}
-          <div className="dcs-fh-menu">
-            <button
-              type="button"
-              title="菜单"
-              className="dcs-tool"
-              data-on={menu || undefined}
-              onClick={() => { setMenu((open) => !open) }}
-            >
-              <Ico name="more" size={14} />
-            </button>
-            {menu && (
-              <div className="dcs-fh-pop">
-                <button
-                  type="button"
-                  data-on={files.annotate || undefined}
-                  onClick={() => {
-                    onIntent({ type: 'set-annotate', on: !files.annotate })
-                    setMenu(false)
-                  }}
-                >
-                  {annotateLabel}
-                </button>
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            title={annotateLabel}
+            aria-label={annotateLabel}
+            className="dcs-tool"
+            data-on={files.annotate || undefined}
+            onClick={() => { onIntent({ type: 'set-annotate', on: !files.annotate }) }}
+          >
+            <Ico name="pencil" size={14} />
+          </button>
           <button
             type="button"
             title="搜索"
@@ -239,38 +266,67 @@ export function FilesPane({
         {empty ? (
           <div className="dcs-files-empty">Open a file to get started</div>
         ) : (
-          <div className="dcs-code" data-mark={files.annotate || undefined} data-media={image !== undefined || markdown || undefined}>
+          <div
+            className="dcs-code"
+            data-mark={files.annotate || undefined}
+            data-selected={!markdown && image === undefined && files.pendingMark !== null || undefined}
+            data-annotated={!markdown && image === undefined && surfaceMarks.length > 0 || undefined}
+            data-media={image !== undefined || markdown || undefined}
+          >
             {missing ? (
               <div className="dcs-missing">无法读取 {files.path}</div>
             ) : image !== undefined ? (
-              <img
-                alt={name}
-                src={image}
-                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', padding: 16 }}
-                onClick={(event) => { markLine(1, event) }}
-              />
+              <div className="dcs-media-surface" data-dcs-line={1} onMouseUp={markSurface}>
+                <img
+                  alt={name}
+                  src={image}
+                  data-dcs-line={1}
+                  style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', padding: 16 }}
+                />
+                <FileSurfaceBadges marks={surfaceMarks} pendingRect={files.pendingRect} onEdit={editMark} />
+              </div>
             ) : showDiff && files.diff !== null ? (
               <FileDiffBody
                 path={files.path}
                 hunk={files.diff.hunk}
                 lines={files.diff.lines}
                 annotate={files.annotate}
+                pendingMark={files.pendingMark}
+                attachments={snapshot.attachments}
                 onMark={markLine}
+                onEdit={editMark}
               />
             ) : markdown ? (
               <div
                 className="dcs-md"
-                onClick={(event) => { markLine(1, event) }}
+                onMouseUp={markSurface}
               >
                 {renderMarkdown(files.preview ?? '')}
+                <FileSurfaceBadges marks={surfaceMarks} pendingRect={files.pendingRect} onEdit={editMark} />
               </div>
             ) : (
               lines.map((line, index) => {
-                const n = lineBadge(snapshot.attachments, files.path, index + 1)
+                const marks = lineBadges(snapshot.attachments, files.path, index + 1)
                 return (
-                <div key={index} className="dcs-line" onClick={(event) => { markLine(index + 1, event) }}>
+                <div
+                  key={index}
+                  className="dcs-line"
+                  data-annotated={marks.length > 0 || undefined}
+                  data-selected={pendingLine(files.pendingMark, files.path) === index + 1 || undefined}
+                  onClick={(event) => { markLine(index + 1, event) }}
+                >
                   <span className="dcs-n">
-                    {n === undefined ? null : <span className="dcs-line-badge">{n}</span>}
+                    {marks.map((mark) => (
+                      <button
+                        key={mark.item.id}
+                        type="button"
+                        className="dcs-line-badge"
+                        aria-label={`编辑批注 ${mark.n}`}
+                        onClick={(event) => { editMark(mark.item.id, event) }}
+                      >
+                        {mark.n}
+                      </button>
+                    ))}
                     {index + 1}
                   </span>
                   <CodeText tokens={tokens[index]} fallback={line} />
@@ -349,10 +405,14 @@ export function FilesPane({
           placeholder={notePlaceholder}
           sendLabel={sendLabel}
           addLabel={addLabel}
-          sendTip={sendTip}
+          deleteLabel={deleteLabel}
+          editing={files.editingId !== null}
+          onDelete={() => {
+            if (files.editingId !== null) onIntent({ type: 'remove-attachment', id: files.editingId })
+          }}
           onChange={(text) => { onIntent({ type: 'set-note-draft', text }) }}
-          onAdd={() => { onIntent({ type: 'note-enter' }) }}
-          onSend={() => { onIntent({ type: 'note-ctrl-enter' }) }}
+          onAdd={() => { onIntent({ type: 'note-add' }) }}
+          onSend={() => { onIntent({ type: 'note-send' }) }}
           onDismiss={() => { onIntent({ type: 'dismiss-note' }) }}
         />
       )}
@@ -372,11 +432,138 @@ function crumbsOf(path: string): Array<{ name: string; path: string }> {
   return out
 }
 
-function lineBadge(attachments: readonly Annotation[], path: string, line: number): number | undefined {
-  const index = attachments.findIndex((item) => (
-    item.source === 'files' && item.path === path && item.line === line
+type NumberedAnnotation = { n: number; item: Annotation }
+
+function pendingLine(mark: string | null, path: string): number | undefined {
+  if (mark === null) return undefined
+  const parsed = parsePathLine(mark)
+  return parsed?.path === path ? parsed.line : undefined
+}
+
+function fileBadges(attachments: readonly Annotation[], path: string): NumberedAnnotation[] {
+  return attachments.flatMap((item, index) => (
+    item.source === 'files' && item.path === path ? [{ n: index + 1, item }] : []
   ))
-  return index < 0 ? undefined : index + 1
+}
+
+function lineBadges(attachments: readonly Annotation[], path: string, line: number): NumberedAnnotation[] {
+  return fileBadges(attachments, path).filter((mark) => mark.item.line === line)
+}
+
+function FileSurfaceBadges({
+  marks,
+  pendingRect,
+  onEdit,
+}: {
+  marks: NumberedAnnotation[]
+  pendingRect: AnnotationRect | null
+  onEdit: (id: string, event: MouseEvent<HTMLElement>) => void
+}): ReactElement | null {
+  const anchored = marks.filter((mark): mark is NumberedAnnotation & { item: Annotation & { rect: AnnotationRect } } => (
+    mark.item.rect !== undefined
+  ))
+  if (anchored.length === 0 && pendingRect === null) return null
+  return (
+    <div className="dcs-file-surface-badges">
+      {pendingRect !== null && (
+        <span className="dcs-file-anchor-outline" data-pending style={rectStyle(pendingRect)} />
+      )}
+      {anchored.map((mark, index) => {
+        const duplicate = anchored.slice(0, index).filter((other) => sameAnchor(other.item.rect, mark.item.rect)).length
+        return (
+          <span key={mark.item.id}>
+            <span className="dcs-file-anchor-outline" style={rectStyle(mark.item.rect)} />
+            <button
+              type="button"
+              className="dcs-line-badge dcs-file-anchor-badge"
+              style={{ left: mark.item.rect.x + duplicate * 20, top: mark.item.rect.y }}
+              aria-label={`编辑批注 ${mark.n}`}
+              onClick={(event) => { onEdit(mark.item.id, event) }}
+            >
+              {mark.n}
+            </button>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+function sameAnchor(a: AnnotationRect, b: AnnotationRect): boolean {
+  return Math.abs(a.x - b.x) < 2 && Math.abs(a.y - b.y) < 2
+}
+
+function rectStyle(rect: AnnotationRect): { left: number; top: number; width: number; height: number } {
+  return { left: rect.x, top: rect.y, width: rect.w, height: rect.h }
+}
+
+const FILE_SELECTION_HIGHLIGHT = 'dcs-file-selection'
+
+type HighlightRegistry = {
+  set(name: string, highlight: unknown): void
+  delete(name: string): void
+}
+
+function fileHighlightApi(): { registry: HighlightRegistry; create: (range: Range) => unknown } | null {
+  const css = globalThis.CSS as unknown as { highlights?: HighlightRegistry }
+  const HighlightCtor = (globalThis as unknown as { Highlight?: new (range: Range) => unknown }).Highlight
+  if (css?.highlights === undefined || HighlightCtor === undefined) return null
+  return { registry: css.highlights, create: (range) => new HighlightCtor(range) }
+}
+
+function showFileSelectionHighlight(range: Range | null): void {
+  const api = fileHighlightApi()
+  if (api === null) return
+  if (range === null) {
+    api.registry.delete(FILE_SELECTION_HIGHLIGHT)
+    return
+  }
+  api.registry.set(FILE_SELECTION_HIGHLIGHT, api.create(range))
+}
+
+function clearFileSelectionHighlight(): void {
+  fileHighlightApi()?.registry.delete(FILE_SELECTION_HIGHLIGHT)
+}
+
+function surfaceAnchor(event: MouseEvent<HTMLElement>): { line: number; rect: AnnotationRect; range: Range | null } {
+  const surface = event.currentTarget
+  const target = event.target instanceof Element ? event.target : surface
+  let lineElement = target.closest<HTMLElement>('[data-dcs-line]')
+  let selectedRange: Range | null = null
+  let targetBox = lineElement?.getBoundingClientRect() ?? target.getBoundingClientRect()
+
+  const selection = window.getSelection()
+  if (selection !== null && !selection.isCollapsed && selection.rangeCount > 0) {
+    const range = selection.getRangeAt(0)
+    const selectedNode = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentNode
+    const selectedBox = range.getBoundingClientRect()
+    if (selectedNode !== null && surface.contains(selectedNode) && selectedBox.width > 0 && selectedBox.height > 0) {
+      targetBox = selectedBox
+      selectedRange = range.cloneRange()
+      const start = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer as Element
+        : range.startContainer.parentElement
+      lineElement = start?.closest<HTMLElement>('[data-dcs-line]') ?? lineElement
+    }
+  } else if (target.closest('img') !== null) {
+    targetBox = new DOMRect(event.clientX, event.clientY, 2, 2)
+  }
+
+  const surfaceBox = surface.getBoundingClientRect()
+  const toSurfaceRect = (box: DOMRect): AnnotationRect => ({
+    x: box.left - surfaceBox.left + surface.scrollLeft,
+    y: box.top - surfaceBox.top + surface.scrollTop,
+    w: Math.max(2, box.width),
+    h: Math.max(2, box.height),
+  })
+  const line = Number(lineElement?.dataset.dcsLine ?? 1)
+  return {
+    line: Number.isFinite(line) && line > 0 ? line : 1,
+    rect: toSurfaceRect(targetBox),
+    range: selectedRange,
+  }
 }
 
 function CodeText({ tokens, fallback }: { tokens: Token[] | undefined; fallback: string }): ReactElement {
@@ -395,27 +582,49 @@ function FileDiffBody({
   hunk,
   lines,
   annotate,
+  pendingMark,
+  attachments,
   onMark,
+  onEdit,
 }: {
   path: string
   hunk: string
   lines: DiffLine[]
   annotate: boolean
+  pendingMark: string | null
+  attachments: readonly Annotation[]
   onMark: (line: number, event: MouseEvent<HTMLElement>) => void
+  onEdit: (id: string, event: MouseEvent<HTMLElement>) => void
 }): ReactElement {
   return (
     <div className="dcs-fd" data-mark={annotate || undefined}>
       <div className="dcs-fd-hunk">{hunk}</div>
       {lines.map((line, index) => {
         const lineNo = line.newNo ?? line.oldNo ?? index + 1
+        const marks = lineBadges(attachments, path, lineNo)
         return (
           <div
             key={index}
             className="dcs-fd-line"
             data-kind={line.kind === 'ctx' ? undefined : line.kind}
+            data-annotated={marks.length > 0 || undefined}
+            data-selected={pendingLine(pendingMark, path) === lineNo || undefined}
             onClick={(event) => { onMark(lineNo, event) }}
           >
-            <div className="dcs-fd-ln" data-kind={line.kind === 'ctx' ? undefined : line.kind}>{lineNo}</div>
+            <div className="dcs-fd-ln" data-kind={line.kind === 'ctx' ? undefined : line.kind}>
+              {marks.map((mark) => (
+                <button
+                  key={mark.item.id}
+                  type="button"
+                  className="dcs-line-badge"
+                  aria-label={`编辑批注 ${mark.n}`}
+                  onClick={(event) => { onEdit(mark.item.id, event) }}
+                >
+                  {mark.n}
+                </button>
+              ))}
+              {lineNo}
+            </div>
             <div className="dcs-fd-sign" data-kind={line.kind === 'ctx' ? undefined : line.kind}>
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
             </div>
@@ -447,32 +656,32 @@ function renderMarkdown(source: string): ReactNode {
 function MarkdownBlock({ block }: { block: MdBlock }): ReactElement {
   if (block.type === 'h') {
     const Tag = (`h${block.level}`) as 'h1' | 'h2' | 'h3'
-    return <Tag><MarkdownInlines nodes={block.inlines} /></Tag>
+    return <Tag data-dcs-line={block.line}><MarkdownInlines nodes={block.inlines} /></Tag>
   }
-  if (block.type === 'p') return <p><MarkdownInlines nodes={block.inlines} /></p>
-  if (block.type === 'quote') return <blockquote><MarkdownInlines nodes={block.inlines} /></blockquote>
-  if (block.type === 'hr') return <hr />
+  if (block.type === 'p') return <p data-dcs-line={block.line}><MarkdownInlines nodes={block.inlines} /></p>
+  if (block.type === 'quote') return <blockquote data-dcs-line={block.line}><MarkdownInlines nodes={block.inlines} /></blockquote>
+  if (block.type === 'hr') return <hr data-dcs-line={block.line} />
   if (block.type === 'code') {
     const path = block.lang.length > 0 ? `snippet.${block.lang}` : 'snippet.txt'
     const rows = highlightSource(path, block.text)
     return (
-      <pre className="dcs-md-pre">
+      <pre className="dcs-md-pre" data-dcs-line={block.line}>
         {block.text.split('\n').map((line, index) => (
-          <div key={index}><CodeText tokens={rows[index]} fallback={line} /></div>
+          <div key={index} data-dcs-line={block.line + index}><CodeText tokens={rows[index]} fallback={line} /></div>
         ))}
       </pre>
     )
   }
   if (block.type === 'table') {
     return (
-      <div className="dcs-md-table-wrap">
+      <div className="dcs-md-table-wrap" data-dcs-line={block.line}>
         <table>
           <thead>
             <tr>{block.headers.map((cell, index) => <th key={index}><MarkdownInlines nodes={cell} /></th>)}</tr>
           </thead>
           <tbody>
             {block.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
+              <tr key={rowIndex} data-dcs-line={block.line + rowIndex + 2}>
                 {row.map((cell, cellIndex) => <td key={cellIndex}><MarkdownInlines nodes={cell} /></td>)}
               </tr>
             ))}
@@ -483,8 +692,8 @@ function MarkdownBlock({ block }: { block: MdBlock }): ReactElement {
   }
   const Tag = block.type === 'ol' ? 'ol' : 'ul'
   return (
-    <Tag>
-      {block.items.map((item, index) => <li key={index}><MarkdownInlines nodes={item} /></li>)}
+    <Tag data-dcs-line={block.line}>
+      {block.items.map((item, index) => <li key={index} data-dcs-line={block.line + index}><MarkdownInlines nodes={item} /></li>)}
     </Tag>
   )
 }

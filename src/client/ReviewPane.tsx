@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
 import type { ReviewMode, ReviewScopeStats } from '../review.ts'
 import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
+import { Ico } from './icons.tsx'
 import { isImeKey, useImeSafeDraft } from './ime-draft.ts'
 
 const REVIEW_CSS = `
@@ -52,10 +53,11 @@ const REVIEW_CSS = `
 .dcs-rev-line { display: grid; grid-template-columns: 22px 34px 34px 14px 1fr; align-items: stretch; }
 .dcs-rev-line[data-kind="add"] { background: color-mix(in srgb, #3dd68c 14%, transparent); }
 .dcs-rev-line[data-kind="del"] { background: color-mix(in srgb, #e85d5d 14%, transparent); }
+.dcs-rev-line[data-annotated] { box-shadow: inset 3px 0 #38bdf8; }
 .dcs-rev-gutter { display: flex; align-items: center; justify-content: center; }
 .dcs-rev-badge {
-  width: 16px; height: 16px; border-radius: 50%;
-  display: grid; place-items: center;
+  width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; cursor: pointer;
   background: #38bdf8; color: #0f172a;
   font-size: 10px; font-weight: 700; line-height: 16px;
 }
@@ -85,7 +87,13 @@ const REVIEW_CSS = `
   background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 500;
 }
 .dcs-rev-add:hover { color: var(--dsw-alias-label-primary); }
-.dcs-rev-hint { margin-top: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.dcs-rev-delete, .dcs-rev-send {
+  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; cursor: pointer;
+}
+.dcs-rev-delete { background: transparent; color: var(--dsw-alias-label-tertiary); }
+.dcs-rev-delete:hover { color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.dcs-rev-send { background: var(--dsw-alias-interactive-primary); color: var(--dsw-alias-label-primary-on-color); }
 .dcs-rev-dd { position: relative; min-width: 0; flex: 0 1 auto; max-width: min(280px, 52%); overflow: visible; }
 .dcs-rev-dd-btn {
   border: 0; background: var(--dsw-alias-bg-layer-2); padding: 5px 8px; border-radius: 8px;
@@ -271,12 +279,23 @@ export function ReviewPane({
                         <div
                           className="dcs-rev-line"
                           data-kind={line.kind === 'ctx' ? undefined : line.kind}
+                          data-annotated={stacked !== undefined || undefined}
                           onMouseEnter={() => { setHover(mark) }}
                           onMouseLeave={() => { setHover((cur) => (cur === mark ? null : cur)) }}
                         >
                           <div className="dcs-rev-gutter">
                             {stacked !== undefined ? (
-                              <span className="dcs-rev-badge">{stacked}</span>
+                              <button
+                                type="button"
+                                className="dcs-rev-badge"
+                                aria-label={`编辑批注 ${stacked.n}`}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  onIntent({ type: 'edit-attachment', id: stacked.id })
+                                }}
+                              >
+                                {stacked.n}
+                              </button>
                             ) : showPlus && (
                               <button
                                 type="button"
@@ -305,6 +324,7 @@ export function ReviewPane({
                         {pending && (
                           <ReviewNote
                             value={review.noteDraft}
+                            editingId={review.editingId}
                             onIntent={onIntent}
                           />
                         )}
@@ -376,9 +396,11 @@ function ScopeStat({ stat }: { stat: ReviewScopeStats }): ReactElement {
 
 function ReviewNote({
   value,
+  editingId,
   onIntent,
 }: {
   value: string
+  editingId: string | null
   onIntent: (intent: Intent) => void
 }): ReactElement {
   const draft = useImeSafeDraft(value, (text) => {
@@ -393,16 +415,10 @@ function ReviewNote({
       onIntent({ type: 'review-dismiss-note' })
       return
     }
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault()
-      draft.flush()
-      onIntent({ type: 'review-note-ctrl-enter' })
-      return
-    }
     if (event.key === 'Enter') {
       event.preventDefault()
       draft.flush()
-      onIntent({ type: 'review-note-enter' })
+      onIntent({ type: 'review-note-add' })
     }
   }
 
@@ -418,23 +434,46 @@ function ReviewNote({
           onCompositionEnd={(event) => { draft.onCompositionEnd(event.currentTarget.value) }}
           onKeyDown={onNoteKey}
         />
+        {editingId !== null && (
+          <button
+            type="button"
+            className="dcs-rev-delete"
+            title="删除批注"
+            aria-label="删除批注"
+            onClick={() => { onIntent({ type: 'remove-attachment', id: editingId }) }}
+          >
+            <Ico name="trash" size={13} />
+          </button>
+        )}
         <button
           type="button"
           className="dcs-rev-add"
           onClick={() => {
             draft.flush()
-            onIntent({ type: 'review-note-enter' })
+            onIntent({ type: 'review-note-add' })
           }}
         >
           新增
         </button>
+        <button
+          type="button"
+          className="dcs-rev-send"
+          title="发送"
+          aria-label="发送"
+          onClick={() => {
+            draft.flush()
+            onIntent({ type: 'review-note-send' })
+          }}
+        >
+          <Ico name="send" size={13} />
+        </button>
       </div>
-      <div className="dcs-rev-hint">Enter 堆叠 · Ctrl+Enter 发给当前会话 · Esc 取消</div>
     </div>
   )
 }
 
-function reviewBadge(attachments: readonly Annotation[], mark: string): number | undefined {
+function reviewBadge(attachments: readonly Annotation[], mark: string): { n: number; id: string } | undefined {
   const index = attachments.findIndex((item) => item.source === 'review' && item.selector === mark)
-  return index < 0 ? undefined : index + 1
+  const item = index < 0 ? undefined : attachments[index]
+  return item === undefined ? undefined : { n: index + 1, id: item.id }
 }

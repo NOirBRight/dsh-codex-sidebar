@@ -20,11 +20,11 @@ export type ToolsHost = {
 }
 
 export const BROWSER_DRIVE_GUIDANCE = [
-  '侧栏 Browser 是当前主会话的本机预览页，用人的同一只 Tab。',
+  '侧栏 Browser 是当前主会话的托管 Chromium，用人的同一只 Tab，支持本机和公网站。',
   '操作它只用 browser_tabs / browser_open / browser_snapshot / browser_click / browser_fill。',
   '不要用 computer-use、Orca、桌面截图、系统 Chrome，也不要用 bash sleep / 提权沙箱来等页面。',
-  'browser_open 会静默打开，不必先拉开侧栏。open 之后直接 browser_snapshot，工具自己会等页面接上。',
-  '公网站可以 open，但不能在 iframe 里操作。Side Chat / Fork 不能用这组工具。',
+  'browser_open 会静默打开，不必先拉开侧栏；随后 browser_snapshot 获取当前 document-scoped ref。',
+  '页面导航后旧 ref 会失效，重新 snapshot。Side Chat / Fork 不能用这组工具。',
 ].join('\n')
 
 const RESULT_SCHEMA = {
@@ -38,7 +38,8 @@ export function registerBrowserDriveTools(
   service: BrowserDriveService,
   sessionOf: (exec: DriveExec) => SidebarSession | undefined,
   before?: () => Promise<void>,
-): void {
+): () => void {
+  const disposers: Array<() => void> = []
   const render = (_args: unknown, value: unknown) => [{ type: 'text', text: JSON.stringify(value) }]
 
   function tool(
@@ -47,19 +48,19 @@ export function registerBrowserDriveTools(
     parameters: Record<string, unknown>,
     execute: (args: Record<string, unknown>, exec: DriveExec) => Promise<unknown>,
   ): void {
-    tools.register({
+    disposers.push(tools.register({
       name,
       description,
       parameters,
       output: { schema: RESULT_SCHEMA, render },
       isConcurrencySafe: name === 'browser_tabs' ? () => true : undefined,
       execute,
-    })
+    }))
   }
 
   tool(
     'browser_tabs',
-    '列出当前主会话侧栏 Browser Tab。操作本机预览页必须用这组 browser_* 工具，禁止 computer-use / Orca / 桌面截图。Fork / Side Chat 不能用。',
+    '列出当前主会话侧栏 Browser Tab。操作托管页面必须用这组 browser_* 工具，禁止 computer-use / Orca / 桌面截图。Fork / Side Chat 不能用。',
     { type: 'object', properties: {}, additionalProperties: false },
     async (_args, exec) => {
       await before?.()
@@ -71,7 +72,7 @@ export function registerBrowserDriveTools(
 
   tool(
     'browser_open',
-    '在侧栏 Browser 打开 URL（静默，不必拉开侧栏）。本机 http 才能接着 snapshot/click/fill。禁止用 computer-use 代替。',
+    '在侧栏托管 Browser 打开本机或公网 URL（静默，不必拉开侧栏），随后可 snapshot/click/fill。禁止用 computer-use 代替。',
     {
       type: 'object',
       additionalProperties: false,
@@ -88,7 +89,7 @@ export function registerBrowserDriveTools(
 
   tool(
     'browser_snapshot',
-    '读取侧栏本机页面的可交互树，返回 @eN ref。open 之后直接调用本工具，它会等待连接。禁止 sleep、禁止 computer-use。',
+    '读取侧栏托管页面的可交互树，返回 document-scoped ref。open 之后直接调用本工具，它会等待连接。禁止 sleep、禁止 computer-use。',
     {
       type: 'object',
       additionalProperties: false,
@@ -104,7 +105,7 @@ export function registerBrowserDriveTools(
 
   tool(
     'browser_click',
-    '点击最近一次 browser_snapshot 的 ref。只对本机页有效。禁止 computer-use。',
+    '点击最近一次 browser_snapshot 的 document-scoped ref。导航后需重新 snapshot。禁止 computer-use。',
     {
       type: 'object',
       additionalProperties: false,
@@ -124,7 +125,7 @@ export function registerBrowserDriveTools(
 
   tool(
     'browser_fill',
-    '向 snapshot ref 的输入框填文本。只对本机页有效。禁止 computer-use 打字。',
+    '向最近一次 snapshot 的输入框 ref 填文本；导航后需重新 snapshot。禁止 computer-use 打字。',
     {
       type: 'object',
       additionalProperties: false,
@@ -143,11 +144,13 @@ export function registerBrowserDriveTools(
     },
   )
 
-  tools.guard?.((exec) => {
+  const disposeGuard = tools.guard?.((exec) => {
     if (!(BROWSER_DRIVE_TOOLS as readonly string[]).includes(exec.name)) return undefined
     if (callerMayDrive(exec.agent?.session?.header)) return undefined
     return '只有当前主会话的舵主能操作侧栏 Browser'
   })
+  if (disposeGuard !== undefined) disposers.push(disposeGuard)
+  return () => { for (const dispose of disposers.reverse()) dispose() }
 }
 
 function headerOf(exec: { agent?: { session?: { header?: DriveCaller } } }): DriveCaller | undefined {

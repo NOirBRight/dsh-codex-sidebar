@@ -1,57 +1,63 @@
-/** BrowserPort: iframe-first. A snapshot probe must not block opening a Tab. */
+/** BrowserPort: synchronous chrome projection plus async managed-Page commands. */
 
 import { liveHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
+import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 
 /** Optional HTML snapshot for tests. Production load never waits on the network. */
 export type PageProbe =
   | { kind: 'html'; html: string }
-  | { kind: 'auth' }
   | { kind: 'unreachable' }
 
 export function createHostBrowser(opts: {
   isBusy: () => boolean
   probe?: (url: string) => PageProbe
   openExternal?: (url: string) => void
-  pickFrameUrl?: (url: string) => string | undefined
+  managed?: { runtime: ManagedBrowserRuntime; sessionId: string }
 }): BrowserPort {
   return {
     load(url) {
-      const frameUrl = opts.pickFrameUrl?.(url)
-      if (opts.probe !== undefined) return loadFromProbe(url, opts.probe(url), frameUrl)
+      if (opts.probe !== undefined) return loadFromProbe(url, opts.probe(url))
       if (liveHref(url) === undefined) return undefined
-      return liveSnapshot(url, frameUrl)
+      return liveSnapshot(url)
     },
     openExternal(url) {
       opts.openExternal?.(url)
     },
     isBusy: () => opts.isBusy(),
-    ...opts.pickFrameUrl === undefined ? {} : { frameUrl: opts.pickFrameUrl },
+    ...opts.managed === undefined ? {} : {
+      manage(tabId, url, action) {
+        const tab = { sessionId: opts.managed?.sessionId ?? '', tabId }
+        const command = action === 'back'
+          ? opts.managed?.runtime.back(tab)
+          : action === 'forward'
+            ? opts.managed?.runtime.forward(tab)
+            : action === 'refresh'
+              ? opts.managed?.runtime.reload(tab)
+              : opts.managed?.runtime.ensure(tab, url)
+        void command?.catch(() => undefined)
+      },
+      close(tabId) {
+        void opts.managed?.runtime.close({ sessionId: opts.managed.sessionId, tabId })
+      },
+    },
   }
 }
 
-function loadFromProbe(url: string, result: PageProbe, frameUrl: string | undefined): PageDocument | undefined {
-  if (result.kind === 'auth') return authSnapshot(url, frameUrl)
-  if (result.kind === 'html') {
-    return frameUrl === undefined ? pageSnapshot(url, result.html) : pageSnapshot(url, result.html, frameUrl)
-  }
+function loadFromProbe(url: string, result: PageProbe): PageDocument | undefined {
+  if (result.kind === 'html') return pageSnapshot(url, result.html)
   if (liveHref(url) === undefined) return undefined
-  return liveSnapshot(url, frameUrl)
+  return liveSnapshot(url)
 }
 
-export function liveSnapshot(url: string, frameUrl?: string): PageDocument {
+export function liveSnapshot(url: string): PageDocument {
   return {
     url,
     title: url,
     elements: [{ selector: 'body', text: url }],
-    ...frameUrl === undefined ? {} : { frameUrl },
   }
 }
 
-export function authSnapshot(url: string, frameUrl?: string): PageDocument {
-  return { ...liveSnapshot(url, frameUrl), requiresAuth: true }
-}
-
-export function pageSnapshot(url: string, html: string, frameUrl?: string): PageDocument {
+export function pageSnapshot(url: string, html: string): PageDocument {
   const title = firstCapture(html, /<title[^>]*>([^<]*)<\/title>/i) ?? url
   const elements: PageElement[] = []
   const seen = new Set<string>()
@@ -67,7 +73,6 @@ export function pageSnapshot(url: string, html: string, frameUrl?: string): Page
     title: stripTags(title),
     html: withBaseHref(url, html),
     elements,
-    ...frameUrl === undefined ? {} : { frameUrl },
   }
 }
 

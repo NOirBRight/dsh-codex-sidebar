@@ -206,7 +206,7 @@ describe('Files seam', () => {
     box.dispatch({ type: 'select-file', path: 'src/Login.tsx' })
     box.dispatch({ type: 'set-annotate', on: true })
     box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 10, y: 20 })
-    box.dispatch({ type: 'note-enter' })
+    box.dispatch({ type: 'note-add' })
     expect(files.read('src/Login.tsx')).toBe('original')
   })
 
@@ -226,13 +226,13 @@ describe('Files seam', () => {
     expect(box.snapshot().files.notePos).toBeNull()
   })
 
-  it('stacks 批注 on Enter and sends them to the 主会话 on Ctrl+Enter', () => {
+  it('adds one 批注 and directly sends only the next one', () => {
     const { box } = session()
     box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
     box.dispatch({ type: 'set-annotate', on: true })
     box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
     box.dispatch({ type: 'set-note-draft', text: 'make the heading larger' })
-    expect(box.dispatch({ type: 'note-enter' })).toEqual([])
+    expect(box.dispatch({ type: 'note-add' })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
       {
         id: 't2',
@@ -248,32 +248,144 @@ describe('Files seam', () => {
 
     box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:2', x: 2, y: 2 })
     box.dispatch({ type: 'set-note-draft', text: 'and the button' })
-    const sent = box.dispatch({ type: 'note-ctrl-enter' })
+    const sent = box.dispatch({ type: 'note-send' })
     expect(sent).toEqual([{
       type: 'send',
       text: 'and the button',
-      attachments: [
-        {
-          id: 't2',
-          text: 'make the heading larger',
-          from: 'Login.tsx:1',
-          source: 'files',
-          selector: 'src/Login.tsx:1',
-          path: 'src/Login.tsx',
-          line: 1,
-        },
-        {
-          id: 't3',
-          text: 'and the button',
-          from: 'Login.tsx:2',
-          source: 'files',
-          selector: 'src/Login.tsx:2',
-          path: 'src/Login.tsx',
-          line: 2,
-        },
-      ],
+      attachments: [{
+        id: 't3',
+        text: 'and the button',
+        from: 'Login.tsx:2',
+        source: 'files',
+        selector: 'src/Login.tsx:2',
+        path: 'src/Login.tsx',
+        line: 2,
+      }],
+    }])
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]?.id).toBe('t2')
+  })
+
+  it('directly sends only the current 批注 and leaves stacked 批注 in the composer', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
+    box.dispatch({ type: 'set-note-draft', text: 'keep this stacked' })
+    box.dispatch({ type: 'note-add' })
+
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:2', x: 2, y: 2 })
+    box.dispatch({ type: 'set-note-draft', text: 'send only this' })
+    expect(box.dispatch({ type: 'note-send' })).toEqual([{
+      type: 'send',
+      text: 'send only this',
+      attachments: [{
+        id: 't3',
+        text: 'send only this',
+        from: 'Login.tsx:2',
+        source: 'files',
+        selector: 'src/Login.tsx:2',
+        path: 'src/Login.tsx',
+        line: 2,
+      }],
+    }])
+    expect(box.snapshot().attachments.map((item) => item.text)).toEqual(['keep this stacked'])
+  })
+
+  it('persists a file surface rectangle and re-anchors the same 批注 while editing', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'README.md' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({
+      type: 'click-content',
+      mark: 'README.md:3',
+      x: 40,
+      y: 50,
+      rect: { x: 20, y: 80, w: 120, h: 24 },
+      selection: { start: 15, end: 34 },
+    })
+    box.dispatch({ type: 'set-note-draft', text: 'move with this paragraph' })
+    box.dispatch({ type: 'note-add' })
+    const id = box.snapshot().attachments[0]?.id as string
+    expect(box.snapshot().attachments[0]).toMatchObject({
+      id,
+      path: 'README.md',
+      line: 3,
+      rect: { x: 20, y: 80, w: 120, h: 24 },
+      selection: { start: 15, end: 34 },
+    })
+
+    box.dispatch({ type: 'edit-attachment', id })
+    expect(box.snapshot().files.pendingRect).toEqual({ x: 20, y: 80, w: 120, h: 24 })
+    expect(box.snapshot().files.pendingSelection).toEqual({ start: 15, end: 34 })
+    box.dispatch({
+      type: 'click-content',
+      mark: 'README.md:7',
+      x: 60,
+      y: 70,
+      rect: { x: 44, y: 180, w: 180, h: 36 },
+    })
+    expect(box.snapshot().files.editingId).toBe(id)
+    expect(box.snapshot().files.noteDraft).toBe('move with this paragraph')
+    box.dispatch({ type: 'note-add' })
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]).toMatchObject({
+      id,
+      path: 'README.md',
+      line: 7,
+      rect: { x: 44, y: 180, w: 180, h: 36 },
+    })
+  })
+
+  it('opens a stacked file 批注 for editing, updates it in place, and removes it from the editor', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:2', x: 4, y: 5 })
+    box.dispatch({ type: 'set-note-draft', text: 'old copy' })
+    box.dispatch({ type: 'note-add' })
+    const id = box.snapshot().attachments[0]?.id as string
+
+    box.dispatch({ type: 'toggle-collapsed' })
+    box.dispatch({ type: 'edit-attachment', id })
+    expect(box.snapshot().collapsed).toBe(false)
+    expect(box.snapshot().files).toMatchObject({
+      path: 'src/Login.tsx',
+      annotate: true,
+      pendingMark: 'src/Login.tsx:2',
+      noteDraft: 'old copy',
+      editingId: id,
+    })
+    box.dispatch({ type: 'set-note-draft', text: 'new copy' })
+    box.dispatch({ type: 'note-add' })
+    expect(box.snapshot().attachments).toHaveLength(1)
+    expect(box.snapshot().attachments[0]).toMatchObject({ id, text: 'new copy' })
+
+    box.dispatch({ type: 'edit-attachment', id })
+    box.dispatch({ type: 'remove-attachment', id })
+    expect(box.snapshot().attachments).toEqual([])
+    expect(box.snapshot().files.editingId).toBeNull()
+    expect(box.snapshot().files.pendingMark).toBeNull()
+  })
+
+  it('sends stacked 批注 with an empty composer draft', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    box.dispatch({ type: 'set-annotate', on: true })
+    box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
+    box.dispatch({ type: 'note-add' })
+    const stacked = box.snapshot().attachments
+    expect(box.dispatch({ type: 'composer-send', text: '' })).toEqual([{
+      type: 'send',
+      text: '',
+      attachments: stacked,
     }])
     expect(box.snapshot().attachments).toEqual([])
+  })
+
+  it('keeps an empty composer send inert when there are no 批注', () => {
+    const { box } = session()
+    expect(box.dispatch({ type: 'composer-send', text: '' })).toEqual([])
   })
 
   it('queues 批注 the same way as a composer send when the 主会话 is busy', () => {
@@ -282,7 +394,7 @@ describe('Files seam', () => {
     box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
     box.dispatch({ type: 'set-annotate', on: true })
     box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
-    const queued = box.dispatch({ type: 'note-ctrl-enter' })
+    const queued = box.dispatch({ type: 'note-send' })
     expect(queued[0]?.type).toBe('queue')
     expect(box.snapshot().queue).toHaveLength(1)
     const again = box.dispatch({ type: 'composer-send', text: 'follow up' })
@@ -295,7 +407,7 @@ describe('Files seam', () => {
     box.dispatch({ type: 'set-annotate', on: true })
     box.dispatch({ type: 'click-content', mark: 'src/Login.tsx:1', x: 1, y: 1 })
     box.dispatch({ type: 'set-note-draft', text: 'make the heading larger' })
-    box.dispatch({ type: 'note-enter' })
+    box.dispatch({ type: 'note-add' })
     expect(box.dispatch({ type: 'remove-attachment', id: 't2' })).toEqual([])
     expect(box.snapshot().attachments).toEqual([])
   })

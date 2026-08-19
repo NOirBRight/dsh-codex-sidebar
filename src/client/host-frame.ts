@@ -5,7 +5,8 @@ export function sidebarTrackFromGrid(gridTemplateColumns: string): string | unde
   return match?.[1]
 }
 
-export function detailsTrackPx(collapsed: boolean, width: number): string {
+export function detailsTrackPx(collapsed: boolean | undefined, width: number): string | undefined {
+  if (collapsed === undefined) return undefined
   if (collapsed) return '0px'
   return `${Math.max(0, Math.round(width))}px`
 }

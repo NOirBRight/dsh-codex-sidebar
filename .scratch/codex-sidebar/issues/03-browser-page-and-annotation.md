@@ -11,3 +11,7 @@
 - [x] Back, forward, refresh, and open-external exist; no run/stop/spawn effect when a URL fails
 - [x] 批注 Enter / Ctrl+Enter land on the 主会话 composer, same rules as Files
 - [x] Tests drive the Browser seam with fake page documents and an unreachable URL: reuse, navigate, no spawn, 批注 destination is the 主会话
+
+## Accepted managed-browser follow-up
+
+ADR 0019 replaces iframe/pick-proxy with one managed Chromium for every page. The accepted spike is `.scratch/managed-browser-live-prototype/`: binary 30 FPS screencast, scroll/drag input, 批注-time scrolling and recapture, and screenshot evidence. Productization preserves the five `browser_*` automation tools while moving them to the Host-managed Page.

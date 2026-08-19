@@ -277,7 +277,7 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
   color: var(--dsw-alias-label-primary);
 }
 .dcs-code {
-  flex: 1; min-width: 0; min-height: 0; overflow: auto; font-family: var(--ds-font-family-code);
+  position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; font-family: var(--ds-font-family-code);
   font-size: 12.5px; line-height: 1.6; padding: 8px 12px 12px;
 }
 .dcs-tok-kw { color: #7c3aed; }
@@ -319,7 +319,10 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 }
 .dcs-fd-line[data-kind="add"] { background: color-mix(in srgb, #16a34a 14%, transparent); }
 .dcs-fd-line[data-kind="del"] { background: color-mix(in srgb, #dc2626 14%, transparent); }
+.dcs-fd-line[data-annotated] { box-shadow: inset 3px 0 #38bdf8; }
+.dcs-fd-line[data-selected] { background: color-mix(in srgb, #38bdf8 16%, transparent); }
 .dcs-fd-ln {
+  display: flex; align-items: center; justify-content: flex-end; gap: 2px;
   text-align: right; padding: 0 6px 0 0; color: var(--dsw-alias-label-tertiary);
   font-variant-numeric: tabular-nums; user-select: none; line-height: inherit;
 }
@@ -334,8 +337,12 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
   line-height: inherit;
 }
 .dcs-code[data-media] { padding: 0; }
+.dcs-media-surface {
+  position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+}
 .dcs-md {
-  flex: 1; min-height: 0; overflow: auto; box-sizing: border-box;
+  position: relative; flex: 1; min-height: 0; overflow: auto; box-sizing: border-box;
   padding: 18px 20px 36px; font-size: 13.5px; line-height: 1.6;
   font-family: var(--dsw-font-family, inherit);
   color: var(--dsw-alias-label-primary);
@@ -361,14 +368,38 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 .dcs-md th:last-child, .dcs-md td:last-child { border-right: 0; }
 .dcs-md tbody tr:last-child td { border-bottom: 0; }
 .dcs-code[data-mark] { cursor: crosshair; }
-.dcs-line { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; }
-.dcs-line .dcs-n { position: relative; text-align: right; padding-right: 12px; color: var(--dsw-alias-label-tertiary); user-select: none; }
+.dcs-code[data-annotated] { box-shadow: inset 3px 0 #38bdf8; }
+.dcs-code[data-selected] { box-shadow: inset 3px 0 #38bdf8; }
+.dcs-line { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; }
+.dcs-line[data-annotated] { background: color-mix(in srgb, #38bdf8 10%, transparent); }
+.dcs-line[data-selected] { background: color-mix(in srgb, #38bdf8 16%, transparent); }
+.dcs-line .dcs-n {
+  min-width: 40px; display: flex; align-items: center; justify-content: flex-end; gap: 2px;
+  text-align: right; padding-right: 12px; color: var(--dsw-alias-label-tertiary); user-select: none;
+}
 .dcs-line-badge {
-  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  width: 16px; height: 16px; border-radius: 50%;
-  display: grid; place-items: center;
+  flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; cursor: pointer;
   background: #38bdf8; color: #0f172a;
   font-size: 10px; font-weight: 700; line-height: 1;
+}
+::highlight(dcs-file-selection) {
+  background: #f15b4a; color: #fff;
+}
+.dcs-file-surface-badges {
+  position: absolute; inset: 0; z-index: 4; pointer-events: none;
+}
+.dcs-file-anchor-outline {
+  position: absolute; box-sizing: border-box; pointer-events: none;
+  border: 2px solid #38bdf8; border-radius: 3px;
+  background: color-mix(in srgb, #38bdf8 10%, transparent);
+}
+.dcs-file-anchor-outline[data-pending] {
+  border-style: dashed; background: color-mix(in srgb, #38bdf8 16%, transparent);
+}
+.dcs-file-anchor-badge {
+  position: absolute; z-index: 1; pointer-events: auto;
+  transform: translate(-50%, -100%); margin-top: -3px;
 }
 .dcs-line .dcs-t { color: var(--dsw-alias-label-primary); white-space: pre; padding-right: 16px; }
 .dcs-missing {
@@ -632,69 +663,15 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
   padding: 0;
 }
 .dcs-note-send:hover { filter: brightness(1.08); }
-.dcs-note-send-wrap {
-  position: relative;
-  flex-shrink: 0;
+.dcs-note-delete {
+  width: 26px; height: 26px; flex: none; padding: 0; border: 0; border-radius: 999px;
+  display: grid; place-items: center; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-tertiary);
 }
-.dcs-tip {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 8;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-primary);
-  border: 1px solid var(--dsw-alias-border-l2);
-  box-shadow: var(--dsw-shadow-lv2);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  white-space: nowrap;
-  transition: opacity 80ms ease 80ms, visibility 0s linear 160ms;
+.dcs-note-delete:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-state-error-primary);
 }
-.dcs-note-send-wrap:hover .dcs-tip,
-.dcs-note-send-wrap:focus-within .dcs-tip {
-  opacity: 1;
-  visibility: visible;
-  transition-delay: 120ms, 0s;
-}
-.dcs-tip-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--dsw-alias-label-primary);
-}
-.dcs-tip-keys {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-.dcs-kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 4px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  font-weight: 500;
-  font-family: inherit;
-  line-height: 1;
-}
-.dcs-kbd svg { display: block; }
 .dcs-later {
   flex: 1; display: flex; align-items: center; justify-content: center;
   color: var(--dsw-alias-label-tertiary); font-size: 13px; padding: 24px;
@@ -746,6 +723,15 @@ button.dcs-toggle {
   align-items: center;
   padding: 0 4px 8px;
 }
+/* input.dock is full-column; pin this strip to the composer card so it
+   recenters when the 侧栏 opens or closes. Same width axis as InputBar. */
+.dcs-chips.dcs-chips-dock {
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--dsh-composer-side-clearance, 16px));
+  max-width: var(--dsh-composer-card-max-width, 780px);
+  margin: 0 auto;
+  padding: 0 16px 8px;
+}
 .dcs-root > .dcs-chips {
   padding: 6px 10px 8px;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
@@ -768,6 +754,11 @@ button.dcs-toggle {
   background: #38bdf8; color: #0f172a;
   font-size: 10px; font-weight: 700; line-height: 1;
 }
+.dcs-chip-open {
+  min-width: 0; padding: 0; border: 0; background: transparent; color: inherit;
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+}
+.dcs-chip-open:hover .dcs-chip-from { color: var(--dsw-alias-label-primary); }
 .dcs-chip-from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dcs-chip-x {
   width: 14px; height: 14px; padding: 0; border: 0; border-radius: 50%;
@@ -775,9 +766,22 @@ button.dcs-toggle {
   display: grid; place-items: center; cursor: pointer;
 }
 .dcs-chip-x:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.dcs-chips-send {
+  width: 24px; height: 24px; flex: none; padding: 0; border: 0; border-radius: 999px;
+  display: grid; place-items: center; cursor: pointer; margin-left: auto;
+  background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base);
+}
+.dcs-b-annotations {
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
+}
+.dcs-b-annotation-outline {
+  position: absolute; pointer-events: none; box-sizing: border-box;
+  border: 2px solid #38bdf8; border-radius: 4px;
+  background: color-mix(in srgb, #38bdf8 10%, transparent);
+}
 .dcs-b-badge {
-  position: absolute; z-index: 4; pointer-events: none;
-  min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+  position: absolute; z-index: 4; pointer-events: auto; cursor: pointer;
+  min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border: 0;
   border-radius: 999px;
   display: grid; place-items: center;
   background: #38bdf8; color: #0f172a;

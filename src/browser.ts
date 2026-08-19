@@ -1,6 +1,6 @@
 /** Browser 工具: navigable page + 批注. Does not start the project. */
 
-import type { Annotation, AnnotationRect, Effect } from './session.ts'
+import type { Annotation, AnnotationRect, BrowserEvidence, Effect } from './session.ts'
 
 export type PageElement = {
   selector: string
@@ -11,13 +11,11 @@ export type PageDocument = {
   url: string
   title: string
   html?: string
-  frameUrl?: string
-  /** The origin answered with an auth challenge; only the iframe holds credentials. */
-  requiresAuth?: boolean
   elements: PageElement[]
 }
 
 export type BrowserStatus = 'empty' | 'loaded' | 'unreachable'
+export type BrowserRuntimeStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed'
 
 export type BrowserIntent =
   | { type: 'open-url'; url: string; reveal?: boolean }
@@ -26,25 +24,30 @@ export type BrowserIntent =
   | { type: 'browser-forward' }
   | { type: 'browser-refresh' }
   | { type: 'browser-open-external' }
+  | { type: 'browser-runtime-sync'; tabId: string; url: string; title: string; documentId: string; status: BrowserRuntimeStatus; error?: string }
   | { type: 'browser-set-annotate'; on: boolean }
-  | { type: 'browser-click-content'; mark: string; x: number; y: number; selector?: string; rect?: AnnotationRect }
+  | { type: 'browser-click-content'; mark: string; x: number; y: number; captureId: string; documentId: string; selector?: string; rect?: AnnotationRect }
   | { type: 'browser-dismiss-note' }
   | { type: 'browser-set-note-draft'; text: string }
-  | { type: 'browser-note-enter' }
-  | { type: 'browser-note-ctrl-enter' }
+  | { type: 'browser-note-add'; evidence?: BrowserEvidence }
+  | { type: 'browser-note-send'; evidence?: BrowserEvidence }
 
 export type BrowserPort = {
   load(url: string): PageDocument | undefined
   openExternal(url: string): void
   isBusy(): boolean
+  manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void
+  close?(tabId: string): void
   spawn?(command: string): void
-  frameUrl?(url: string): string | undefined
 }
 
 export type BrowserState = {
   url: string
   draft: string
   status: BrowserStatus
+  runtimeStatus: BrowserRuntimeStatus
+  documentId: string | null
+  runtimeError: string | null
   page: PageDocument | null
   history: string[]
   index: number
@@ -55,8 +58,12 @@ export type BrowserState = {
   pendingMark: string | null
   pendingSelector: string | null
   pendingRect: AnnotationRect | null
+  pendingCaptureId: string | null
+  pendingDocumentId: string | null
+  pendingEvidence: BrowserEvidence | null
   notePos: { x: number; y: number } | null
   noteDraft: string
+  editingId: string | null
   attachments: Annotation[]
   seq: number
 }
@@ -87,10 +94,51 @@ export function hydrateBrowserPages(saved: {
   return {}
 }
 
-export function projectBrowser(state: BrowserState, port?: BrowserPort): BrowserState {
-  const next = flags(hydrate(state))
-  if (next.status !== 'loaded' || next.page === null || port?.frameUrl === undefined) return next
-  return { ...next, page: withFrameUrl(next.page, port.frameUrl(next.url)) }
+export function projectBrowser(state: BrowserState, _port?: BrowserPort): BrowserState {
+  return flags(hydrate(state))
+}
+
+
+export function syncManagedBrowser(state: BrowserState, projection: {
+  url: string
+  title: string
+  documentId: string
+  status: BrowserRuntimeStatus
+  error?: string
+}): BrowserState {
+  const current = hydrate(state)
+  const changedDocument = current.documentId !== null && current.documentId !== projection.documentId
+  const ready = projection.status === 'ready'
+  const failed = projection.status === 'error' || projection.status === 'crashed'
+  const changedUrl = projection.url.length > 0 && projection.url !== current.url
+  const history = changedUrl
+    ? [...current.history.slice(0, current.index + 1), projection.url]
+    : current.history
+  const index = changedUrl ? history.length - 1 : current.index
+  return flags({
+    ...current,
+    url: projection.url || current.url,
+    draft: projection.url || current.draft,
+    status: ready ? 'loaded' : failed ? 'unreachable' : current.status,
+    runtimeStatus: projection.status,
+    documentId: projection.documentId,
+    runtimeError: projection.error ?? null,
+    page: ready ? { url: projection.url, title: projection.title || projection.url, elements: [] } : failed ? null : current.page,
+    history,
+    index,
+    ...changedDocument ? {
+      annotate: false,
+      pendingMark: null,
+      pendingSelector: null,
+      pendingRect: null,
+      pendingCaptureId: null,
+      pendingDocumentId: null,
+      pendingEvidence: null,
+      notePos: null,
+      noteDraft: '',
+      editingId: null,
+    } : {},
+  })
 }
 
 export function reduceBrowser(
@@ -135,8 +183,12 @@ export function reduceBrowser(
             pendingMark: null,
             pendingSelector: null,
             pendingRect: null,
+            pendingCaptureId: null,
+            pendingDocumentId: null,
+            pendingEvidence: null,
             notePos: null,
             noteDraft: '',
+            editingId: null,
           }),
           effects: [],
         }
@@ -145,19 +197,27 @@ export function reduceBrowser(
     }
     case 'browser-click-content': {
       if (!current.annotate || current.status !== 'loaded') return { state: current, effects: [] }
-      const mark = (intent as BrowserIntent & { type: 'browser-click-content' }).mark
-      const x = (intent as BrowserIntent & { type: 'browser-click-content' }).x
-      const y = (intent as BrowserIntent & { type: 'browser-click-content' }).y
-      const selector = (intent as BrowserIntent & { type: 'browser-click-content' }).selector
-      const rect = (intent as BrowserIntent & { type: 'browser-click-content' }).rect
+      const click = intent as BrowserIntent & { type: 'browser-click-content' }
+      if (typeof click.captureId !== 'string' || click.captureId.length === 0 || typeof click.documentId !== 'string' || click.documentId.length === 0) {
+        return { state: current, effects: [] }
+      }
+      const mark = click.mark
+      const x = click.x
+      const y = click.y
+      const selector = click.selector
+      const rect = click.rect
       return {
         state: flags({
           ...current,
           pendingMark: mark,
           pendingSelector: selector ?? null,
           pendingRect: rect ?? null,
+          pendingCaptureId: click.captureId,
+          pendingDocumentId: click.documentId,
+          pendingEvidence: null,
           notePos: { x, y },
           noteDraft: '',
+          editingId: null,
         }),
         effects: [],
       }
@@ -173,8 +233,12 @@ export function reduceBrowser(
           pendingMark: null,
           pendingSelector: null,
           pendingRect: null,
+          pendingCaptureId: null,
+          pendingDocumentId: null,
+          pendingEvidence: null,
           notePos: null,
           noteDraft: '',
+          editingId: null,
         }),
         effects: [],
       }
@@ -188,6 +252,9 @@ function hydrate(state: Partial<BrowserState> & { url: string }): BrowserState {
     url: state.url,
     draft: state.draft ?? state.url,
     status: state.status ?? (state.url.length === 0 ? 'empty' : 'unreachable'),
+    runtimeStatus: state.runtimeStatus ?? 'idle',
+    documentId: state.documentId ?? null,
+    runtimeError: state.runtimeError ?? null,
     page: state.page ?? null,
     history: state.history ?? [],
     index: state.index ?? -1,
@@ -198,8 +265,12 @@ function hydrate(state: Partial<BrowserState> & { url: string }): BrowserState {
     pendingMark: state.pendingMark ?? null,
     pendingSelector: state.pendingSelector ?? null,
     pendingRect: state.pendingRect ?? null,
+    pendingCaptureId: state.pendingCaptureId ?? null,
+    pendingDocumentId: state.pendingDocumentId ?? null,
+    pendingEvidence: state.pendingEvidence ?? null,
     notePos: state.notePos ?? null,
     noteDraft: state.noteDraft ?? '',
+    editingId: state.editingId ?? null,
     attachments: state.attachments ?? [],
     seq: state.seq ?? 0,
   }
@@ -243,8 +314,12 @@ function show(
     pendingMark: null,
     pendingSelector: null,
     pendingRect: null,
+    pendingCaptureId: null,
+    pendingDocumentId: null,
+    pendingEvidence: null,
     notePos: null,
     noteDraft: '',
+    editingId: null,
   })
 }
 
@@ -300,20 +375,6 @@ function looksLikeHost(part: string): boolean {
   return !FILE_EXT.test(tld)
 }
 
-function withFrameUrl(page: PageDocument, frameUrl: string | undefined): PageDocument {
-  if (frameUrl === page.frameUrl) return page
-  if (frameUrl === undefined) {
-    if (page.frameUrl === undefined) return page
-    return {
-      url: page.url,
-      title: page.title,
-      elements: page.elements,
-      ...page.html === undefined ? {} : { html: page.html },
-      ...page.requiresAuth === undefined ? {} : { requiresAuth: page.requiresAuth },
-    }
-  }
-  return { ...page, frameUrl }
-}
 
 function loadPage(url: string, port?: BrowserPort): Pick<BrowserState, 'url' | 'draft' | 'status' | 'page'> {
   const trimmed = normalizeUrl(url.trim())

@@ -1,6 +1,6 @@
 /** Build and label stacked 批注 without dumping page innerText. */
 
-import type { Annotation, AnnotationRect } from './session.ts'
+import type { Annotation, AnnotationRect, BrowserEvidence } from './session.ts'
 
 export function noteBody(draft: string): string {
   return draft.trim()
@@ -31,13 +31,15 @@ export function hydrateAnnotation(item: {
   path?: string
   line?: number
   rect?: AnnotationRect
+  url?: string
+  evidence?: BrowserEvidence
 }): Annotation {
   const source = item.source
     ?? (item.id.startsWith('b') ? 'browser' : item.id.startsWith('r') ? 'review' : 'files')
   return { ...item, source, text: item.text ?? '', from: item.from ?? '' }
 }
 
-export function fromFileMark(id: string, draft: string, mark: string): Annotation {
+export function fromFileMark(id: string, draft: string, mark: string, rect?: AnnotationRect): Annotation {
   const { path, line } = parsePathLine(mark)
   return {
     id,
@@ -47,6 +49,7 @@ export function fromFileMark(id: string, draft: string, mark: string): Annotatio
     selector: mark,
     path,
     ...line === undefined ? {} : { line },
+    ...rect === undefined ? {} : { rect },
   }
 }
 
@@ -70,6 +73,8 @@ export function fromBrowserPending(
     pendingMark: string
     pendingSelector: string | null
     pendingRect: AnnotationRect | null
+    url: string
+    evidence?: BrowserEvidence
   },
 ): Annotation {
   const selector = pending.pendingSelector
@@ -79,6 +84,8 @@ export function fromBrowserPending(
     text: noteBody(draft),
     from: pending.pendingMark,
     source: 'browser',
+    url: pending.url,
+    ...pending.evidence === undefined ? {} : { evidence: pending.evidence },
     ...selector === null || selector.length === 0 ? {} : { selector },
     ...rect === null ? {} : { rect },
   }

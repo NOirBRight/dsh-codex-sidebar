@@ -17,14 +17,15 @@ export function shadowsDefaultDetails(priority: number): boolean {
 }
 
 /** AppFrame owns the details track (`details: 0` closed). CSS vars do not open it. */
-export function detailsTrackShouldOpen(collapsed: boolean): boolean {
+export function detailsTrackShouldOpen(collapsed: boolean | undefined): boolean {
   return collapsed === false
 }
 
 export function applyDetailsTrack(
   layout: { openDetails(): void; closeDetails(): void },
-  collapsed: boolean,
+  collapsed: boolean | undefined,
 ): void {
+  if (collapsed === undefined) return
   if (detailsTrackShouldOpen(collapsed)) layout.openDetails()
   else layout.closeDetails()
 }

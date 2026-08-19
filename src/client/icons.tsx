@@ -6,7 +6,7 @@ export type IconName =
   | 'review' | 'terminal' | 'globe' | 'folder' | 'chat' | 'panel'
   | 'plus' | 'x' | 'pencil' | 'tree' | 'file' | 'search' | 'chevron'
   | 'back' | 'fwd' | 'refresh' | 'external' | 'file-plus' | 'folder-plus' | 'more'
-  | 'inspect' | 'send' | 'enter'
+  | 'inspect' | 'send' | 'enter' | 'trash'
 
 export function Ico({ name, size = 16 }: { name: IconName; size?: number }): ReactElement {
   const p = {
@@ -72,6 +72,8 @@ export function Ico({ name, size = 16 }: { name: IconName; size?: number }): Rea
       return <svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></svg>
     case 'enter':
       return <svg {...p}><path d="M20 5v6a3 3 0 0 1-3 3H5" /><path d="M9 10l-4 4 4 4" /></svg>
+    case 'trash':
+      return <svg {...p}><path d="M4 7h16M9 3h6l1 4H8l1-4Z" /><path d="m6.5 7 1 14h9l1-14M10 11v6M14 11v6" /></svg>
   }
 }
 

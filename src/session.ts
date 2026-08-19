@@ -8,7 +8,7 @@ import {
   noteBody,
 } from './annotation.ts'
 import type { BrowserIntent, BrowserPort, BrowserState } from './browser.ts'
-import { emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser } from './browser.ts'
+import { emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser, syncManagedBrowser } from './browser.ts'
 import type { FileDiff, ReviewIntent, ReviewPort, ReviewState } from './review.ts'
 import { emptyReview, fileDiff, projectReview, reduceReview, rememberReview } from './review.ts'
 import type { SideChatIntent, SideChatPort, SideChatState } from './side-chat.ts'
@@ -37,6 +37,17 @@ export type Tab = {
 export type AnnotationSource = 'files' | 'browser' | 'review'
 
 export type AnnotationRect = { x: number; y: number; w: number; h: number }
+export type AnnotationTextRange = { start: number; end: number }
+
+export type BrowserEvidence = {
+  id: string
+  captureId: string
+  documentId: string
+  ref: string
+  mediaType: 'image/jpeg'
+  width: number
+  height: number
+}
 
 export type Annotation = {
   id: string
@@ -47,6 +58,9 @@ export type Annotation = {
   path?: string
   line?: number
   rect?: AnnotationRect
+  selection?: AnnotationTextRange
+  url?: string
+  evidence?: BrowserEvidence
 }
 
 export type NotePos = { x: number; y: number }
@@ -86,12 +100,14 @@ export type Intent =
   | { type: 'set-files-view'; view: 'preview' | 'diff' }
   | { type: 'set-tree-width'; width: number }
   | { type: 'set-annotate'; on: boolean }
-  | { type: 'click-content'; mark: string; x: number; y: number }
+  | { type: 'click-content'; mark: string; x: number; y: number; rect?: AnnotationRect; selection?: AnnotationTextRange }
   | { type: 'dismiss-note' }
-  | { type: 'note-enter' }
-  | { type: 'note-ctrl-enter' }
+  | { type: 'note-add' }
+  | { type: 'note-send' }
   | { type: 'composer-send'; text: string }
+  | { type: 'restore-attachments'; attachments: Annotation[] }
   | { type: 'set-note-draft'; text: string }
+  | { type: 'edit-attachment'; id: string; x?: number; y?: number }
   | { type: 'remove-attachment'; id: string }
   | { type: 'reorder-tabs'; from: number; to: number }
   | ReviewIntent
@@ -117,8 +133,11 @@ export type SidebarSnapshot = {
     diff: FileDiff | null
     annotate: boolean
     pendingMark: string | null
+    pendingRect: AnnotationRect | null
+    pendingSelection: AnnotationTextRange | null
     notePos: NotePos | null
     noteDraft: string
+    editingId: string | null
   }
   fileStats: Record<string, { added: number; removed: number }>
   review: ReviewState
@@ -167,8 +186,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     diff: null,
     annotate: false,
     pendingMark: null,
+    pendingRect: null,
+    pendingSelection: null,
     notePos: null,
     noteDraft: '',
+    editingId: null,
   }
   const filesOpenAtLoad = tabs.some((tab) => tab.kind === 'Files')
   files = {
@@ -179,6 +201,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     treeWidth: clampTreeWidth(files.treeWidth),
     view: files.view === 'diff' ? 'diff' : 'preview',
     hunk: files.hunk ?? null,
+    pendingRect: files.pendingRect ?? null,
+    pendingSelection: files.pendingSelection ?? null,
+    editingId: files.editingId ?? null,
   }
   let review = saved?.review ?? emptyReview()
   let pages = hydrateBrowserPages(saved)
@@ -206,9 +231,18 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     attachments = [...attachments, ...extra]
   }
 
-  function stackNote(item: Annotation): void {
+  function saveNote(item: Annotation, editingId: string | null): void {
     foldAttachments()
-    attachments = [...attachments, item]
+    if (editingId === null) {
+      attachments = [...attachments, item]
+      return
+    }
+    attachments = attachments.map((current) => current.id === editingId ? item : current)
+  }
+
+  function detachNote(id: string): void {
+    foldAttachments()
+    attachments = attachments.filter((item) => item.id !== id)
   }
 
   function takeAttachments(): Annotation[] {
@@ -336,6 +370,14 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       || intent.type === 'browser-refresh'
     ) {
       stampBrowserTab(next.state.url)
+      const action = intent.type === 'browser-back'
+        ? 'back'
+        : intent.type === 'browser-forward'
+          ? 'forward'
+          : intent.type === 'browser-refresh'
+            ? 'refresh'
+            : 'open'
+      opts.browser?.manage?.(id, next.state.url, action)
     }
     return next.effects
   }
@@ -415,7 +457,18 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           active = id
         }
         break
+      case 'browser-runtime-sync': {
+        const current = pages[intent.tabId]
+        if (current === undefined) break
+        const next = syncManagedBrowser(current, intent)
+        putBrowser(intent.tabId, next)
+        tabs = tabs.map((tab) => tab.id === intent.tabId
+          ? { ...tab, target: next.url, title: intent.title || tabTitle('Browser', next.url) }
+          : tab)
+        break
+      }
       case 'close-tab': {
+        opts.browser?.close?.(intent.id)
         const next = tabs.filter((t) => t.id !== intent.id)
         if (pages[intent.id] !== undefined) {
           const copy = { ...pages }
@@ -437,11 +490,14 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         if (tab === undefined) break
         active = tab.id
         if (tab.kind === 'Files' && tab.target) {
-          files = { ...files, path: tab.target, pendingMark: null, notePos: null }
+          files = { ...files, path: tab.target, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
         }
         if (tab.kind === 'Browser' && pages[tab.id] === undefined && tab.target.length > 0) {
           const loaded = reduceBrowser(emptyBrowser(), { type: 'open-url', url: tab.target } as BrowserIntent, opts.browser)
-          if (loaded !== undefined) putBrowser(tab.id, loaded.state)
+          if (loaded !== undefined) {
+            putBrowser(tab.id, loaded.state)
+            opts.browser?.manage?.(tab.id, loaded.state.url, 'open')
+          }
         }
         break
       }
@@ -465,7 +521,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           ...files,
           path: intent.path,
           pendingMark: null,
+          pendingRect: null,
+          pendingSelection: null,
           notePos: null,
+          noteDraft: '',
+          editingId: null,
           treeOpen: false,
           view: intent.view === 'diff' ? 'diff' : 'preview',
           hunk: intent.before !== undefined || intent.after !== undefined
@@ -475,7 +535,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       case 'select-file':
         fillOrOpen('Files', intent.path)
-        files = { ...files, path: intent.path, pendingMark: null, notePos: null, hunk: null }
+        files = { ...files, path: intent.path, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null, hunk: null }
         break
       case 'toggle-tree':
         files = { ...files, treeOpen: !files.treeOpen }
@@ -491,43 +551,62 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           ...files,
           annotate: intent.on,
           pendingMark: intent.on ? files.pendingMark : null,
+          pendingRect: intent.on ? files.pendingRect : null,
+          pendingSelection: intent.on ? files.pendingSelection : null,
           notePos: intent.on ? files.notePos : null,
           noteDraft: intent.on ? files.noteDraft : '',
+          editingId: intent.on ? files.editingId : null,
         }
         break
       case 'click-content':
         if (files.annotate) {
-          files = { ...files, pendingMark: intent.mark, notePos: { x: intent.x, y: intent.y }, noteDraft: '' }
+          files = {
+            ...files,
+            pendingMark: intent.mark,
+            pendingRect: intent.rect ?? null,
+            pendingSelection: intent.selection ?? null,
+            notePos: { x: intent.x, y: intent.y },
+            noteDraft: files.editingId === null ? '' : files.noteDraft,
+            editingId: files.editingId,
+          }
         }
         break
       case 'dismiss-note':
-        files = { ...files, pendingMark: null, notePos: null, noteDraft: '' }
+        files = { ...files, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
         break
       case 'set-note-draft':
         files = { ...files, noteDraft: intent.text }
         break
-      case 'note-enter': {
+      case 'note-add': {
         if (!files.pendingMark) break
-        stackNote(fromFileMark(nid(), files.noteDraft, files.pendingMark))
-        files = { ...files, pendingMark: null, notePos: null, noteDraft: '' }
+        const item = fromFileMark(files.editingId ?? nid(), files.noteDraft, files.pendingMark, files.pendingRect ?? undefined, files.pendingSelection ?? undefined)
+        saveNote(item, files.editingId)
+        files = { ...files, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
         break
       }
-      case 'note-ctrl-enter': {
+      case 'note-send': {
         if (!files.pendingMark) break
-        const item = fromFileMark(nid(), files.noteDraft, files.pendingMark)
+        const item = fromFileMark(files.editingId ?? nid(), files.noteDraft, files.pendingMark, files.pendingRect ?? undefined, files.pendingSelection ?? undefined)
+        if (files.editingId !== null) detachNote(files.editingId)
         const text = noteBody(files.noteDraft)
-        const payload = [...takeAttachments(), item]
+        const payload = [item]
         if (opts.isBusy()) {
           queue = [...queue, { text, attachments: payload }]
           effects.push({ type: 'queue', text, attachments: payload })
         } else {
           effects.push({ type: 'send', text, attachments: payload })
         }
-        files = { ...files, pendingMark: null, notePos: null, noteDraft: '' }
+        files = { ...files, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
+        break
+      }
+      case 'restore-attachments': {
+        const known = new Set(attachments.map((item) => item.id))
+        attachments = [...attachments, ...intent.attachments.filter((item) => !known.has(item.id))]
         break
       }
       case 'composer-send': {
         const payload = takeAttachments()
+        if (intent.text.trim().length === 0 && payload.length === 0) break
         if (opts.isBusy()) {
           queue = [...queue, { text: intent.text, attachments: payload }]
           effects.push({ type: 'queue', text: intent.text, attachments: payload })
@@ -536,37 +615,146 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         }
         break
       }
-      case 'remove-attachment': {
+      case 'edit-attachment': {
         foldAttachments()
-        attachments = attachments.filter((item) => item.id !== intent.id)
+        const item = attachments.find((current) => current.id === intent.id)
+        if (item === undefined) break
+        expand()
+        const notePos = { x: intent.x ?? 180, y: intent.y ?? 72 }
+        if (item.source === 'files' && item.path !== undefined) {
+          fillOrOpen('Files', item.path)
+          files = {
+            ...files,
+            path: item.path,
+            annotate: true,
+            pendingMark: item.selector ?? item.from,
+            pendingRect: item.rect ?? null,
+            pendingSelection: item.selection ?? null,
+            notePos,
+            noteDraft: item.text,
+            editingId: item.id,
+          }
+          break
+        }
+        if (item.source === 'browser') {
+          const url = item.url ?? tabs.find((tab) => tab.kind === 'Browser')?.target ?? ''
+          fillOrOpen('Browser', url)
+          const tabId = browserTabId()
+          if (tabId === undefined) break
+          let current = pages[tabId] ?? emptyBrowser()
+          if (current.url.length === 0 && url.length > 0) {
+            current = reduceBrowser(current, { type: 'open-url', url } as BrowserIntent, opts.browser)?.state ?? current
+            opts.browser?.manage?.(tabId, current.url, 'open')
+          }
+          putBrowser(tabId, {
+            ...current,
+            annotate: true,
+            pendingMark: item.from,
+            pendingSelector: item.selector ?? null,
+            pendingRect: item.rect ?? null,
+            pendingCaptureId: item.evidence?.captureId ?? null,
+            pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingEvidence: item.evidence ?? null,
+            notePos,
+            noteDraft: item.text,
+            editingId: item.id,
+          })
+          break
+        }
+        if (item.source === 'review') {
+          fillOrOpen('Review')
+          review = {
+            ...review,
+            openPath: item.path ?? review.openPath,
+            pendingMark: item.selector ?? item.from,
+            noteDraft: item.text,
+            editingId: item.id,
+          }
+        }
         break
       }
-      case 'browser-note-enter': {
+      case 'remove-attachment': {
+        detachNote(intent.id)
+        if (files.editingId === intent.id) {
+          files = { ...files, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
+        }
+        if (review.editingId === intent.id) {
+          review = { ...review, pendingMark: null, noteDraft: '', editingId: null }
+        }
+        for (const [id, current] of Object.entries(pages)) {
+          if (current.editingId !== intent.id) continue
+          putBrowser(id, {
+            ...current,
+            pendingMark: null,
+            pendingSelector: null,
+            pendingRect: null,
+            notePos: null,
+            noteDraft: '',
+            editingId: null,
+          })
+        }
+        break
+      }
+      case 'browser-note-add': {
         const id = browserTabId()
         const current = id === undefined ? undefined : pages[id]
         if (id === undefined || current === undefined || current.pendingMark === null) break
-        const seq = current.seq + 1
-        stackNote(fromBrowserPending(`b${seq}`, current.noteDraft, {
+        const evidence = (intent as BrowserIntent & { type: 'browser-note-add' }).evidence ?? current.pendingEvidence
+        if (evidence === null || evidence === undefined) break
+        const nextSeq = current.editingId === null ? current.seq + 1 : current.seq
+        const item = fromBrowserPending(current.editingId ?? `b${nextSeq}`, current.noteDraft, {
           pendingMark: current.pendingMark,
           pendingSelector: current.pendingSelector,
           pendingRect: current.pendingRect,
-        }))
-        putBrowser(id, { ...current, seq, pendingMark: null, notePos: null, noteDraft: '', pendingSelector: null, pendingRect: null })
-        break
-      }
-      case 'browser-note-ctrl-enter': {
-        const id = browserTabId()
-        const current = id === undefined ? undefined : pages[id]
-        if (id === undefined || current === undefined || current.pendingMark === null) break
-        const seq = current.seq + 1
-        const item = fromBrowserPending(`b${seq}`, current.noteDraft, {
-          pendingMark: current.pendingMark,
-          pendingSelector: current.pendingSelector,
-          pendingRect: current.pendingRect,
+          url: current.url,
+          evidence,
         })
+        saveNote(item, current.editingId)
+        putBrowser(id, {
+          ...current,
+          seq: nextSeq,
+          pendingMark: null,
+          notePos: null,
+          noteDraft: '',
+          pendingSelector: null,
+          pendingRect: null,
+          pendingCaptureId: null,
+          pendingDocumentId: null,
+          pendingEvidence: null,
+          editingId: null,
+        })
+        break
+      }
+      case 'browser-note-send': {
+        const id = browserTabId()
+        const current = id === undefined ? undefined : pages[id]
+        if (id === undefined || current === undefined || current.pendingMark === null) break
+        const evidence = (intent as BrowserIntent & { type: 'browser-note-send' }).evidence ?? current.pendingEvidence
+        if (evidence === null || evidence === undefined) break
+        const nextSeq = current.editingId === null ? current.seq + 1 : current.seq
+        const item = fromBrowserPending(current.editingId ?? `b${nextSeq}`, current.noteDraft, {
+          pendingMark: current.pendingMark,
+          pendingSelector: current.pendingSelector,
+          pendingRect: current.pendingRect,
+          url: current.url,
+          evidence,
+        })
+        if (current.editingId !== null) detachNote(current.editingId)
         const text = noteBody(current.noteDraft)
-        const payload = [...takeAttachments(), item]
-        putBrowser(id, { ...current, seq, pendingMark: null, notePos: null, noteDraft: '', pendingSelector: null, pendingRect: null })
+        const payload = [item]
+        putBrowser(id, {
+          ...current,
+          seq: nextSeq,
+          pendingMark: null,
+          notePos: null,
+          noteDraft: '',
+          pendingSelector: null,
+          pendingRect: null,
+          pendingCaptureId: null,
+          pendingDocumentId: null,
+          pendingEvidence: null,
+          editingId: null,
+        })
         if (opts.browser?.isBusy() ?? opts.isBusy()) {
           queue = [...queue, { text, attachments: payload }]
           effects.push({ type: 'queue', text, attachments: payload })
@@ -575,20 +763,22 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         }
         break
       }
-      case 'review-note-enter': {
+      case 'review-note-add': {
         if (review.pendingMark === null) break
-        const seq = review.seq + 1
-        stackNote(fromReviewMark(`r${seq}`, review.noteDraft, review.pendingMark))
-        review = { ...review, seq, pendingMark: null, noteDraft: '' }
+        const nextSeq = review.editingId === null ? review.seq + 1 : review.seq
+        const item = fromReviewMark(review.editingId ?? `r${nextSeq}`, review.noteDraft, review.pendingMark)
+        saveNote(item, review.editingId)
+        review = { ...review, seq: nextSeq, pendingMark: null, noteDraft: '', editingId: null }
         break
       }
-      case 'review-note-ctrl-enter': {
+      case 'review-note-send': {
         if (review.pendingMark === null) break
-        const seq = review.seq + 1
-        const item = fromReviewMark(`r${seq}`, review.noteDraft, review.pendingMark)
+        const nextSeq = review.editingId === null ? review.seq + 1 : review.seq
+        const item = fromReviewMark(review.editingId ?? `r${nextSeq}`, review.noteDraft, review.pendingMark)
+        if (review.editingId !== null) detachNote(review.editingId)
         const text = noteBody(review.noteDraft)
-        const payload = [...takeAttachments(), item]
-        review = { ...review, seq, pendingMark: null, noteDraft: '' }
+        const payload = [item]
+        review = { ...review, seq: nextSeq, pendingMark: null, noteDraft: '', editingId: null }
         if (opts.review?.isBusy() ?? opts.isBusy()) {
           queue = [...queue, { text, attachments: payload }]
           effects.push({ type: 'queue', text, attachments: payload })

@@ -21,10 +21,12 @@ export function NoteComposer({
   placeholder,
   sendLabel,
   addLabel,
-  sendTip,
+  deleteLabel,
+  editing,
   onChange,
   onAdd,
   onSend,
+  onDelete,
   onDismiss,
 }: {
   containerRef: RefObject<HTMLElement | null>
@@ -35,10 +37,12 @@ export function NoteComposer({
   placeholder: string
   sendLabel: string
   addLabel: string
-  sendTip: string
+  deleteLabel: string
+  editing?: boolean
   onChange: (text: string) => void
   onAdd: () => void
   onSend: () => void
+  onDelete?: () => void
   onDismiss: () => void
 }): ReactElement {
   const noteRef = useRef<HTMLDivElement>(null)
@@ -114,8 +118,7 @@ export function NoteComposer({
       event.stopPropagation()
       event.stopImmediatePropagation()
       flush.current()
-      if (event.ctrlKey || event.metaKey) send.current()
-      else add.current()
+      add.current()
     }
     window.addEventListener('keydown', onKey, true)
     return () => { window.removeEventListener('keydown', onKey, true) }
@@ -144,6 +147,17 @@ export function NoteComposer({
           onCompositionStart={draft.onCompositionStart}
           onCompositionEnd={(event) => { draft.onCompositionEnd(event.currentTarget.value) }}
         />
+        {editing && onDelete !== undefined && (
+          <button
+            type="button"
+            className="dcs-note-delete"
+            title={deleteLabel}
+            aria-label={deleteLabel}
+            onClick={onDelete}
+          >
+            <Ico name="trash" size={13} />
+          </button>
+        )}
         <button
           type="button"
           className="dcs-note-add"
@@ -153,37 +167,16 @@ export function NoteComposer({
         >
           {addLabel}
         </button>
-        <div className="dcs-note-send-wrap">
-          <button
-            type="button"
-            className="dcs-note-send"
-            aria-label={sendTip}
-            onClick={() => { flush.current(); send.current() }}
-          >
-            <Ico name="send" size={13} />
-          </button>
-          <div className="dcs-tip" role="tooltip">
-            <div className="dcs-tip-row">
-              <span>{sendLabel}</span>
-              <span className="dcs-tip-keys">
-                <kbd className="dcs-kbd">{modifierLabel()}</kbd>
-                <kbd className="dcs-kbd"><Ico name="enter" size={12} /></kbd>
-              </span>
-            </div>
-            <div className="dcs-tip-row">
-              <span>{addLabel}</span>
-              <span className="dcs-tip-keys">
-                <kbd className="dcs-kbd"><Ico name="enter" size={12} /></kbd>
-              </span>
-            </div>
-          </div>
-        </div>
+        <button
+          type="button"
+          className="dcs-note-send"
+          title={sendLabel}
+          aria-label={sendLabel}
+          onClick={() => { flush.current(); send.current() }}
+        >
+          <Ico name="send" size={13} />
+        </button>
       </div>
     </div>
   )
-}
-
-function modifierLabel(): string {
-  if (typeof navigator === 'undefined') return 'Ctrl'
-  return /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
 }

@@ -4,17 +4,23 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import {
+  SIDEBAR_BROWSER_CAPTURE_ENDPOINT,
+  SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
+  SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT,
+  SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
   SIDEBAR_TERMINAL_PULL_ENDPOINT,
+  isRecord,
 } from '../contract.ts'
 import { formatDelivery, formatSend } from '../send-text.ts'
+import { stripAnnotationDraftSentinel } from './annotation-draft.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
-import type { Effect, Intent, SidebarSnapshot } from '../session.ts'
+import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
 
@@ -22,12 +28,26 @@ export type SidebarStore = {
   bySession: Record<string, SidebarSnapshot>
 }
 
-type PromptPart = { type: string; text?: string }
+const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
+
+type PromptPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: 'image/jpeg'; data: string; name?: string }
+export type BrowserCaptureReply = {
+  captureId: string
+  documentId: string
+  url: string
+  title: string
+  width: number
+  height: number
+  nodes: Array<{ ref: string; role: string; name: string; selector: string; rect?: { x: number; y: number; w: number; h: number } }>
+}
 
 export class SidebarController {
   #store: SidebarStore = { bySession: {} }
   #listeners = new Set<() => void>()
   #wrapped = new Set<string>()
+  #effectPrompt = new Set<string>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
   #layout: ILayout
@@ -51,6 +71,24 @@ export class SidebarController {
     return this.#store.bySession[sessionId]
   }
 
+  async browserCapture(sessionId: string, tabId: string): Promise<BrowserCaptureReply | undefined> {
+    const gate = this.#gate(sessionId)
+    if (gate === undefined) return undefined
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, { ...gate, tabId })
+    if (!result.ok || !captureReply(result.value)) return undefined
+    return result.value
+  }
+
+  async browserStreamTicket(sessionId: string, tabId: string): Promise<{ path: string; expiresAt: number } | undefined> {
+    const gate = this.#gate(sessionId)
+    if (gate === undefined) return undefined
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, { ...gate, tabId })
+    if (!result.ok || result.value === undefined || typeof result.value !== 'object' || result.value === null) return undefined
+    const value = result.value as { path?: unknown; expiresAt?: unknown }
+    if (typeof value.path !== 'string' || typeof value.expiresAt !== 'number') return undefined
+    return { path: value.path, expiresAt: value.expiresAt }
+  }
+
   async pullTerminal(sessionId: string, tabId: string, since: number): Promise<{ seq: number; chunk: string } | undefined> {
     const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_TERMINAL_PULL_ENDPOINT, {
       sessionId,
@@ -65,17 +103,29 @@ export class SidebarController {
     return { seq: rec.seq, chunk: rec.chunk }
   }
 
-  async refresh(sessionId: string): Promise<SidebarSnapshot | undefined> {
+  async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
-      const gate = this.#gate(sessionId)
-      if (gate === undefined) return undefined
-      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, { ...gate, logs: {} })
-      if (!result.ok) return undefined
-      const snapshot = (result.value as { snapshot: SidebarSnapshot }).snapshot
-      this.#put(snapshot)
-      this.#syncLayout(snapshot)
-      this.#wrapPrompt(sessionId)
-      return snapshot
+      for (const delay of REFRESH_RETRY_MS) {
+        if (signal?.aborted === true) return undefined
+        if (delay > 0) {
+          await new Promise<void>((resolve) => { setTimeout(resolve, delay) })
+          if (signal?.aborted === true) return undefined
+        }
+        const gate = this.#gate(sessionId)
+        if (gate === undefined) return undefined
+        try {
+          const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, { ...gate, logs: {} })
+          if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
+          const snapshot = result.value.snapshot as unknown as SidebarSnapshot
+          this.#put(snapshot)
+          this.#syncLayout(snapshot)
+          this.#wrapPrompt(sessionId)
+          return snapshot
+        } catch {
+          // The web host can restart while this mounted client reconnects.
+        }
+      }
+      return undefined
     })
   }
 
@@ -83,15 +133,57 @@ export class SidebarController {
     return this.#enqueue(sessionId, async () => {
       const gate = this.#gate(sessionId, true)
       if (gate === undefined) return undefined
-      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent })
+      const prepared = await this.#withBrowserEvidence(sessionId, intent, gate)
+      if (prepared === undefined) return undefined
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent: prepared })
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
       this.#put(reply.snapshot)
       this.#syncLayout(reply.snapshot)
-      if (applyEffects) await this.#applyEffects(sessionId, reply.effects)
+      if (applyEffects) {
+        try {
+          await this.#applyEffects(sessionId, reply.effects)
+        } catch (error) {
+          const restore = reply.effects.flatMap((effect) => effect.type === 'send' || effect.type === 'queue' ? effect.attachments : [])
+          if (restore.length > 0) await this.dispatch(sessionId, { type: 'restore-attachments', attachments: restore }, false)
+          throw error
+        }
+      }
       this.#wrapPrompt(sessionId)
       return reply.snapshot
     })
+  }
+
+
+  async #withBrowserEvidence(
+    sessionId: string,
+    intent: Intent,
+    gate: {
+      sessionId: string
+      cwd: string
+      busy: boolean
+      turnWrites: ReturnType<typeof turnWritesFromSession>
+      roster: RosterEntry[]
+      logs: Record<string, LogEvent[]>
+    },
+  ): Promise<Intent | undefined> {
+    if (intent.type !== 'browser-note-add' && intent.type !== 'browser-note-send') return intent
+    const snapshot = this.snap(sessionId)
+    const tabId = snapshot?.active
+    const browser = tabId === null || tabId === undefined ? undefined : snapshot?.browsers[tabId]
+    if (browser === undefined) return undefined
+    let evidence = browser.pendingEvidence
+    if (evidence === null) {
+      if (browser.pendingCaptureId === null) return undefined
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
+        ...gate,
+        captureId: browser.pendingCaptureId,
+      })
+      if (!result.ok || !browserEvidence(result.value)) return undefined
+      evidence = result.value
+    }
+    if (browser.pendingDocumentId !== null && evidence.documentId !== browser.pendingDocumentId) return undefined
+    return { ...intent, evidence }
   }
 
   #enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
@@ -229,6 +321,19 @@ export class SidebarController {
     this.#applyTrack(snapshot.collapsed)
   }
 
+
+  async #browserImages(sessionId: string, attachments: readonly Annotation[]): Promise<Array<Extract<PromptPart, { type: 'image' }>>> {
+    const evidence = attachments.flatMap((item) => item.source === 'browser' && item.evidence !== undefined ? [item.evidence] : [])
+    if (evidence.length > 20) throw new Error('A prompt can contain at most 20 Browser screenshots')
+    const images: Array<Extract<PromptPart, { type: 'image' }>> = []
+    for (const item of evidence) {
+      const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, { sessionId, evidence: item })
+      if (!result.ok || !imageReply(result.value)) throw new Error('Cannot read Browser screenshot evidence')
+      images.push({ type: 'image', mediaType: result.value.mediaType, data: result.value.data, name: 'browser-' + item.id + '.jpg' })
+    }
+    return images
+  }
+
   async #applyEffects(sessionId: string, effects: Effect[]): Promise<void> {
     for (const effect of effects) {
       if (effect.type === 'deliver') {
@@ -243,7 +348,13 @@ export class SidebarController {
       if (binding === undefined) continue
       const text = formatSend(effect.text, effect.attachments)
       if (text.length === 0) continue
-      await binding.session.prompt([{ type: 'text', text }], 'queue')
+      const parts: PromptPart[] = [{ type: 'text', text }, ...await this.#browserImages(sessionId, effect.attachments)]
+      this.#effectPrompt.add(sessionId)
+      try {
+        await binding.session.prompt(parts, 'queue')
+      } finally {
+        this.#effectPrompt.delete(sessionId)
+      }
     }
   }
 
@@ -253,18 +364,50 @@ export class SidebarController {
     if (binding === undefined) return
     const original = binding.session.prompt.bind(binding.session)
     binding.session.prompt = async (content, mode) => {
+      if (this.#effectPrompt.has(sessionId)) return original(content, mode)
       const snapshot = this.snap(sessionId)
       if (snapshot === undefined || snapshot.attachments.length === 0) {
         return original(content, mode)
       }
-      const text = content.filter((part: PromptPart) => part.type === 'text').map((part: PromptPart) => part.text ?? '').join('\n')
-      const merged = [{ type: 'text' as const, text: formatSend(text, snapshot.attachments) }]
+      const parts = content as PromptPart[]
+      const text = stripAnnotationDraftSentinel(parts.filter((part): part is Extract<PromptPart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('\n'))
+      const existingImages = parts.filter((part): part is Extract<PromptPart, { type: 'image' }> => part.type === 'image')
+      const browserImages = await this.#browserImages(sessionId, snapshot.attachments)
+      if (existingImages.length + browserImages.length > 20) throw new Error('A prompt can contain at most 20 images')
+      const merged: PromptPart[] = [{ type: 'text', text: formatSend(text, snapshot.attachments) }, ...existingImages, ...browserImages]
       const result = await original(merged, mode)
       await this.dispatch(sessionId, { type: 'composer-send', text }, false)
       return result
     }
     this.#wrapped.add(sessionId)
   }
+}
+
+
+function captureReply(value: unknown): value is BrowserCaptureReply {
+  return isRecord(value)
+    && typeof value.captureId === 'string'
+    && typeof value.documentId === 'string'
+    && typeof value.url === 'string'
+    && typeof value.title === 'string'
+    && typeof value.width === 'number'
+    && typeof value.height === 'number'
+    && Array.isArray(value.nodes)
+}
+
+function browserEvidence(value: unknown): value is BrowserEvidence {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.captureId === 'string'
+    && typeof value.documentId === 'string'
+    && typeof value.ref === 'string'
+    && value.mediaType === 'image/jpeg'
+    && typeof value.width === 'number'
+    && typeof value.height === 'number'
+}
+
+function imageReply(value: unknown): value is { mediaType: 'image/jpeg'; data: string } {
+  return isRecord(value) && value.mediaType === 'image/jpeg' && typeof value.data === 'string'
 }
 
 function relativize(path: string, cwd: string): string {

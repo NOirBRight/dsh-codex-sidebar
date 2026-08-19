@@ -2,14 +2,15 @@
 
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
 import { createHostBrowser } from './host-browser.ts'
-import { createBrowserDriveService } from './host-browser-tools.ts'
-import { createLocalPickProxy } from './host-browser-proxy.ts'
-import { pickProxyPath } from './browser-pick.ts'
+import { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
+import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
+import { ManagedBrowserStream, MANAGED_BROWSER_STREAM_PATH } from './managed-browser-stream.ts'
+import { createManagedBrowserDriveService } from './host-browser-tools.ts'
 import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-browser-tools.ts'
 import { createFsFiles } from './host-files.ts'
 import { createFilePersist } from './host-persist.ts'
 import { createHostReview } from './host-review.ts'
-import { handleSidebarRpc } from './host-rpc.ts'
+import { handleSidebarRpcAsync } from './host-rpc.ts'
 import { createHostSideChat } from './host-side-chat.ts'
 import { createHostTerminal } from './host-terminal.ts'
 import { createRegistry } from './registry.ts'
@@ -48,15 +49,18 @@ type PromptHost = {
 }
 
 type WebServerHost = {
-  register: (route: {
-    kind: 'prefix' | 'exact'
+  registerUpgrade: (route: {
     path: string
-    handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void
-  }) => void
+    handler: (req: import('node:http').IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => void
+  }) => () => void
 }
 
-type HostContext = {
-  inject: (deps: readonly string[], callback: (ctx: {
+type EffectContext = {
+  effect: (callback: () => void | (() => void), label?: string) => void
+}
+
+type HostContext = EffectContext & {
+  inject: (deps: readonly string[], callback: (ctx: EffectContext & {
     connection?: { rpc: RpcHandle }
     tools?: ToolsHost
     systemPrompt?: PromptHost
@@ -66,7 +70,12 @@ type HostContext = {
 
 export function apply(ctx: HostContext): void {
   const filesBySession = new Map<string, FilesPort>()
-  const pickProxy = createLocalPickProxy()
+  const managedBrowser = new ManagedBrowserRuntime()
+  const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
+  const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
+  ctx.effect(() => () => {
+    void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
+  }, 'dsh-codex-sidebar: managed browser lifecycle')
   const registry = createRegistry({
     persist: createFilePersist(),
     filesFor: (sessionId, io) => {
@@ -79,9 +88,9 @@ export function apply(ctx: HostContext): void {
       turnWrites: io.turnWrites,
       isBusy: io.isBusy,
     }),
-    browserFor: (_sessionId, io) => createHostBrowser({
+    browserFor: (sessionId, io) => createHostBrowser({
       isBusy: io.isBusy,
-      pickFrameUrl: (url) => pickProxyPath(url) ?? pickProxy.frameUrl(url),
+      managed: { runtime: managedBrowser, sessionId },
     }),
     terminalFor: (_sessionId, io) => createHostTerminal(io.cwdOf),
     sideChatFor: (sessionId, io) => createHostSideChat({
@@ -90,42 +99,46 @@ export function apply(ctx: HostContext): void {
       io,
     }),
   })
+  ctx.inject(['webServer'], (wired) => {
+    if (wired.webServer === undefined) return
+    wired.effect(() => wired.webServer?.registerUpgrade({
+      path: MANAGED_BROWSER_STREAM_PATH,
+      handler: (req, socket, head) => { managedStream.handleUpgrade(req, socket, head) },
+    }) ?? (() => {}), 'dsh-codex-sidebar: managed browser stream')
+  })
   ctx.inject(['connection'], (wired) => {
-    wired.connection?.rpc.handle(
+    if (wired.connection === undefined) return
+    wired.effect(() => wired.connection?.rpc.handle(
       SIDEBAR_RPC_CHANNEL,
       async (endpoint, payload) => {
-        await pickProxy.ready
-        return handleSidebarRpc(registry, endpoint, payload)
+        return handleSidebarRpcAsync(registry, endpoint, payload, {
+          browserStream: managedStream,
+          managedBrowser,
+          browserEvidence: managedEvidence,
+        })
       },
       { authority: 'loopback' },
-    )
+    ) ?? (() => {}), 'dsh-codex-sidebar: sidebar RPC')
   })
   ctx.inject(['tools'], (wired) => {
     if (wired.tools === undefined) return
-    const service = createBrowserDriveService(pickProxy.drive)
-    registerBrowserDriveTools(wired.tools, service, (exec) => {
+    const service = createManagedBrowserDriveService(managedBrowser)
+    wired.effect(() => registerBrowserDriveTools(wired.tools as ToolsHost, service, (exec) => {
       const sessionId = exec.agent?.id
       if (sessionId === undefined || sessionId.length === 0) return undefined
       return registry.forSession(sessionId, {
         cwd: exec.agent?.session?.header?.cwd ?? '',
         busy: exec.agent?.status === 'running',
       })
-    }, () => pickProxy.ready)
+    }), 'dsh-codex-sidebar: Browser tools')
     console.info('[dsh-codex-sidebar] browser_tabs/open/snapshot/click/fill registered')
   })
-  ctx.inject(['webServer'], (wired) => {
-    wired.webServer?.register({
-      kind: 'prefix',
-      path: '/__dcs',
-      handler: (req, res) => { void pickProxy.handleHttp(req, res) },
-    })
-    console.info('[dsh-codex-sidebar] /__dcs pick+drive mounted on webServer')
-  })
   ctx.inject(['systemPrompt'], (wired) => {
-    wired.systemPrompt?.section({
+    if (wired.systemPrompt === undefined) return
+    wired.effect(() => wired.systemPrompt?.section({
       name: 'codex-sidebar:browser-drive',
       order: 140,
       text: BROWSER_DRIVE_GUIDANCE,
-    })
+    }) ?? (() => {}), 'dsh-codex-sidebar: Browser tool guidance')
   })
 }
