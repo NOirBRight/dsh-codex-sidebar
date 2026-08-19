@@ -23,6 +23,7 @@ describe('侧栏开关 placement', () => {
     const index = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8')
     expect(drawer).toContain('pinHandleToSeam')
     expect(drawer).toContain('overlayToggleVisible')
+    expect(drawer).toContain('clearDetailsTrackStyle')
     expect(sidebar).not.toContain('SidebarToggleButton')
     expect(index).not.toContain('conversation.session.header.utilities')
     expect(css).not.toContain('left: calc(100% - var(--dcs-details-track, 0px))')

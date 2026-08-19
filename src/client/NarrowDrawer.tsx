@@ -13,7 +13,7 @@ import {
   publishDrawerWidth,
   subscribeDrawerWidth,
 } from './drawer-width.ts'
-import { detailsTrackPx, sidebarTrackFromGrid } from './host-frame.ts'
+import { clearDetailsTrackStyle, detailsTrackPx, sidebarTrackFromGrid } from './host-frame.ts'
 import { NS } from './locales.ts'
 import type { SidebarFace } from './Sidebar.tsx'
 import { SidebarToggleButton } from './Toggle.tsx'
@@ -30,7 +30,10 @@ export function NarrowDrawer(props: DrawerProps): ReactElement {
   ))
   usePinFrameColumns(sessionId !== undefined, collapsed)
   useLayoutEffect(() => {
-    if (sessionId === undefined) return
+    if (sessionId === undefined) {
+      props.controller.syncTrack(true)
+      return
+    }
     props.controller.syncTrack(collapsed)
   }, [sessionId, collapsed, props.controller])
 
@@ -57,9 +60,12 @@ export function NarrowDrawer(props: DrawerProps): ReactElement {
 
 function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): void {
   useLayoutEffect(() => {
-    if (!active) return
     const overlay = document.querySelector('[data-shell-overlay]')
     const frame = overlay?.parentElement
+    if (!active) {
+      if (frame instanceof HTMLElement) clearDetailsTrackStyle(frame)
+      return
+    }
     const apply = (): void => {
       if (frame === null || frame === undefined) return
       const viewport = frame.getBoundingClientRect().width || window.innerWidth
@@ -87,7 +93,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
         unsub()
         observer.disconnect()
         resize.disconnect()
-        frame.removeAttribute('data-dcs-open')
+        clearDetailsTrackStyle(frame)
       }
     }
     return () => { unsub() }

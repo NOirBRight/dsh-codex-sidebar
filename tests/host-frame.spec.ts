@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closedDetailsGrid, detailsTrackPx, sidebarTrackFromGrid } from '../src/client/host-frame.ts'
+import { clearDetailsTrackStyle, closedDetailsGrid, detailsTrackPx, sidebarTrackFromGrid } from '../src/client/host-frame.ts'
 
 describe('AppFrame details track', () => {
   it('reads the sidebar track from host inline and computed grids', () => {
@@ -21,5 +21,15 @@ describe('AppFrame details track', () => {
 
   it('keeps the details track closed while the session snapshot is loading', () => {
     expect(detailsTrackPx(undefined, 560)).toBe('0px')
+  })
+
+  it('clears a leftover 侧栏 track when New Session has no 主会话', () => {
+    const calls: string[] = []
+    const frame = {
+      style: { setProperty(name: string, value: string) { calls.push(name + '=' + value) } },
+      removeAttribute(name: string) { calls.push('remove:' + name) },
+    }
+    clearDetailsTrackStyle(frame)
+    expect(calls).toEqual(['--dcs-details-track=0px', 'remove:data-dcs-open'])
   })
 })

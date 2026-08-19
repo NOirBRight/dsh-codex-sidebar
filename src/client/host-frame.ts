@@ -13,3 +13,12 @@ export function detailsTrackPx(collapsed: boolean | undefined, width: number): s
 export function closedDetailsGrid(sidebarPx: string): string {
   return `${sidebarPx} minmax(0, 1fr) 0px`
 }
+
+/** Drop a leftover 侧栏 track when New Session has no 主会话. */
+export function clearDetailsTrackStyle(frame: {
+  style: { setProperty(name: string, value: string): void }
+  removeAttribute(name: string): void
+}): void {
+  frame.style.setProperty('--dcs-details-track', '0px')
+  frame.removeAttribute('data-dcs-open')
+}
