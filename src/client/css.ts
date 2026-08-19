@@ -25,6 +25,34 @@ export const SIDEBAR_CSS = `
   font-family: var(--dsw-font-family);
   border-left: 1px solid var(--dsw-alias-border-l2);
 }
+.dcs-occupant-error {
+  gap: 12px;
+  padding: 16px;
+  justify-content: center;
+}
+.dcs-occupant-error p {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+.dcs-occupant-error pre {
+  margin: 0;
+  max-height: 40%;
+  overflow: auto;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: pre-wrap;
+}
+.dcs-occupant-error button {
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
 .dcs-col {
   position: relative;
   display: flex;
@@ -706,8 +734,10 @@ button.dcs-toggle {
   color: var(--dsw-alias-label-primary);
 }
 [class*="detailsCol"] {
-  overflow: visible !important;
   min-width: 0;
+}
+[class$="_frame"]:not([data-details-collapsed]) [class*="detailsCol"] {
+  overflow: visible !important;
 }
 [class$="_frame"]:has([data-shell-overlay]) {
   grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;

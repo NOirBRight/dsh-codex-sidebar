@@ -301,15 +301,15 @@ export class SidebarController {
     void this.dispatch(sessionId, { type: 'toggle-collapsed' })
   }
 
-  syncTrack(collapsed: boolean): void {
-    this.#applyTrack(collapsed)
+  syncTrack(collapsed: boolean | undefined): void {
+    this.#applyTrack(collapsed === false ? false : true)
   }
 
   #layoutFace(): ILayout {
     return this.#ctx.layout ?? this.#layout
   }
 
-  #applyTrack(collapsed: boolean): void {
+  #applyTrack(collapsed: boolean | undefined): void {
     try {
       applyDetailsTrack(this.#layoutFace(), collapsed)
     } catch {

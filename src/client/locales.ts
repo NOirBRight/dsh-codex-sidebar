@@ -22,6 +22,8 @@ export const en = {
   newTerminal: 'New terminal',
   collapseTerminals: 'Hide terminals',
   expandTerminals: 'Show terminals',
+  occupantError: 'The sidebar hit a display error. It stayed here instead of yielding Details.',
+  occupantRetry: 'Retry',
 } as const
 
 export type SidebarKey = keyof typeof en
@@ -46,4 +48,6 @@ export const zh: Record<SidebarKey, string> = {
   newTerminal: '新建终端',
   collapseTerminals: '收起终端列表',
   expandTerminals: '展开终端列表',
+  occupantError: '侧栏显示出错，已留在这里，没有退回默认 Details。',
+  occupantRetry: '重试',
 }

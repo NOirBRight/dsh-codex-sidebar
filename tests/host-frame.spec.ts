@@ -19,7 +19,7 @@ describe('AppFrame details track', () => {
     expect(detailsTrackPx(false, 560.4)).toBe('560px')
   })
 
-  it('preserves the current grid track while the session snapshot is loading', () => {
-    expect(detailsTrackPx(undefined, 560)).toBeUndefined()
+  it('keeps the details track closed while the session snapshot is loading', () => {
+    expect(detailsTrackPx(undefined, 560)).toBe('0px')
   })
 })

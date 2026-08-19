@@ -25,7 +25,6 @@ export function applyDetailsTrack(
   layout: { openDetails(): void; closeDetails(): void },
   collapsed: boolean | undefined,
 ): void {
-  if (collapsed === undefined) return
   if (detailsTrackShouldOpen(collapsed)) layout.openDetails()
   else layout.closeDetails()
 }

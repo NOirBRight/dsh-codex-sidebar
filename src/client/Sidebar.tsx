@@ -21,6 +21,7 @@ import {
   publishDrawerWidth,
 } from './drawer-width.ts'
 import { AttachmentStrip } from './AttachmentChips.tsx'
+import { OccupantBoundary } from './OccupantBoundary.tsx'
 import { SidebarToggleButton } from './Toggle.tsx'
 
 export interface SidebarFace {
@@ -46,23 +47,27 @@ export function SidebarPanel({
   const cwd = useSessions((list) => list.byId[sessionId]?.cwd)
   const workspaceName = basename(cwd)
 
-  if (snapshot === undefined) return <div className="dcs-root" />
-
   return (
-    <div className="dcs-col">
-      {!snapshot.collapsed && (
-        <SidebarResizeHandle label={t('resizeDrawer')} />
+    <OccupantBoundary
+      label={t('occupantError')}
+      retryLabel={t('occupantRetry')}
+      onRetry={() => { void controller.refresh(String(sessionId)) }}
+    >
+      {snapshot !== undefined && !snapshot.collapsed && (
+        <div className="dcs-col">
+          <SidebarResizeHandle label={t('resizeDrawer')} />
+          <SidebarChrome
+            snapshot={snapshot}
+            workspaceName={workspaceName}
+            t={t}
+            onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
+            onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
+            onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
+            onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
+          />
+        </div>
       )}
-      <SidebarChrome
-        snapshot={snapshot}
-        workspaceName={workspaceName}
-        t={t}
-        onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
-        onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
-        onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
-        onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
-      />
-    </div>
+    </OccupantBoundary>
   )
 }
 

@@ -46,7 +46,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
         frame.style.setProperty('--dcs-sidebar-track', sidebar)
       }
       const details = detailsTrackPx(collapsed, peekDrawerWidth(viewport))
-      if (details !== undefined && frame.style.getPropertyValue('--dcs-details-track') !== details) {
+      if (frame.style.getPropertyValue('--dcs-details-track') !== details) {
         frame.style.setProperty('--dcs-details-track', details)
       }
     }

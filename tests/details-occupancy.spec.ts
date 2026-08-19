@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { apply, inject } from '../src/client/index.ts'
+import { retainDetailsOccupantAfterRenderError } from '../src/client/occupant-hold.ts'
 import {
   CLIENT_INJECT,
   DEFAULT_DETAILS_PRIORITY,
@@ -77,11 +78,11 @@ describe('details occupancy', () => {
     expect(layout.openDetails).toHaveBeenCalledOnce()
   })
 
-  it('holds the AppFrame track while the session snapshot is loading', () => {
+  it('closes the AppFrame track while the session snapshot is loading', () => {
     const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
     applyDetailsTrack(layout, undefined)
+    expect(layout.closeDetails).toHaveBeenCalledOnce()
     expect(layout.openDetails).not.toHaveBeenCalled()
-    expect(layout.closeDetails).not.toHaveBeenCalled()
   })
 
   it('occupyDetails registers the details slot at the shadowing priority', () => {
@@ -89,6 +90,16 @@ describe('details occupancy', () => {
     occupyDetails(ctx.slots, () => ({}), {}, 'codex-sidebar')
     expect(injected).toEqual([DETAILS_SLOT])
     expect(registered).toEqual([{ name: DETAILS_SLOT, priority: DETAILS_PRIORITY }])
+  })
+
+  it('does not abdicate the details slot when a tool pane throws', () => {
+    expect(retainDetailsOccupantAfterRenderError(new Error('Browser stream boom'))).toEqual({
+      abdicate: false,
+      message: 'Browser stream boom',
+    })
+    const source = readFileSync(new URL('../src/client/Sidebar.tsx', import.meta.url), 'utf8')
+    expect(source).toContain('OccupantBoundary')
+    expect(source).toContain('!snapshot.collapsed')
   })
 
   it('apply still occupies details when path takeover throws', () => {
