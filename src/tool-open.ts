@@ -40,6 +40,47 @@ export function statsFromSnapshot(snapshot: unknown): Record<string, { added: nu
   return collectFromSnapshot(snapshot).stats
 }
 
+export type RowStat = { path: string; added: number; removed: number }
+
+export function rowStatsFromSnapshot(snapshot: unknown): RowStat[] {
+  return collectFromSnapshot(snapshot).hunks.map((hunk) => {
+    const diff = fileDiff(hunk.before, hunk.after)
+    return { path: hunk.path, added: diff.added, removed: diff.removed }
+  })
+}
+
+export function queueRowStats(rows: readonly RowStat[]): Map<string, Array<{ added: number; removed: number }>> {
+  const pending = new Map<string, Array<{ added: number; removed: number }>>()
+  for (const row of rows) {
+    const list = pending.get(row.path) ?? []
+    list.push({ added: row.added, removed: row.removed })
+    pending.set(row.path, list)
+  }
+  return pending
+}
+
+export function takeRowStat(
+  pending: Map<string, Array<{ added: number; removed: number }>>,
+  label: string,
+): { added: number; removed: number } | undefined {
+  const text = label.trim().replace(/\\/g, '/')
+  if (text.length === 0) return undefined
+  const keys = [...pending.keys()]
+  const hit = keys.find((key) => key === text)
+    ?? unique(keys.filter((key) => text.endsWith('/' + key) || key.endsWith('/' + text)))
+    ?? unique(keys.filter((key) => (key.split('/').pop() ?? key) === (text.split('/').pop() ?? text)))
+  if (hit === undefined) return undefined
+  const queue = pending.get(hit)
+  if (queue === undefined || queue.length === 0) return undefined
+  const next = queue.shift()
+  if (queue.length === 0) pending.delete(hit)
+  return next
+}
+
+function unique(keys: string[]): string | undefined {
+  return keys.length === 1 ? keys[0] : undefined
+}
+
 export function reviewChangesFromSnapshot(snapshot: unknown): ReviewChange[] {
   const byPath = new Map<string, ReviewChange>()
   for (const hunk of collectFromSnapshot(snapshot).hunks) {
@@ -100,6 +141,7 @@ function absorbRoots(value: unknown, state: CallState, out: Stats, seen: Set<obj
 function absorbCall(call: Record<string, unknown>, state: CallState, out: Stats, seen: Set<object>): void {
   if (seen.has(call)) return
   seen.add(call)
+  const start = collecting?.length ?? 0
   if (state === 'settled') {
     if (!absorbView(call.resultView, out)) absorbView(call.callView, out)
   } else {
@@ -108,12 +150,26 @@ function absorbCall(call: Record<string, unknown>, state: CallState, out: Stats,
   absorbArgs(call, out)
   absorbPair(call, out)
   absorbResultText(call, out)
+  collapseCallHunks(start)
   if (!Array.isArray(call.subCalls)) return
   for (const child of call.subCalls) {
     if (!isRecord(child) || typeof child.callId !== 'string') continue
     if (child.kind === 'tool-result') absorbCall(child, 'settled', out, seen)
     else if (child.kind === undefined) absorbCall(child, 'running', out, seen)
   }
+}
+
+function collapseCallHunks(start: number): void {
+  if (collecting === undefined || collecting.length <= start) return
+  const slice = collecting.slice(start)
+  const seen = new Set<string>()
+  const kept: Array<OpenHunk & { path: string }> = []
+  for (const hunk of slice) {
+    if (seen.has(hunk.path)) continue
+    seen.add(hunk.path)
+    kept.push(hunk)
+  }
+  collecting.splice(start, slice.length, ...kept)
 }
 
 function absorbView(value: unknown, out: Stats): boolean {

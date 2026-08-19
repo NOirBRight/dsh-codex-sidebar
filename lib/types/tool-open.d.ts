@@ -18,6 +18,23 @@ export declare function statsFromSnapshot(snapshot: unknown): Record<string, {
     added: number;
     removed: number;
 }>;
+export type RowStat = {
+    path: string;
+    added: number;
+    removed: number;
+};
+export declare function rowStatsFromSnapshot(snapshot: unknown): RowStat[];
+export declare function queueRowStats(rows: readonly RowStat[]): Map<string, Array<{
+    added: number;
+    removed: number;
+}>>;
+export declare function takeRowStat(pending: Map<string, Array<{
+    added: number;
+    removed: number;
+}>>, label: string): {
+    added: number;
+    removed: number;
+} | undefined;
 export declare function reviewChangesFromSnapshot(snapshot: unknown): ReviewChange[];
 export declare function hunkForOpen(snapshot: unknown, path: string, tool?: string): {
     before: string;

@@ -1,16 +1,14 @@
-/** Paint +N −M on 主会话 edit/write tool rows. Plugin overlay — does not patch DSH core. */
+/** Paint +N −M after the filename on each 主会话 edit/write tool row. */
 
-import { statForLabel, WRITE_TOOL } from '../tool-open.ts'
+import { queueRowStats, takeRowStat, WRITE_TOOL, type RowStat } from '../tool-open.ts'
 
 const MARK = 'dcs-tool-stat'
 const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
 
-export function installToolStats(getStats: () => Record<string, { added: number; removed: number }>): { stop: () => void; paint: () => void } {
+export function installToolStats(getStats: () => readonly RowStat[]): { stop: () => void; paint: () => void } {
   if (typeof document === 'undefined') {
     return { stop() {}, paint() { decorate(getStats()) } }
   }
-  // Own writes must not be visible to this observer: a connected observer
-  // plus a badge rewrite is a microtask loop that freezes the tab.
   let observer: MutationObserver
   const paint = (): void => {
     observer.disconnect()
@@ -26,17 +24,19 @@ export function installToolStats(getStats: () => Record<string, { added: number;
   return { stop() { observer.disconnect() }, paint }
 }
 
-export function decorate(stats: Record<string, { added: number; removed: number }>, root: ParentNode = document): void {
+export function decorate(stats: readonly RowStat[], root: ParentNode = document): void {
+  const pending = queueRowStats(stats)
   const rows = root.querySelectorAll('[data-tool]')
   for (const row of rows) {
     if (!(row instanceof HTMLElement)) continue
     if (row.querySelector('[data-tool]')) continue
     const tool = row.getAttribute('data-tool') ?? ''
     if (!WRITE_TOOL.test(tool)) continue
-    const label = pathLabel(row)
-    const stat = label === undefined ? undefined : statForLabel(stats, label)
+    const pathBtn = pathButton(row)
+    const label = pathBtn === undefined ? pathLabel(row) : pathText(pathBtn)
+    const stat = label === undefined ? undefined : takeRowStat(pending, label)
     const existing = row.querySelector('.' + MARK)
-    if (stat === undefined) {
+    if (stat === undefined || (stat.added === 0 && stat.removed === 0)) {
       existing?.remove()
       continue
     }
@@ -47,27 +47,53 @@ export function decorate(stats: Record<string, { added: number; removed: number 
       if (existing.dataset.dcs === signature) continue
       existing.dataset.dcs = signature
       existing.replaceChildren(span('add', add), span('del', del))
+      placeStat(existing, pathBtn, row)
       continue
     }
     const badge = document.createElement('span')
     badge.className = MARK
     badge.dataset.dcs = signature
     badge.append(span('add', add), span('del', del))
-    const host = row.querySelector('button') ?? row
-    host.insertAdjacentElement('afterend', badge) || row.append(badge)
+    placeStat(badge, pathBtn, row)
   }
+}
+
+function placeStat(badge: HTMLElement, pathBtn: HTMLElement | undefined, row: HTMLElement): void {
+  if (pathBtn !== undefined) {
+    if (badge.parentElement !== pathBtn) pathBtn.append(badge)
+    return
+  }
+  if (badge.parentElement !== row) row.append(badge)
+}
+
+function pathButton(row: HTMLElement): HTMLElement | undefined {
+  for (const button of row.querySelectorAll('button')) {
+    const text = pathText(button)
+    if (text.length === 0) continue
+    if (text === '+' || text === '…' || text === '...') continue
+    if (/^(edit|write|inspect|查看)$/i.test(text)) continue
+    if (text.includes('/') || /\.\w+$/.test(text)) return button
+  }
+  return undefined
 }
 
 function pathLabel(row: HTMLElement): string | undefined {
   const texts: string[] = []
   for (const button of row.querySelectorAll('button')) {
-    const text = button.textContent?.trim() ?? ''
+    const text = pathText(button)
     if (text.length === 0) continue
     if (text === '+' || text === '…' || text === '...') continue
     if (/^(edit|write|inspect|查看)$/i.test(text)) continue
     texts.push(text)
   }
   return texts.find((text) => text.includes('/') || /\.\w+$/.test(text)) ?? texts[0]
+}
+
+function pathText(el: HTMLElement): string {
+  const mark = el.querySelector('.' + MARK)
+  const full = el.textContent ?? ''
+  if (!(mark instanceof HTMLElement)) return full.trim()
+  return full.replace(mark.textContent ?? '', '').trim()
 }
 
 function span(cls: string, text: string): HTMLSpanElement {

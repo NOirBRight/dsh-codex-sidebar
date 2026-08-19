@@ -11,11 +11,11 @@ import { SidebarController } from './controller.ts'
 import { ensureSidebarStyles } from './css.ts'
 import { en, NS, zh, type SidebarKey } from './locales.ts'
 import { SidebarPanel, type SidebarFace } from './Sidebar.tsx'
-import { UserAnnotationBubble } from './UserAnnotationBubble.tsx'
 import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
+import { installAnnotationChips, sourceForFlowKey } from './annotation-chips.ts'
 import { installToolStats } from './tool-stats.ts'
-import { statsFromSnapshot } from '../tool-open.ts'
+import { rowStatsFromSnapshot } from '../tool-open.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -42,17 +42,37 @@ export function apply(ctx: ClientContext): void {
     console.error('[dsh-codex-sidebar] path takeover skipped', err)
   }
   ctx.effect(() => {
-    const readStats = (): Record<string, { added: number; removed: number }> => {
+    const readStats = () => {
       const current = ctx.sessions.list.getSnapshot().current
-      if (current === undefined) return {}
-      const host = controller.snap(String(current))?.fileStats ?? {}
+      if (current === undefined) return []
       const binding = ctx.sessions.binding(current as never)
-      const live = binding === undefined ? {} : statsFromSnapshot(binding.session.getSnapshot())
-      return { ...host, ...live }
+      if (binding === undefined) return []
+      return rowStatsFromSnapshot(binding.session.getSnapshot())
     }
     const hook = installToolStats(readStats)
+    const chips = installAnnotationChips({
+      sessionId: () => {
+        const current = ctx.sessions.list.getSnapshot().current
+        return current === undefined ? undefined : String(current)
+      },
+      nodeSource: (key) => {
+        const current = ctx.sessions.list.getSnapshot().current
+        if (current === undefined) return undefined
+        const binding = ctx.sessions.binding(current as never)
+        if (binding === undefined) return undefined
+        return sourceForFlowKey(binding.session.getSnapshot(), key)
+      },
+      reveal: (sessionId, mark) => {
+        void controller.dispatch(sessionId, { type: 'reveal-mark', mark })
+      },
+      label: (n, from) => en.openMark.replace('{n}', String(n)).replace('{from}', from),
+    })
     let timer: ReturnType<typeof setTimeout> | undefined
     let unsubSession: (() => void) | undefined
+    const paint = (): void => {
+      hook.paint()
+      chips.paint()
+    }
     const bindSession = (): void => {
       unsubSession?.()
       unsubSession = undefined
@@ -62,34 +82,22 @@ export function apply(ctx: ClientContext): void {
       if (binding === undefined) return
       unsubSession = binding.session.subscribe(() => {
         if (timer !== undefined) clearTimeout(timer)
-        timer = setTimeout(hook.paint, 200)
+        timer = setTimeout(paint, 200)
       })
+      paint()
     }
     bindSession()
     const stopList = ctx.sessions.list.subscribe(bindSession)
-    const stopStore = controller.subscribe(hook.paint)
+    const stopStore = controller.subscribe(paint)
     return () => {
       hook.stop()
+      chips.stop()
       stopList()
       stopStore()
       unsubSession?.()
       if (timer !== undefined) clearTimeout(timer)
     }
-  }, 'dsh-codex-sidebar: edit +/− on tool rows')
-  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-    name: 'conversation.chat.node',
-    key: 'user',
-    priority: -1,
-    locale: NS,
-    inject: face,
-  }, UserAnnotationBubble))
-  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-    name: 'conversation.chat.node',
-    key: 'steering',
-    priority: -1,
-    locale: NS,
-    inject: face,
-  }, UserAnnotationBubble))
+  }, 'dsh-codex-sidebar: edit +/− and 批注 chips')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'codex-sidebar-attachments',

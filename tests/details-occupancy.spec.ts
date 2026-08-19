@@ -19,6 +19,7 @@ vi.mock('../src/client/AttachmentChips.tsx', () => ({ AttachmentChips: function 
 vi.mock('../src/client/NarrowDrawer.tsx', () => ({ NarrowDrawer: function NarrowDrawer() { return null } }))
 vi.mock('../src/client/UserAnnotationBubble.tsx', () => ({ UserAnnotationBubble: function UserAnnotationBubble() { return null } }))
 vi.mock('../src/client/tool-stats.ts', () => ({ installToolStats: () => ({ paint() {}, stop() {} }) }))
+vi.mock('../src/client/annotation-chips.ts', () => ({ installAnnotationChips: () => ({ paint() {}, stop() {} }), sourceForFlowKey() { return undefined } }))
 vi.mock('../src/client/controller.ts', () => ({
   SidebarController: class SidebarController {
     installPathTakeover() { throw new Error('workspaces missing') }

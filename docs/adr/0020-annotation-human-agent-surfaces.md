@@ -4,4 +4,4 @@ A 批注 still instructs the 主会话. After Send, the human-visible user bubbl
 
 `agent.inject()` was rejected: a running 主会话 would claim next-step context on the current turn, so queued 批注 would not travel with their user message (ADR 0003). Staging is bound to the next user-kind inbox insert for that session id.
 
-Clicking a transcript chip dispatches `reveal-mark`: the 侧栏 opens the Files/Browser/Review mark without returning it to the composer stack. Sent marks remain in `deliveredMarks` so the preview can keep its numbered highlight.
+Do not shadow `conversation.chat.node` for `user`/`steering`. That slot is keyed, so a custom renderer would replace the official bubble. The stock bubble stays; numbered chips paint under it from `source.annotations` via the same overlay pattern as tool-row +/−. Clicking a chip still dispatches `reveal-mark`.

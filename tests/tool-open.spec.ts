@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hunkForOpen, statForLabel, statsFromSnapshot, viewForTool } from '../src/tool-open.ts'
+import { hunkForOpen, queueRowStats, rowStatsFromSnapshot, statForLabel, statsFromSnapshot, takeRowStat, viewForTool } from '../src/tool-open.ts'
 
 type DiffHunk = { path: string; oldText: string | null; newText: string }
 
@@ -215,5 +215,36 @@ describe('tool-open', () => {
       after: '# created\n# extra\n',
     })
     expect(hunkForOpen(snap, 'diff-display-test.md', 'write')?.before).toBe('')
+  })
+
+  it('hands each edit of the same file its own increment, in log order', () => {
+    const snap = {
+      nodes: [
+        settled({
+          callId: 'e1',
+          resultView: diffView({ path: 'src-python/route_plan.py', oldText: 'a\n', newText: 'a\nb\n' }),
+        }),
+        settled({
+          callId: 'e2',
+          resultView: diffView({ path: 'src-python/route_plan.py', oldText: 'a\nb\n', newText: 'a\n' }),
+        }),
+        settled({
+          callId: 'e3',
+          resultView: diffView({ path: 'src-python/route_plan.py', oldText: 'keep\n', newText: 'keep\nplus\n' }),
+        }),
+      ],
+      runningCalls: [],
+    }
+    expect(statsFromSnapshot(snap)['src-python/route_plan.py']).toEqual({ added: 2, removed: 1 })
+    expect(rowStatsFromSnapshot(snap)).toEqual([
+      { path: 'src-python/route_plan.py', added: 1, removed: 0 },
+      { path: 'src-python/route_plan.py', added: 0, removed: 1 },
+      { path: 'src-python/route_plan.py', added: 1, removed: 0 },
+    ])
+    const pending = queueRowStats(rowStatsFromSnapshot(snap))
+    expect(takeRowStat(pending, 'route_plan.py')).toEqual({ added: 1, removed: 0 })
+    expect(takeRowStat(pending, 'src-python/route_plan.py')).toEqual({ added: 0, removed: 1 })
+    expect(takeRowStat(pending, 'src-python/route_plan.py')).toEqual({ added: 1, removed: 0 })
+    expect(takeRowStat(pending, 'src-python/route_plan.py')).toBeUndefined()
   })
 })

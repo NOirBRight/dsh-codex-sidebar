@@ -479,7 +479,7 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 .dcs-tree-handle[data-dragging]::after { opacity: 1; }
 .dcs-tool-stat {
   margin-left: 8px; font-size: 12px; font-variant-numeric: tabular-nums;
-  white-space: nowrap; pointer-events: none;
+  white-space: nowrap; pointer-events: none; font-weight: 500;
 }
 .dcs-tool-stat .add { color: #16a34a; }
 .dcs-tool-stat .del { color: #dc2626; margin-left: 4px; }
@@ -888,6 +888,13 @@ button.dcs-toggle {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+.dcs-msg-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
 }
 button.dcs-msg-chip {
   border: 0;
