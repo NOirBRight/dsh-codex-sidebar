@@ -124,7 +124,7 @@ export function apply(ctx: HostContext): void {
           annotationSend,
           annotationPortsFor: (sessionId) => ({
             readFile: (path) => filesBySession.get(sessionId)?.read(path),
-            ...saveImage === undefined ? {} : { saveImage: saveImage as never },
+            ...saveImage === undefined ? {} : { saveImage },
             readEvidence: (id, evidence) => managedEvidence.read(id, evidence),
             agentLive,
           }),

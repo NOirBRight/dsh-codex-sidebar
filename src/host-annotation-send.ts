@@ -51,7 +51,7 @@ export type AnnotationSendPorts = {
 }
 
 export class AnnotationSendStore {
-  #pending = new Map<string, StagedAnnotationBatch>()
+  #pending = new Map<string, StagedAnnotationBatch[]>()
   #byMessage = new Map<string, StagedAnnotationBatch>()
   #now: () => number
   #ttlMs: number
@@ -64,20 +64,27 @@ export class AnnotationSendStore {
   stage(batch: Omit<StagedAnnotationBatch, 'expiresAt'>): StagedAnnotationBatch {
     this.#prune()
     const next: StagedAnnotationBatch = { ...batch, expiresAt: this.#now() + this.#ttlMs }
-    this.#pending.set(batch.sessionId, next)
+    const queue = this.#pending.get(batch.sessionId) ?? []
+    queue.push(next)
+    this.#pending.set(batch.sessionId, queue)
     return next
   }
 
   unstage(sessionId: string): void {
-    this.#pending.delete(sessionId)
+    const queue = this.#pending.get(sessionId)
+    if (queue === undefined || queue.length === 0) return
+    queue.pop()
+    if (queue.length === 0) this.#pending.delete(sessionId)
   }
 
   bindInserted(sessionId: string, message: { id: string; source: unknown }): void {
     this.#prune()
     if (!isUserSource(message.source)) return
-    const batch = this.#pending.get(sessionId)
+    const queue = this.#pending.get(sessionId)
+    if (queue === undefined || queue.length === 0) return
+    const batch = queue.shift()
     if (batch === undefined) return
-    this.#pending.delete(sessionId)
+    if (queue.length === 0) this.#pending.delete(sessionId)
     this.#byMessage.set(message.id, batch)
   }
 
@@ -91,8 +98,11 @@ export class AnnotationSendStore {
 
   #prune(): void {
     const now = this.#now()
-    for (const [id, batch] of this.#pending) if (batch.expiresAt < now) this.#pending.delete(id)
-    for (const [id, batch] of this.#byMessage) if (batch.expiresAt < now) this.#byMessage.delete(id)
+    for (const [id, queue] of this.#pending) {
+      const kept = queue.filter((batch) => batch.expiresAt >= now)
+      if (kept.length === 0) this.#pending.delete(id)
+      else this.#pending.set(id, kept)
+    }
   }
 }
 

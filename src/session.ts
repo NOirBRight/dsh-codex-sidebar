@@ -17,6 +17,7 @@ import type { TerminalIntent, TerminalPort, TerminalState } from './terminal.ts'
 import { emptyTerminal, projectTerminal, reduceTerminal } from './terminal.ts'
 
 export const PALETTE = ['Review', 'Terminal', 'Browser', 'Files'] as const
+export const MAX_DELIVERED_MARKS = 100
 
 export function retireSideChatTabs(tabs: readonly Tab[], active: string | null): { tabs: Tab[]; active: string | null } {
   const kept = tabs.filter((tab) => (tab.kind as string | null) !== 'Side Chat')
@@ -172,7 +173,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   const saved = opts.persist.load(opts.sessionId)
   let seq = saved ? saved.tabs.reduce((n, t) => Math.max(n, Number(t.id.slice(1)) || 0), 0) : 0
   let attachments: Annotation[] = (saved?.attachments ?? []).map(hydrateAnnotation)
-  let deliveredMarks: Annotation[] = (saved?.deliveredMarks ?? []).map(hydrateAnnotation)
+  let deliveredMarks: Annotation[] = (saved?.deliveredMarks ?? []).map(hydrateAnnotation).slice(-MAX_DELIVERED_MARKS)
   let queue: Array<{ text: string; attachments: Annotation[] }> = saved?.queue ?? []
   let collapsed = saved?.collapsed ?? true
   const retiredTabs = retireSideChatTabs(saved?.tabs ?? [], saved?.active ?? null)
@@ -259,7 +260,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   function deliver(payload: readonly Annotation[]): void {
     if (payload.length === 0) return
     const known = new Set(deliveredMarks.map((item) => item.id))
-    deliveredMarks = [...deliveredMarks, ...payload.filter((item) => !known.has(item.id))]
+    deliveredMarks = [...deliveredMarks, ...payload.filter((item) => !known.has(item.id))].slice(-MAX_DELIVERED_MARKS)
   }
 
   function projectFiles(): SidebarSnapshot['files'] {

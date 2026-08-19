@@ -66,7 +66,7 @@ export function FilesPane({
     showFileSelectionHighlights(
       [...selections.values()].map((selection) => restoreTextRange(surface, selection)).filter((range): range is Range => range !== null),
     )
-  }, [files.path, files.pendingSelection, markdown, paneMarks])
+  }, [files.path, files.pendingSelection, markdown, snapshot.attachments, snapshot.deliveredMarks])
 
   useEffect(() => () => { clearFileSelectionHighlight() }, [])
 

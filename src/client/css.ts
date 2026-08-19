@@ -861,6 +861,26 @@ button.dcs-toggle {
   overflow-wrap: anywhere;
 }
 .dcs-user-text { white-space: pre-wrap; }
+.dcs-ref-chip {
+  display: inline;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+.dcs-user-meta { display: flex; align-items: center; gap: 6px; flex: none; }
+.dcs-user-time {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+@media (hover: hover) {
+  .dcs-user-row .dcs-user-time,
+  .dcs-user-row .dcs-user-copy { opacity: 0; transition: opacity 80ms; }
+  .dcs-user-row:hover .dcs-user-time,
+  .dcs-user-row:hover .dcs-user-copy,
+  .dcs-user-row:focus-within .dcs-user-time,
+  .dcs-user-row:focus-within .dcs-user-copy { opacity: 1; }
+}
 .dcs-user-images { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .dcs-user-thumb { max-width: 180px; max-height: 180px; border-radius: 10px; object-fit: cover; }
 .dcs-msg-chips {

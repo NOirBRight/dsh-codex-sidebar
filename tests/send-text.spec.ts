@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { fileCaption, fileSnippet, fromFileMark, parsePathLine, toMarkView } from '../src/annotation.ts'
+import { projectUserText } from '../src/annotation-message.ts'
 import { formatEvidenceSend, formatHumanSend } from '../src/send-text.ts'
 
 describe('formatHumanSend', () => {
@@ -73,5 +74,18 @@ describe('file captions', () => {
       line: 2,
     })
     expect(fileSnippet(['a','b','c','d','e'].join('\n'), 2, 1)).toBe(['1|a','2|b','3|c'].join('\n'))
+  })
+})
+
+describe('projectUserText', () => {
+  it('keeps plain text and splits /@ tokens', () => {
+    expect(projectUserText('hello')).toEqual([{ kind: 'text', text: 'hello' }])
+    expect(projectUserText('use /read and @worker please')).toEqual([
+      { kind: 'text', text: 'use ' },
+      { kind: 'ref', text: '/read' },
+      { kind: 'text', text: ' and ' },
+      { kind: 'ref', text: '@worker' },
+      { kind: 'text', text: ' please' },
+    ])
   })
 })

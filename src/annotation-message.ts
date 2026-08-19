@@ -2,6 +2,25 @@
 
 export type MessageImageRef = { attachmentId: string }
 
+export type UserTextPart = { kind: 'text'; text: string } | { kind: 'ref'; text: string }
+
+export function projectUserText(text: string): UserTextPart[] {
+  const re = /(^|\s)([/@][\w-]+)(?=\s|$)/g
+  const parts: UserTextPart[] = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) !== null) {
+    const token = match[2] ?? ''
+    const tokenStart = match.index + (match[1]?.length ?? 0)
+    if (tokenStart > cursor) parts.push({ kind: 'text', text: text.slice(cursor, tokenStart) })
+    parts.push({ kind: 'ref', text: token })
+    cursor = tokenStart + token.length
+  }
+  if (parts.length === 0) return [{ kind: 'text', text }]
+  if (cursor < text.length) parts.push({ kind: 'text', text: text.slice(cursor) })
+  return parts
+}
+
 export function firstTextBlock(content: readonly unknown[]): string {
   for (const block of content) {
     if (typeof block !== 'object' || block === null) continue

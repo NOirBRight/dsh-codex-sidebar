@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { visibleTree } from '../src/file-tree.ts'
-import { createSidebarSession, PALETTE } from '../src/session.ts'
+import { createSidebarSession, MAX_DELIVERED_MARKS, PALETTE } from '../src/session.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
 
 function memoryFiles(
@@ -405,6 +405,21 @@ describe('Files seam', () => {
       noteDraft: '',
       notePos: null,
     })
+  })
+
+  it('keeps only the most recent delivered marks', () => {
+    const { box } = session()
+    for (let i = 1; i <= MAX_DELIVERED_MARKS + 5; i += 1) {
+      box.dispatch({
+        type: 'restore-attachments',
+        attachments: [{ id: 'd' + i, text: 'n', from: 'f', source: 'files', path: 'src/Login.tsx', line: 1 }],
+      })
+      box.dispatch({ type: 'composer-send', text: 'x' })
+    }
+    const marks = box.snapshot().deliveredMarks
+    expect(marks).toHaveLength(MAX_DELIVERED_MARKS)
+    expect(marks[0]?.id).toBe('d6')
+    expect(marks[marks.length - 1]?.id).toBe('d' + String(MAX_DELIVERED_MARKS + 5))
   })
 
   it('keeps an empty composer send inert when there are no 批注', () => {

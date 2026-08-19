@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { annotationMarksFromSource, hydrateAnnotation, type AnnotationMarkView } from '../annotation.ts'
-import { contentImages, firstTextBlock } from '../annotation-message.ts'
+import { contentImages, firstTextBlock, projectUserText } from '../annotation-message.ts'
 import type { Annotation } from '../session.ts'
 import type { SidebarController } from './controller.ts'
 import { Ico } from './icons.tsx'
@@ -19,13 +19,13 @@ export function UserAnnotationBubble(props: {
   const marks = annotationMarksFromSource(node.data.source)
   const human = firstTextBlock(node.data.content)
   if (marks === undefined) {
-    return <PlainUserBubble content={node.data.content} loadImage={loadImage} t={t} />
+    return <PlainUserBubble content={node.data.content} loadImage={loadImage} time={node.data.time} t={t} />
   }
   return (
-    <div className="dcs-user-row">
+    <div className="dcs-user-row" data-time-hover-root>
       <div className="dcs-user-stack">
         <div className="dcs-user-bubble">
-          {human.length > 0 && <div className="dcs-user-text">{human}</div>}
+          {human.length > 0 && <UserText text={human} />}
           <div className="dcs-msg-chips">
             {marks.map((mark, index) => (
               <button
@@ -42,7 +42,7 @@ export function UserAnnotationBubble(props: {
           </div>
         </div>
       </div>
-      <CopyButton text={human} label={t('copyMessage')} />
+      <UserMeta time={node.data.time} text={human} copyLabel={t('copyMessage')} />
     </div>
   )
 }
@@ -50,10 +50,12 @@ export function UserAnnotationBubble(props: {
 function PlainUserBubble({
   content,
   loadImage,
+  time,
   t,
 }: {
   content: readonly unknown[]
   loadImage?: (attachment: { attachmentId: string }) => Promise<string>
+  time: number
   t: (key: SidebarKey, params?: Record<string, unknown>) => string
 }): ReactNode {
   const text = firstTextBlock(content)
@@ -65,14 +67,43 @@ function PlainUserBubble({
   const body = [text, ...rest.map((block) => block.text)].filter((part) => part.length > 0).join('\n')
   const images = contentImages(content)
   return (
-    <div className="dcs-user-row">
+    <div className="dcs-user-row" data-time-hover-root>
       <div className="dcs-user-stack">
         {loadImage !== undefined && images.length > 0 && <FallbackImages images={images} load={loadImage} />}
-        {body.length > 0 && <div className="dcs-user-bubble"><div className="dcs-user-text">{body}</div></div>}
+        {body.length > 0 && <div className="dcs-user-bubble"><UserText text={body} /></div>}
       </div>
-      <CopyButton text={body} label={t('copyMessage')} />
+      <UserMeta time={time} text={body} copyLabel={t('copyMessage')} />
     </div>
   )
+}
+
+function UserText({ text }: { text: string }): ReactNode {
+  return (
+    <div className="dcs-user-text">
+      {projectUserText(text).map((part, index) => part.kind === 'ref'
+        ? <span key={index} className="dcs-ref-chip" data-ref-chip={part.text.startsWith('@') ? 'subagent' : 'skill'}>{part.text}</span>
+        : <span key={index}>{part.text}</span>)}
+    </div>
+  )
+}
+
+function UserMeta({ time, text, copyLabel }: { time: number; text: string; copyLabel: string }): ReactNode {
+  const clock = formatClock(time)
+  return (
+    <div className="dcs-user-meta">
+      {clock !== undefined && <span className="dcs-user-time">{clock}</span>}
+      <CopyButton text={text} label={copyLabel} />
+    </div>
+  )
+}
+
+function formatClock(time: number): string | undefined {
+  if (!Number.isFinite(time) || time <= 0) return undefined
+  try {
+    return new Date(time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return undefined
+  }
 }
 
 function FallbackImages({
