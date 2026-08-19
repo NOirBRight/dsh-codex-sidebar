@@ -22,6 +22,20 @@ export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
   }
 }
 
+
+export function browserStreamSignalsReady(value: unknown): boolean {
+  if (value instanceof ArrayBuffer) return true
+  if (typeof value !== 'string') return false
+  try {
+    const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
+    if (message.type === 'ready') return true
+    if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false
+    return (message.projection as { status?: unknown }).status === 'ready'
+  } catch {
+    return false
+  }
+}
+
 export function browserWebSocketUrl(path: string, locationLike: Pick<Location, 'protocol' | 'host'> = window.location): string {
   return (locationLike.protocol === 'https:' ? 'wss://' : 'ws://') + locationLike.host + path
 }

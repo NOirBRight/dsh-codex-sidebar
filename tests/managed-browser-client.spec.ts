@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame } from '../src/client/managed-browser-stream.ts'
+import { browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
@@ -23,6 +23,16 @@ describe('managed Browser stream client', () => {
     })
     expect(browserWebSocketUrl('/cast', { protocol: 'http:', host: '127.0.0.1:3082' } as Location)).toBe('ws://127.0.0.1:3082/cast')
     expect(browserWebSocketUrl('/cast', { protocol: 'https:', host: 'lab.example' } as Location)).toBe('wss://lab.example/cast')
+  })
+
+
+
+  it('removes the Connecting overlay when a frame or ready projection arrives', () => {
+    expect(browserStreamSignalsReady(new ArrayBuffer(17))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
+    expect(browserStreamSignalsReady('not json')).toBe(false)
   })
 
   it('sends only the latest move and accumulates one wheel per animation frame', () => {

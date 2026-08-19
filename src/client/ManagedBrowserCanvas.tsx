@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type WheelEvent } from 'react'
-import { browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame } from './managed-browser-stream.ts'
+import { browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame } from './managed-browser-stream.ts'
 import type { AnnotationRect } from '../session.ts'
 
 type StreamTicket = { path: string; expiresAt: number }
@@ -97,6 +97,7 @@ export function ManagedBrowserCanvas({ tabId, annotate, requestTicket, onPick, o
         }
       }
       socket.onmessage = (event) => {
+        if (browserStreamSignalsReady(event.data)) setStatus('ready')
         if (typeof event.data === 'string') {
           try {
             const message = JSON.parse(event.data) as { type?: unknown; projection?: unknown }
