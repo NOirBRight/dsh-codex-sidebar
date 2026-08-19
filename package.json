@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-sidebar",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
   "type": "module",
   "main": "lib/index.js",
@@ -21,7 +21,8 @@
     "lib/client.js",
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.zh.md"
   ],
   "scripts": {
     "test": "vitest run",
@@ -77,5 +78,9 @@
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NOirBRight/dsh-codex-sidebar.git"
   }
 }

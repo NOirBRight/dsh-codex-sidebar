@@ -1,27 +1,52 @@
 # dsh-codex-sidebar
 
-Codex-app-style 侧栏 for one DeepSeek Harness 主会话. Files, Review, Browser, and Terminal share one Tab strip on the current session.
+English | [中文](README.zh.md)
+
+A Codex-app-style right-hand sidebar for one [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 主会话. Files, Review, Browser, and Terminal share a Tab strip on the current session.
+
+![Conversation plus Files preview in the 侧栏](docs/screenshots/01-overview.png)
+
+## What it does
+
+Open a 主会话, then use the 侧栏开关 in the conversation header. The drawer occupies the details column of the DSH frame — it does not replace the chat.
+
+- **Files** — read-only preview (source, Markdown, images) and a workspace tree. Click a path in the transcript to fill it.
+- **Review** — 本轮变更 from the 主会话 log, then working-tree leftovers. Read-only: no stage, revert, or commit.
+- **Browser** — a managed Chromium document in that Tab. The 主会话 can `browser_tabs` / `browser_open` / `browser_snapshot` / `browser_click` / `browser_fill` on loopback http pages whether the 侧栏 is open or closed.
+- **Terminal** — a human pty (`script` when present), not an agent shell.
+- **批注** — click a line or a page to write a note at the mark. Send keeps the official user bubble; numbered chips sit under it. Locators and screenshots go to the model as evidence on that same user message.
+- **Edit +/−** — each edit/write tool row shows the increment for that call, after the filename.
+
+![Review: 本轮变更 with per-file +/−](docs/screenshots/03-review.png)
+
+Chrome follows the DSH host theme. Tabs persist with that 主会话. Side Chat is retired; cross-session questions belong to DeepSeek 小管家 引用任务.
+
+![Browser empty state](docs/screenshots/04-browser.png)
+
+![Human Terminal](docs/screenshots/05-terminal.png)
+
+![Empty Tab palette](docs/screenshots/06-palette.png)
 
 ## Installation
 
 DeepSeek Harness 0.1.0-rc.6 or later. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.3
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.4
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.3
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.4
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
 
-## Local install (Web)
+Do not list `@deepseek-ai/dsh-tools` (or other host singletons) as a plugin `dependency`. A hoisted copy shadows the host ToolRuntime and every tool call dies on `.prepare`.
 
-Build first. DSH loads `lib/` from this package.
+## Local install
 
 ```sh
 pnpm install
@@ -31,28 +56,8 @@ dsh plugin --profile web add "$(pwd)"
 dsh web
 ```
 
-If you are on the `host-wire-ports` worktree:
-
-```sh
-cd /tmp/dsh-host-wire
-pnpm install
-pnpm run build
-dsh plugin --profile web add /tmp/dsh-host-wire
-dsh web
-```
-
-Then open a 主会话. The 侧栏开关 is in the conversation header. Click a workspace path to fill Files; click an `http(s)` URL to fill Browser.
-
-## What works live
-
-- **Files** — read-only preview (source, Markdown, images), tree, 批注 at the mark
-- **Review** — 本轮变更 from the 主会话 log, then working-tree leftovers; no stage/revert/commit
-- **Browser** — iframe of the URL, 批注 overlay; the 侧栏 does not start the project. The 主会话 can `browser_tabs` / `browser_open` / `browser_snapshot` / `browser_click` / `browser_fill` on loopback http pages in that same Tab, whether the 侧栏 is open or closed. Opening the 侧栏 later shows the same document.
-- **Terminal** — human pty (`script` when present)
-- Side Chat 已退场；跨会话问答由 DeepSeek 小管家的“引用任务”承担，侧栏不再创建会话 fork。
-
-Chrome follows the DSH host theme. Tabs persist with that 主会话.
+Then open a 主会话 and use the 侧栏开关.
 
 ## Spec
 
-See `CONTEXT.md` and `.scratch/codex-sidebar/spec.md`.
+See `CONTEXT.md` and `docs/adr/`.
