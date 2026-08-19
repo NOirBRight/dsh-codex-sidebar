@@ -474,14 +474,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         }
         break
       case 'select-file':
+        fillOrOpen('Files', intent.path)
         files = { ...files, path: intent.path, pendingMark: null, notePos: null, hunk: null }
-        {
-          const tab = tabs.find((t) => t.id === active && t.kind === 'Files')
-          if (tab) {
-            tab.target = intent.path
-            tab.title = intent.path.split('/').pop() ?? intent.path
-          }
-        }
         break
       case 'toggle-tree':
         files = { ...files, treeOpen: !files.treeOpen }

@@ -17,6 +17,7 @@ export type MdBlock =
   | { type: 'ol'; line: number; items: Inline[][] }
   | { type: 'quote'; line: number; inlines: Inline[] }
   | { type: 'code'; line: number; lang: string; text: string }
+  | { type: 'table'; line: number; headers: Inline[][]; rows: Inline[][][] }
   | { type: 'hr'; line: number }
 
 export type PreviewKind = 'markdown' | 'code' | 'text'
@@ -216,12 +217,19 @@ function isIdent(ch: string): boolean {
 }
 
 export function parseMarkdown(source: string): MdBlock[] {
-  const raw = source.split('\n')
+  const raw = source.replace(/\r\n?/g, '\n').split('\n')
   const blocks: MdBlock[] = []
   let i = 0
   while (i < raw.length) {
     const line = raw[i] ?? ''
     const lineNo = i + 1
+    if (i === 0 && line.trim() === '---') {
+      const end = raw.findIndex((candidate, index) => index > 0 && candidate.trim() === '---')
+      if (end > 0) {
+        i = end + 1
+        continue
+      }
+    }
     if (/^\s*$/.test(line)) {
       i += 1
       continue
@@ -242,6 +250,24 @@ export function parseMarkdown(source: string): MdBlock[] {
       }
       if (i < raw.length) i += 1
       blocks.push({ type: 'code', line: lineNo, lang, text: body.join('\n') })
+      continue
+    }
+    const table = tableHeader(raw, i)
+    if (table !== undefined) {
+      const rows: Inline[][][] = []
+      i += 2
+      while (i < raw.length) {
+        const cells = tableCells(raw[i] ?? '')
+        if (cells === undefined) break
+        rows.push(table.headers.map((_, index) => parseInlines(cells[index] ?? '')))
+        i += 1
+      }
+      blocks.push({
+        type: 'table',
+        line: lineNo,
+        headers: table.headers.map((cell) => parseInlines(cell)),
+        rows,
+      })
       continue
     }
     const heading = line.match(/^(#{1,3})\s+(.+)$/)
@@ -284,6 +310,7 @@ export function parseMarkdown(source: string): MdBlock[] {
       const next = raw[i] ?? ''
       if (/^\s*$/.test(next)) break
       if (/^(#{1,3})\s+/.test(next) || /^\s*[-*]\s+/.test(next) || /^\s*\d+\.\s+/.test(next)) break
+      if (tableHeader(raw, i) !== undefined) break
       if (/^\s*>\s?/.test(next) || /^\s*```/.test(next) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(next)) break
       para.push(next)
       i += 1
@@ -291,6 +318,22 @@ export function parseMarkdown(source: string): MdBlock[] {
     blocks.push({ type: 'p', line: start, inlines: parseInlines(para.join(' ')) })
   }
   return blocks
+}
+
+function tableHeader(raw: readonly string[], index: number): { headers: string[] } | undefined {
+  const headers = tableCells(raw[index] ?? '')
+  const divider = tableCells(raw[index + 1] ?? '')
+  if (headers === undefined || divider === undefined || headers.length === 0 || headers.length !== divider.length) return undefined
+  if (!divider.every((cell) => /^:?-{3,}:?$/.test(cell))) return undefined
+  return { headers }
+}
+
+function tableCells(line: string): string[] | undefined {
+  const trimmed = line.trim()
+  if (!trimmed.includes('|')) return undefined
+  const body = trimmed.replace(/^\|/, '').replace(/\|$/, '')
+  const cells = body.split('|').map((cell) => cell.trim())
+  return cells.length > 1 ? cells : undefined
 }
 
 export function parseInlines(input: string): Inline[] {

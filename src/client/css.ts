@@ -225,7 +225,7 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 }
 .dcs-files { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; width: 100%; height: 100%; position: relative; overflow: hidden; }
 .dcs-files-split { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.dcs-preview { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); }
+.dcs-preview { flex: 1; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); }
 .dcs-preview[data-split] { border-right: 1px solid var(--dsw-alias-border-l2); }
 .dcs-fh {
   height: 36px; display: flex; align-items: center; gap: 8px; width: 100%;
@@ -335,11 +335,31 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 }
 .dcs-code[data-media] { padding: 0; }
 .dcs-md {
+  flex: 1; min-height: 0; overflow: auto; box-sizing: border-box;
+  padding: 18px 20px 36px; font-size: 13.5px; line-height: 1.6;
   font-family: var(--dsw-font-family, inherit);
   color: var(--dsw-alias-label-primary);
 }
-.dcs-md h1, .dcs-md h2, .dcs-md h3 { font-weight: 600; letter-spacing: -0.02em; }
-.dcs-md p { color: var(--dsw-alias-label-secondary); }
+.dcs-md h1, .dcs-md h2, .dcs-md h3 { font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; }
+.dcs-md h1 { margin: 0 0 16px; font-size: 22px; }
+.dcs-md h2 { margin: 24px 0 12px; font-size: 18px; }
+.dcs-md h3 { margin: 20px 0 10px; font-size: 15px; }
+.dcs-md p { margin: 0 0 12px; color: var(--dsw-alias-label-secondary); }
+.dcs-md ul, .dcs-md ol { margin: 0 0 14px; padding-left: 24px; color: var(--dsw-alias-label-secondary); }
+.dcs-md li { margin: 3px 0; }
+.dcs-md blockquote { margin: 0 0 14px; padding: 7px 12px; border-left: 3px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); }
+.dcs-md hr { margin: 20px 0; border: 0; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dcs-md a { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
+.dcs-md a:hover { text-decoration: underline; }
+.dcs-md-code { padding: 1px 5px; border-radius: 5px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font-family: var(--ds-font-family-code); font-size: 0.92em; overflow-wrap: anywhere; }
+.dcs-md-pre { margin: 0 0 14px; padding: 12px 14px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); font-family: var(--ds-font-family-code); font-size: 12.5px; line-height: 1.55; }
+.dcs-md-table-wrap { margin: 8px 0 18px; overflow-x: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; }
+.dcs-md table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.45; }
+.dcs-md th, .dcs-md td { max-width: 420px; padding: 8px 10px; text-align: left; vertical-align: top; border-right: 1px solid var(--dsw-alias-border-l2); border-bottom: 1px solid var(--dsw-alias-border-l2); overflow-wrap: anywhere; }
+.dcs-md th { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.dcs-md td { color: var(--dsw-alias-label-secondary); }
+.dcs-md th:last-child, .dcs-md td:last-child { border-right: 0; }
+.dcs-md tbody tr:last-child td { border-bottom: 0; }
 .dcs-code[data-mark] { cursor: crosshair; }
 .dcs-line { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; }
 .dcs-line .dcs-n { position: relative; text-align: right; padding-right: 12px; color: var(--dsw-alias-label-tertiary); user-select: none; }

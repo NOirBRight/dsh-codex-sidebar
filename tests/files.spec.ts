@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { visibleTree } from '../src/file-tree.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
 
@@ -140,6 +141,26 @@ describe('Files seam', () => {
     expect(two.files.preview).toBe('# foo\n')
   })
 
+  it('opens a tree file in a new Tab and reuses it on later clicks', () => {
+    const { box } = session()
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    const loginTab = box.snapshot().active
+
+    box.dispatch({ type: 'select-file', path: 'README.md' })
+    const readme = box.snapshot()
+    expect(readme.tabs).toHaveLength(2)
+    expect(readme.tabs[0]).toMatchObject({ id: loginTab, kind: 'Files', target: 'src/Login.tsx' })
+    expect(readme.tabs[1]).toMatchObject({ kind: 'Files', target: 'README.md' })
+    expect(readme.active).toBe(readme.tabs[1]?.id)
+    expect(readme.files.path).toBe('README.md')
+
+    box.dispatch({ type: 'select-file', path: 'src/Login.tsx' })
+    const reused = box.snapshot()
+    expect(reused.tabs).toHaveLength(2)
+    expect(reused.active).toBe(loginTab)
+    expect(reused.files.path).toBe('src/Login.tsx')
+  })
+
   it('previews an absolute path even when it is outside the workspace tree', () => {
     const files = memoryFiles({
       'src/Login.tsx': 'export function Login() {}\n',
@@ -277,6 +298,21 @@ describe('Files seam', () => {
     box.dispatch({ type: 'note-enter' })
     expect(box.dispatch({ type: 'remove-attachment', id: 't2' })).toEqual([])
     expect(box.snapshot().attachments).toEqual([])
+  })
+
+  it('collapses a directory even when it contains the current file', () => {
+    const currentPath = '.agents/skills/find-skills/SKILL.md'
+    const tree = [
+      { path: currentPath, name: 'SKILL.md' },
+      { path: '.agents/skills/other/SKILL.md', name: 'SKILL.md' },
+    ]
+    const expanded = new Set(['.agents', '.agents/skills', '.agents/skills/find-skills'])
+    expect(visibleTree(tree, expanded, '').some((entry) => entry.path === currentPath)).toBe(true)
+
+    expanded.delete('.agents/skills/find-skills')
+    const collapsed = visibleTree(tree, expanded, '')
+    expect(collapsed.find((entry) => entry.path === '.agents/skills/find-skills')).toMatchObject({ open: false })
+    expect(collapsed.some((entry) => entry.path === currentPath)).toBe(false)
   })
 
   it('keeps the tree closed when a path opens, and remembers a dragged width', () => {

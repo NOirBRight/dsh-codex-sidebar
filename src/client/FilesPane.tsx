@@ -1,10 +1,11 @@
 /** Files 工具: read-only preview + closable tree + 批注 at the mark. */
 
-import { useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
 import type { DiffLine } from '../review.ts'
-import type { Annotation, Intent, SidebarSnapshot, TreeNode } from '../session.ts'
+import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
 import { fileCaption } from '../annotation.ts'
-import { highlightSource, type Token } from '../preview.ts'
+import { ancestorsOf, visibleTree } from '../file-tree.ts'
+import { highlightSource, parseMarkdown, type Inline, type MdBlock, type Token } from '../preview.ts'
 import { FileGlyph, Ico } from './icons.tsx'
 import { NoteComposer } from './NoteComposer.tsx'
 
@@ -48,6 +49,20 @@ export function FilesPane({
   const bodyRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<Set<string>>(() => ancestorsOf(files.path))
   const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    const ancestors = ancestorsOf(files.path)
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      let changed = false
+      for (const path of ancestors) {
+        if (next.has(path)) continue
+        next.add(path)
+        changed = true
+      }
+      return changed ? next : previous
+    })
+  }, [files.path])
   const [searching, setSearching] = useState(false)
   const [menu, setMenu] = useState(false)
   const [dragW, setDragW] = useState<number | null>(null)
@@ -101,7 +116,7 @@ export function FilesPane({
     })
   }
 
-  const grouped = visibleTree(files.tree, expanded, files.path, query)
+  const grouped = visibleTree(files.tree, expanded, query)
 
   function openSearch(): void {
     if (!files.treeOpen) onIntent({ type: 'toggle-tree' })
@@ -245,7 +260,6 @@ export function FilesPane({
             ) : markdown ? (
               <div
                 className="dcs-md"
-                style={{ padding: '12px 18px', lineHeight: 1.55, fontSize: 13.5 }}
                 onClick={(event) => { markLine(1, event) }}
               >
                 {renderMarkdown(files.preview ?? '')}
@@ -346,31 +360,6 @@ export function FilesPane({
   )
 }
 
-type TreeEntry =
-  | { kind: 'dir'; path: string; name: string; depth: number; open: boolean }
-  | { kind: 'file'; path: string; name: string; depth: number }
-
-type BuiltNode = {
-  path: string
-  name: string
-  kind: 'dir' | 'file'
-  children: BuiltNode[]
-}
-
-function ancestorsOf(path: string): Set<string> {
-  const open = new Set<string>()
-  const parts = path.split('/').filter((part) => part.length > 0)
-  const absolute = path.startsWith('/')
-  let prefix = ''
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    prefix = prefix.length === 0
-      ? (absolute ? `/${parts[index]}` : (parts[index] ?? ''))
-      : `${prefix}/${parts[index]}`
-    if (prefix.length > 0) open.add(prefix)
-  }
-  return open
-}
-
 function crumbsOf(path: string): Array<{ name: string; path: string }> {
   const parts = path.split('/').filter((part) => part.length > 0)
   const absolute = path.startsWith('/')
@@ -379,101 +368,6 @@ function crumbsOf(path: string): Array<{ name: string; path: string }> {
   for (const part of parts) {
     prefix = prefix.length === 0 ? (absolute ? `/${part}` : part) : `${prefix}/${part}`
     out.push({ name: part, path: prefix })
-  }
-  return out
-}
-
-function visibleTree(
-  nodes: readonly TreeNode[],
-  expanded: Set<string>,
-  currentPath: string,
-  query: string,
-): TreeEntry[] {
-  const needle = query.trim().toLowerCase()
-  const tree = needle.length === 0 ? buildTree(nodes) : filterTree(buildTree(nodes), needle)
-  const open = new Set(expanded)
-  for (const dir of ancestorsOf(currentPath)) open.add(dir)
-  if (needle.length > 0) collectDirs(tree, open)
-  return flatten(tree, open, 0)
-}
-
-function filterTree(nodes: readonly BuiltNode[], needle: string): BuiltNode[] {
-  const out: BuiltNode[] = []
-  for (const node of nodes) {
-    if (node.kind === 'file') {
-      if (node.name.toLowerCase().includes(needle) || node.path.toLowerCase().includes(needle)) out.push(node)
-      continue
-    }
-    const children = filterTree(node.children, needle)
-    if (children.length > 0 || node.name.toLowerCase().includes(needle)) {
-      out.push({ ...node, children })
-    }
-  }
-  return out
-}
-
-function collectDirs(nodes: readonly BuiltNode[], open: Set<string>): void {
-  for (const node of nodes) {
-    if (node.kind !== 'dir') continue
-    open.add(node.path)
-    collectDirs(node.children, open)
-  }
-}
-
-function buildTree(nodes: readonly TreeNode[]): BuiltNode[] {
-  const root: BuiltNode[] = []
-  const dirs = new Map<string, BuiltNode>()
-
-  function ensureDir(path: string): BuiltNode[] {
-    if (path.length === 0) return root
-    const held = dirs.get(path)
-    if (held !== undefined) return held.children
-    const slash = path.lastIndexOf('/')
-    const name = slash === -1 ? path : path.slice(slash + 1)
-    const parent = slash === -1 ? '' : path.slice(0, slash)
-    const node: BuiltNode = { path, name, kind: 'dir', children: [] }
-    dirs.set(path, node)
-    ensureDir(parent).push(node)
-    return node.children
-  }
-
-  for (const node of nodes) {
-    if (node.kind === 'dir') {
-      ensureDir(node.path)
-      continue
-    }
-    const slash = node.path.lastIndexOf('/')
-    const parent = slash === -1 ? '' : node.path.slice(0, slash)
-    ensureDir(parent).push({
-      path: node.path,
-      name: node.name,
-      kind: 'file',
-      children: [],
-    })
-  }
-
-  sortLevel(root)
-  return root
-}
-
-function sortLevel(list: BuiltNode[]): void {
-  list.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1
-    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-  })
-  for (const child of list) sortLevel(child.children)
-}
-
-function flatten(nodes: readonly BuiltNode[], open: Set<string>, depth: number): TreeEntry[] {
-  const out: TreeEntry[] = []
-  for (const node of nodes) {
-    if (node.kind === 'dir') {
-      const isOpen = open.has(node.path)
-      out.push({ kind: 'dir', path: node.path, name: node.name, depth, open: isOpen })
-      if (isOpen) out.push(...flatten(node.children, open, depth + 1))
-    } else {
-      out.push({ kind: 'file', path: node.path, name: node.name, depth })
-    }
   }
   return out
 }
@@ -545,23 +439,64 @@ function imageSrc(path: string, preview: string | undefined): string | undefined
 }
 
 function renderMarkdown(source: string): ReactNode {
-  const blocks = source.split(/\n{2,}/)
-  return blocks.map((block, index) => {
-    const heading = /^(#{1,3})\s+(.*)$/.exec(block)
-    if (heading) {
-      const text = heading[2] ?? ''
-      if (heading[1] === '#') return <h1 key={index} style={{ fontSize: 22, margin: '0 0 8px' }}>{text}</h1>
-      if (heading[1] === '##') return <h2 key={index} style={{ fontSize: 17, margin: '0 0 8px' }}>{text}</h2>
-      return <h3 key={index} style={{ fontSize: 14, margin: '0 0 8px' }}>{text}</h3>
-    }
-    if (block.startsWith('```')) {
-      const body = block.replace(/^```[a-z]*\n?/, '').replace(/```$/, '')
-      return (
-        <pre key={index} style={{ fontFamily: 'var(--ds-font-family-code)', fontSize: 12.5, whiteSpace: 'pre-wrap' }}>
-          {body}
-        </pre>
-      )
-    }
-    return <p key={index} style={{ margin: '0 0 10px' }}>{block}</p>
-  })
+  return parseMarkdown(source).map((block, index) => (
+    <MarkdownBlock key={`${block.type}-${block.line}-${index}`} block={block} />
+  ))
+}
+
+function MarkdownBlock({ block }: { block: MdBlock }): ReactElement {
+  if (block.type === 'h') {
+    const Tag = (`h${block.level}`) as 'h1' | 'h2' | 'h3'
+    return <Tag><MarkdownInlines nodes={block.inlines} /></Tag>
+  }
+  if (block.type === 'p') return <p><MarkdownInlines nodes={block.inlines} /></p>
+  if (block.type === 'quote') return <blockquote><MarkdownInlines nodes={block.inlines} /></blockquote>
+  if (block.type === 'hr') return <hr />
+  if (block.type === 'code') {
+    const path = block.lang.length > 0 ? `snippet.${block.lang}` : 'snippet.txt'
+    const rows = highlightSource(path, block.text)
+    return (
+      <pre className="dcs-md-pre">
+        {block.text.split('\n').map((line, index) => (
+          <div key={index}><CodeText tokens={rows[index]} fallback={line} /></div>
+        ))}
+      </pre>
+    )
+  }
+  if (block.type === 'table') {
+    return (
+      <div className="dcs-md-table-wrap">
+        <table>
+          <thead>
+            <tr>{block.headers.map((cell, index) => <th key={index}><MarkdownInlines nodes={cell} /></th>)}</tr>
+          </thead>
+          <tbody>
+            {block.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => <td key={cellIndex}><MarkdownInlines nodes={cell} /></td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+  const Tag = block.type === 'ol' ? 'ol' : 'ul'
+  return (
+    <Tag>
+      {block.items.map((item, index) => <li key={index}><MarkdownInlines nodes={item} /></li>)}
+    </Tag>
+  )
+}
+
+function MarkdownInlines({ nodes }: { nodes: Inline[] }): ReactElement {
+  return <>{nodes.map((node, index) => markdownInline(node, index))}</>
+}
+
+function markdownInline(node: Inline, index: number): ReactNode {
+  if (node.kind === 'code') return <code key={index} className="dcs-md-code">{node.text}</code>
+  if (node.kind === 'strong') return <strong key={index}>{node.text}</strong>
+  if (node.kind === 'em') return <em key={index}>{node.text}</em>
+  if (node.kind === 'link') return <a key={index} href={node.href} target="_blank" rel="noreferrer">{node.text}</a>
+  return <span key={index}>{node.text}</span>
 }

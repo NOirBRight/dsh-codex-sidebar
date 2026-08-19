@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent, type ReactElement, type
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import type { Intent, SidebarSnapshot, ToolKind } from '../session.ts'
+import { tabAuxIntent } from '../tab-events.ts'
 import { FilesPane } from './FilesPane.tsx'
 import { Ico, tabIcon } from './icons.tsx'
 import { NS, type SidebarKey } from './locales.ts'
@@ -211,6 +212,12 @@ function SidebarChrome({
                   return
                 }
                 onIntent({ type: 'select-tab', id: tab.id })
+              }}
+              onAuxClick={(event) => {
+                const intent = tabAuxIntent(event.button, tab.id)
+                if (intent === undefined) return
+                event.preventDefault()
+                onIntent(intent)
               }}
               onPointerDown={(event) => { onTabPointerDown(index, event) }}
               onPointerMove={onTabPointerMove}
