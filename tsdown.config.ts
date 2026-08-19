@@ -16,7 +16,6 @@ const host: UserConfig = {
     neverBundle: [
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-client-connection',
-      '@deepseek-ai/dsh-tools',
       'node-pty',
       'playwright-core',
       'ws',

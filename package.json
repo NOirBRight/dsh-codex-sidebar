@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-sidebar",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
   "type": "module",
   "main": "lib/index.js",
@@ -51,7 +51,6 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-unicode11": "^0.8.0",
     "@xterm/xterm": "^5.5.0",
