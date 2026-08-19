@@ -1,8 +1,8 @@
 /** Files 工具: read-only preview + closable tree + 批注 at the mark. */
 
-import { useEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type PointerEvent, type ReactElement, type ReactNode } from 'react'
 import type { DiffLine } from '../review.ts'
-import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
+import type { Annotation, AnnotationRect, AnnotationTextRange, Intent, SidebarSnapshot } from '../session.ts'
 import { fileCaption, parsePathLine } from '../annotation.ts'
 import { ancestorsOf, visibleTree } from '../file-tree.ts'
 import { highlightSource, parseMarkdown, type Inline, type MdBlock, type Token } from '../preview.ts'
@@ -51,13 +51,21 @@ export function FilesPane({
   const [expanded, setExpanded] = useState<Set<string>>(() => ancestorsOf(files.path))
   const [query, setQuery] = useState('')
 
-  useEffect(() => {
-    clearFileSelectionHighlight()
-  }, [files.path])
-
-  useEffect(() => {
-    if (files.pendingMark === null) clearFileSelectionHighlight()
-  }, [files.pendingMark])
+  useLayoutEffect(() => {
+    const surface = bodyRef.current?.querySelector<HTMLElement>('.dcs-md') ?? null
+    if (surface === null) {
+      clearFileSelectionHighlight()
+      return
+    }
+    const selections = new Map<string, AnnotationTextRange>()
+    for (const mark of surfaceMarks) {
+      if (mark.item.selection !== undefined) selections.set(textRangeKey(mark.item.selection), mark.item.selection)
+    }
+    if (files.pendingSelection !== null) selections.set(textRangeKey(files.pendingSelection), files.pendingSelection)
+    showFileSelectionHighlights(
+      [...selections.values()].map((selection) => restoreTextRange(surface, selection)).filter((range): range is Range => range !== null),
+    )
+  }, [files.path, files.pendingSelection, markdown, snapshot.attachments])
 
   useEffect(() => () => { clearFileSelectionHighlight() }, [])
 
@@ -125,7 +133,7 @@ export function FilesPane({
     if (pane === null) return
     const paneBox = pane.getBoundingClientRect()
     const anchor = surfaceAnchor(event)
-    showFileSelectionHighlight(anchor.range)
+    showFileSelectionHighlights(anchor.range === null ? [] : [anchor.range])
     window.getSelection()?.removeAllRanges()
     onIntent({
       type: 'click-content',
@@ -133,6 +141,7 @@ export function FilesPane({
       x: event.clientX - paneBox.left,
       y: event.clientY - paneBox.top,
       rect: anchor.rect,
+      ...anchor.selection === null ? {} : { selection: anchor.selection },
     })
   }
 
@@ -504,28 +513,72 @@ type HighlightRegistry = {
   delete(name: string): void
 }
 
-function fileHighlightApi(): { registry: HighlightRegistry; create: (range: Range) => unknown } | null {
+function fileHighlightApi(): { registry: HighlightRegistry; create: (ranges: Range[]) => unknown } | null {
   const css = globalThis.CSS as unknown as { highlights?: HighlightRegistry }
-  const HighlightCtor = (globalThis as unknown as { Highlight?: new (range: Range) => unknown }).Highlight
+  const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight
   if (css?.highlights === undefined || HighlightCtor === undefined) return null
-  return { registry: css.highlights, create: (range) => new HighlightCtor(range) }
+  return { registry: css.highlights, create: (ranges) => new HighlightCtor(...ranges) }
 }
 
-function showFileSelectionHighlight(range: Range | null): void {
+function showFileSelectionHighlights(ranges: Range[]): void {
   const api = fileHighlightApi()
   if (api === null) return
-  if (range === null) {
+  if (ranges.length === 0) {
     api.registry.delete(FILE_SELECTION_HIGHLIGHT)
     return
   }
-  api.registry.set(FILE_SELECTION_HIGHLIGHT, api.create(range))
+  api.registry.set(FILE_SELECTION_HIGHLIGHT, api.create(ranges))
 }
 
 function clearFileSelectionHighlight(): void {
   fileHighlightApi()?.registry.delete(FILE_SELECTION_HIGHLIGHT)
 }
 
-function surfaceAnchor(event: MouseEvent<HTMLElement>): { line: number; rect: AnnotationRect; range: Range | null } {
+function textRangeKey(selection: AnnotationTextRange): string {
+  return `${selection.start}:${selection.end}`
+}
+
+function captureTextRange(surface: HTMLElement, range: Range): AnnotationTextRange | null {
+  if (range.collapsed || !surface.contains(range.commonAncestorContainer)) return null
+  const prefix = document.createRange()
+  prefix.selectNodeContents(surface)
+  prefix.setEnd(range.startContainer, range.startOffset)
+  const start = prefix.toString().length
+  const end = start + range.toString().length
+  return end > start ? { start, end } : null
+}
+
+function restoreTextRange(surface: HTMLElement, selection: AnnotationTextRange): Range | null {
+  if (selection.start < 0 || selection.end <= selection.start) return null
+  const nodes: Text[] = []
+  const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.parentElement?.closest('.dcs-file-surface-badges') === null
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT
+    },
+  })
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+  let cursor = 0
+  let start: { node: Text; offset: number } | null = null
+  let end: { node: Text; offset: number } | null = null
+  for (const node of nodes) {
+    const next = cursor + node.data.length
+    if (start === null && selection.start <= next) start = { node, offset: Math.max(0, selection.start - cursor) }
+    if (selection.end <= next) {
+      end = { node, offset: Math.max(0, selection.end - cursor) }
+      break
+    }
+    cursor = next
+  }
+  if (start === null || end === null) return null
+  const range = document.createRange()
+  range.setStart(start.node, Math.min(start.offset, start.node.data.length))
+  range.setEnd(end.node, Math.min(end.offset, end.node.data.length))
+  return range.collapsed ? null : range
+}
+
+function surfaceAnchor(event: MouseEvent<HTMLElement>): { line: number; rect: AnnotationRect; range: Range | null; selection: AnnotationTextRange | null } {
   const surface = event.currentTarget
   const target = event.target instanceof Element ? event.target : surface
   let lineElement = target.closest<HTMLElement>('[data-dcs-line]')
@@ -563,6 +616,7 @@ function surfaceAnchor(event: MouseEvent<HTMLElement>): { line: number; rect: An
     line: Number.isFinite(line) && line > 0 ? line : 1,
     rect: toSurfaceRect(targetBox),
     range: selectedRange,
+    selection: selectedRange === null ? null : captureTextRange(surface, selectedRange),
   }
 }
 
