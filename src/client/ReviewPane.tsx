@@ -1,16 +1,17 @@
 /** Review 工具 pane: read-only unified diff + 批注 at the gutter. */
 
-import { useState, type KeyboardEvent, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
 import type { ReviewMode, ReviewScopeStats } from '../review.ts'
 import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
 import { isImeKey, useImeSafeDraft } from './ime-draft.ts'
 
 const REVIEW_CSS = `
 .dcs-rev {
-  display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1;
+  display: flex; flex-direction: column; min-height: 0; flex: 1;
   padding: 12px 14px 10px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
 }
-.dcs-rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.dcs-rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; position: relative; z-index: 5; overflow: visible; }
 .dcs-rev-seg {
   margin-left: auto; display: flex; background: var(--dsw-alias-bg-layer-2);
   border-radius: 8px; padding: 2px;
@@ -31,7 +32,8 @@ const REVIEW_CSS = `
 .dcs-rev-row {
   display: flex; align-items: baseline; gap: 8px; padding: 9px 8px; cursor: pointer;
   border-radius: 8px; width: 100%; border: 0; background: transparent; text-align: left;
-  color: var(--dsw-alias-label-primary);
+  appearance: none; -webkit-appearance: none;
+  font-family: inherit; color: var(--dsw-alias-label-primary);
 }
 .dcs-rev-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .dcs-rev-name { font-size: 13.5px; font-weight: 500; }
@@ -84,32 +86,49 @@ const REVIEW_CSS = `
 }
 .dcs-rev-add:hover { color: var(--dsw-alias-label-primary); }
 .dcs-rev-hint { margin-top: 6px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
-.dcs-rev-dd { position: relative; min-width: 0; flex: 1; }
+.dcs-rev-dd { position: relative; min-width: 0; flex: 0 1 auto; max-width: min(280px, 52%); overflow: visible; }
 .dcs-rev-dd-btn {
   border: 0; background: var(--dsw-alias-bg-layer-2); padding: 5px 8px; border-radius: 8px;
-  cursor: pointer; color: var(--dsw-alias-label-primary); font-size: 12.5px; font-weight: 500;
-  display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; align-items: center; gap: 8px;
-  width: 100%; text-align: left;
+  cursor: pointer; color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family); font-size: 12.5px; font-weight: 500; line-height: 18px;
+  display: inline-grid; grid-template-columns: auto auto 10px; align-items: center; gap: 8px;
+  width: max-content; max-width: 100%; text-align: left;
+  appearance: none; -webkit-appearance: none;
 }
-.dcs-rev-dd-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dcs-rev-dd-btn:hover, .dcs-rev-dd-btn[data-open] { background: var(--dsw-alias-interactive-bg-hover); }
 .dcs-rev-dd-btn > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dcs-rev-dd-menu {
-  position: absolute; top: 34px; left: 0; z-index: 8; min-width: 100%; width: max-content; max-width: 280px; padding: 6px;
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; box-sizing: border-box;
+  min-width: 100%; width: max-content; max-width: min(280px, 70vw); padding: 6px;
   background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 10px; box-shadow: var(--dsw-shadow-lv2);
+  font-family: var(--dsw-font-family); font-size: 12.5px; font-weight: 500; line-height: 18px;
+  color: var(--dsw-alias-label-primary);
 }
-.dcs-rev-dd-item, .dcs-rev-dd-sub {
+button.dcs-rev-dd-item, button.dcs-rev-dd-sub {
   display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px;
   width: 100%; border: 0; background: transparent;
-  padding: 7px 8px; border-radius: 7px; cursor: pointer; color: var(--dsw-alias-label-primary); font-size: 13px; text-align: left;
+  padding: 7px 8px; border-radius: 7px; cursor: pointer; text-align: left;
+  appearance: none; -webkit-appearance: none;
+  font-family: inherit; font-size: 12.5px; font-weight: 500; line-height: 18px;
+  color: var(--dsw-alias-label-primary);
 }
 .dcs-rev-dd-sub .dcs-rev-dd-label { padding-left: 12px; color: var(--dsw-alias-label-secondary); }
-.dcs-rev-dd-item:hover, .dcs-rev-dd-sub:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.dcs-rev-dd-item[data-on], .dcs-rev-dd-sub[data-on] { background: var(--dsw-alias-bg-layer-2); }
+button.dcs-rev-dd-item:hover, button.dcs-rev-dd-sub:hover { background: var(--dsw-alias-interactive-bg-hover); }
+button.dcs-rev-dd-item[data-on], button.dcs-rev-dd-sub[data-on] { background: var(--dsw-alias-bg-layer-2); }
 .dcs-rev-dd-check { color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .dcs-rev-dd-stat { margin: 0; font-family: var(--ds-font-family-code); font-size: 12px; white-space: nowrap; justify-self: end; }
 .dcs-rev-empty { padding: 18px 8px; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
 `
+
+function ensureReviewCss(): void {
+  if (typeof document === 'undefined') return
+  if (document.getElementById('dcs-rev-css')) return
+  const style = document.createElement('style')
+  style.id = 'dcs-rev-css'
+  style.textContent = REVIEW_CSS
+  document.head.appendChild(style)
+}
 
 export function ReviewPane({
   snapshot,
@@ -118,9 +137,11 @@ export function ReviewPane({
   snapshot: SidebarSnapshot
   onIntent: (intent: Intent) => void
 }): ReactElement {
+  ensureReviewCss()
   const review = snapshot.review
   const [hover, setHover] = useState<string | null>(null)
   const [menu, setMenu] = useState<'scope' | 'branch' | null>(null)
+  const headRef = useRef<HTMLDivElement>(null)
   const branches = review.branches ?? { current: '', names: [] }
   const branch = review.branch || branches.current
   const scopes = review.scopes ?? ZERO_SCOPES
@@ -139,18 +160,41 @@ export function ReviewPane({
     onIntent({ type: 'review-set-branch', branch: name })
   }
 
+  useEffect(() => {
+    if (menu === null) return
+    const onPointer = (event: PointerEvent) => {
+      if (headRef.current?.contains(event.target as Node)) return
+      setMenu(null)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(null)
+    }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
   return (
     <div className="dcs-rev">
-      <style>{REVIEW_CSS}</style>
-      <div className="dcs-rev-head">
+      <div className="dcs-rev-head" ref={headRef}>
         <div className="dcs-rev-dd">
-          <button type="button" className="dcs-rev-dd-btn" onClick={() => { setMenu((on) => on === 'scope' ? null : 'scope') }}>
+          <button
+            type="button"
+            className="dcs-rev-dd-btn"
+            data-open={menu === 'scope' || undefined}
+            aria-haspopup="menu"
+            aria-expanded={menu === 'scope'}
+            onClick={() => { setMenu((on) => on === 'scope' ? null : 'scope') }}
+          >
             <span>{modeLabel(mode)}</span>
             <ScopeStat stat={scopes[scopeKey]} />
             <span aria-hidden="true">▾</span>
           </button>
           {menu === 'scope' && (
-            <div className="dcs-rev-dd-menu">
+            <div className="dcs-rev-dd-menu" role="menu">
               <ScopeItem on={mode === 'turn'} indent={false} label="本轮变更" stat={scopes.turn} onClick={() => { pick('turn') }} />
               <ScopeItem on={mode === 'uncommitted'} indent={false} label="未提交" stat={scopes.uncommitted} onClick={() => { pick('uncommitted') }} />
               <ScopeItem on={mode === 'staged'} indent={true} label="已暂存" stat={scopes.staged} onClick={() => { pick('staged') }} />
@@ -159,13 +203,20 @@ export function ReviewPane({
           )}
         </div>
         <div className="dcs-rev-dd">
-          <button type="button" className="dcs-rev-dd-btn" onClick={() => { setMenu((on) => on === 'branch' ? null : 'branch') }}>
+          <button
+            type="button"
+            className="dcs-rev-dd-btn"
+            data-open={menu === 'branch' || undefined}
+            aria-haspopup="menu"
+            aria-expanded={menu === 'branch'}
+            onClick={() => { setMenu((on) => on === 'branch' ? null : 'branch') }}
+          >
             <span>{branch.length > 0 ? branch : '无分支'}</span>
             <span />
             <span aria-hidden="true">▾</span>
           </button>
           {menu === 'branch' && (
-            <div className="dcs-rev-dd-menu">
+            <div className="dcs-rev-dd-menu" role="menu">
               {branches.names.length === 0 && <div className="dcs-rev-empty">不是 git 仓库，没有分支可筛。</div>}
               {branches.names.map((name) => (
                 <button

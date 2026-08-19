@@ -22,6 +22,7 @@ export const SIDEBAR_CSS = `
   overflow: visible;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
   border-left: 1px solid var(--dsw-alias-border-l2);
 }
 .dcs-col {
@@ -713,6 +714,9 @@ button.dcs-toggle {
 }
 [class$="_frame"]:has([data-shell-overlay]) {
   grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
+}
+[class$="_frame"]:has([data-shell-overlay]):not([data-details-collapsed]) {
+  transition: none !important;
 }
 [data-side="details"] { display: none !important; }
 .dcs-chips {
