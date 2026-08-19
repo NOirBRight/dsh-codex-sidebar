@@ -2,9 +2,26 @@
 
 Codex-app-style 侧栏 for one DeepSeek Harness 主会话. Files, Review, Browser, and Terminal share one Tab strip on the current session.
 
+## Installation
+
+DeepSeek Harness 0.1.0-rc.6 or later. Install from GitHub:
+
+```sh
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.0
+dsh web
+```
+
+Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
+
+```sh
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.0
+```
+
+The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
+
 ## Local install (Web)
 
-Build first. DSH loads `lib/` from this package; GitHub/`dsh plugin add github:...` is not the path until this repo is published.
+Build first. DSH loads `lib/` from this package.
 
 ```sh
 pnpm install
