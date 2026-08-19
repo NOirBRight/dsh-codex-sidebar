@@ -1,6 +1,6 @@
 /** Build and label stacked 批注 without dumping page innerText. */
 
-import type { Annotation, AnnotationRect, BrowserEvidence } from './session.ts'
+import type { Annotation, AnnotationRect, AnnotationTextRange, BrowserEvidence } from './session.ts'
 
 export function noteBody(draft: string): string {
   return draft.trim()
@@ -31,6 +31,7 @@ export function hydrateAnnotation(item: {
   path?: string
   line?: number
   rect?: AnnotationRect
+  selection?: AnnotationTextRange
   url?: string
   evidence?: BrowserEvidence
 }): Annotation {
@@ -39,7 +40,13 @@ export function hydrateAnnotation(item: {
   return { ...item, source, text: item.text ?? '', from: item.from ?? '' }
 }
 
-export function fromFileMark(id: string, draft: string, mark: string, rect?: AnnotationRect): Annotation {
+export function fromFileMark(
+  id: string,
+  draft: string,
+  mark: string,
+  rect?: AnnotationRect,
+  selection?: AnnotationTextRange,
+): Annotation {
   const { path, line } = parsePathLine(mark)
   return {
     id,
@@ -50,6 +57,7 @@ export function fromFileMark(id: string, draft: string, mark: string, rect?: Ann
     path,
     ...line === undefined ? {} : { line },
     ...rect === undefined ? {} : { rect },
+    ...selection === undefined ? {} : { selection },
   }
 }
 
