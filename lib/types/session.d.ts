@@ -219,7 +219,10 @@ export type SessionOptions = {
     sideChat?: SideChatPort;
 };
 export type SidebarSession = {
-    snapshot(): SidebarSnapshot;
+    /** Set project=false for a pure in-memory snapshot with no Files/Review I/O. */
+    snapshot(project?: boolean): SidebarSnapshot;
+    /** Monotonic state revision used to reject stale async projections. */
+    revision(): number;
     dispatch(intent: Intent): Effect[];
     pullTerminal(tabId: string, since: number): {
         seq: number;

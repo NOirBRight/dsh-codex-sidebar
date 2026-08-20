@@ -32,17 +32,19 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 DeepSeek Harness 0.1.0-rc.6 or later. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.6
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.6
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
+
+Since 0.3.0, Review/Files workspace projection is asynchronous and demand-driven: a collapsed sidebar does not scan git, Review rows use summaries, and file details load only when opened. Sidebar state is isolated under `DSH_HOME`, with on-demand fallback migration from `~/.dsh-codex-sidebar/sessions`. Very large or binary file details are bounded summaries rather than unbounded LCS diffs, so the host remains responsive.
 
 Do not list `@deepseek-ai/dsh-tools` (or other host singletons) as a plugin `dependency`. A hoisted copy shadows the host ToolRuntime and every tool call dies on `.prepare`.
 

@@ -21,7 +21,7 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
     : { ok: false, code: 'forbidden', message: '只有当前主会话的舵主能操作侧栏 Browser' }
 
   const listed = (session: SidebarSession): DriveTab[] => {
-    const snapshot = session.snapshot()
+    const snapshot = session.snapshot(false)
     return snapshot.tabs.flatMap((tab) => {
       if (tab.kind !== 'Browser') return []
       const url = snapshot.browsers[tab.id]?.url || tab.target
@@ -34,14 +34,14 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
   const tabOf = (session: SidebarSession, tabId?: string): DriveTab | undefined => {
     const tabs = listed(session)
     if (tabId !== undefined && tabId.length > 0) return tabs.find((tab) => tab.tabId === tabId)
-    const active = session.snapshot().active
+    const active = session.snapshot(false).active
     return tabs.find((tab) => tab.tabId === active) ?? tabs[0]
   }
 
   const act = async (session: SidebarSession, tabId: string | undefined, action: 'snapshot' | 'click' | 'fill', ref?: string, text?: string): Promise<DriveResult> => {
     const tab = tabOf(session, tabId)
     if (tab === undefined) return { ok: false, code: 'no-browser', message: '侧栏还没有 Browser Tab，先 browser_open 一个地址' }
-    const key = { sessionId: session.snapshot().sessionId, tabId: tab.tabId }
+    const key = { sessionId: session.snapshot(false).sessionId, tabId: tab.tabId }
     if (runtime.projection(key)?.status !== 'ready') await runtime.ensure(key, tab.url)
     if (action === 'snapshot') {
       const result = await runtime.snapshot(key)
@@ -65,7 +65,7 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
       session.dispatch({ type: 'open-url', url: href, reveal: false })
       const tab = listed(session).find((item) => item.url === href) ?? listed(session)[0]
       if (tab === undefined) return { ok: false, code: 'no-browser', message: '无法打开 Browser Tab' }
-      const projection = await runtime.ensure({ sessionId: session.snapshot().sessionId, tabId: tab.tabId }, href)
+      const projection = await runtime.ensure({ sessionId: session.snapshot(false).sessionId, tabId: tab.tabId }, href)
       if (projection.status !== 'ready') return { ok: false, code: 'navigation-failed', message: projection.error ?? '页面加载失败' }
       return { ok: true, tab: { ...tab, title: projection.title || tab.title, connected: true } }
     },

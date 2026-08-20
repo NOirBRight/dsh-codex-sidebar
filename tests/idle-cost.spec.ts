@@ -79,6 +79,46 @@ describe('idle-cost seams', () => {
     handleSidebarRpc(registry, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
     expect(trees).toBeGreaterThan(1)
   })
+  it('skips Files and Review projection while collapsed or in a background Tab', () => {
+    let trees = 0
+    let git = 0
+    const box = createSidebarSession({
+      sessionId: 'sess-hidden',
+      persist: memoryPersist(),
+      files: {
+        read() { return '' },
+        tree() { trees += 1; return [] },
+        stats() { git += 1; return {} },
+      },
+      review: {
+        turnWrites() { return [] },
+        workingTree() { git += 1; return [] },
+        isBusy() { return false },
+      },
+      isBusy: () => false,
+    })
+
+    box.dispatch({ type: 'pick-tool', kind: 'Files' })
+    box.snapshot()
+    box.dispatch({ type: 'open-empty-tab' })
+    box.dispatch({ type: 'pick-tool', kind: 'Review' })
+    box.snapshot()
+    expect(trees).toBeGreaterThan(0)
+    expect(git).toBeGreaterThan(0)
+
+    const beforeCollapse = { trees, git }
+    box.dispatch({ type: 'toggle-collapsed' })
+    box.snapshot()
+    expect({ trees, git }).toEqual(beforeCollapse)
+
+    box.dispatch({ type: 'toggle-collapsed' })
+    box.dispatch({ type: 'open-empty-tab' })
+    box.dispatch({ type: 'pick-tool', kind: 'Terminal' })
+    const beforeBackground = { trees, git }
+    box.snapshot()
+    expect({ trees, git }).toEqual(beforeBackground)
+  })
+
   it('skips Files tree and Review git when those tabs are closed', () => {
     let trees = 0
     let git = 0
@@ -105,6 +145,7 @@ describe('idle-cost seams', () => {
     expect(trees).toBe(0)
     expect(git).toBe(0)
     box.dispatch({ type: 'pick-tool', kind: 'Files' })
+    expect(trees).toBe(0)
     box.snapshot()
     expect(trees).toBeGreaterThan(0)
   })

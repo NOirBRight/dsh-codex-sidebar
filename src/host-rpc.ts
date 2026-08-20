@@ -18,7 +18,8 @@ import type { createRegistry } from './registry.ts'
 import type { ManagedBrowserStream } from './managed-browser-stream.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
-import type { BrowserEvidence } from './session.ts'
+import type { BrowserEvidence, SidebarSnapshot } from './session.ts'
+import type { WorkspaceInspector } from './workspace-inspector.ts'
 import {
   AnnotationSendStore,
   buildStagedBatch,
@@ -40,9 +41,12 @@ export type SidebarRpcServices = {
   browserEvidence?: ManagedBrowserEvidenceStore
   annotationSend?: AnnotationSendStore
   annotationPortsFor?: (sessionId: string) => AnnotationSendPorts
+  workspace?: WorkspaceInspector
 }
 
-const snapCache = new Map<string, { at: number; snapshot: unknown }>()
+const snapCache = new Map<string, { at: number; revision: number; gateKey: string; snapshot: unknown }>()
+const snapPending = new Map<string, { epoch: number; revision: number; gateKey: string; promise: Promise<unknown> }>()
+const snapEpoch = new Map<string, number>()
 
 export async function handleSidebarRpcAsync(
   registry: Registry,
@@ -57,7 +61,7 @@ export async function handleSidebarRpcAsync(
       }
       if (services.browserStream === undefined) return fail('managed browser stream is unavailable')
       const box = registry.forSession(payload.sessionId, { cwd: typeof payload.cwd === 'string' ? payload.cwd : '', busy: payload.busy === true })
-      const snapshot = box.snapshot()
+      const snapshot = box.snapshot(false)
       const tab = snapshot.tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
       const url = snapshot.browsers[payload.tabId]?.url || tab?.target
       if (tab === undefined || url === undefined || url.length === 0) return fail('unknown Browser Tab')
@@ -71,7 +75,7 @@ export async function handleSidebarRpcAsync(
       }
       if (services.browserEvidence === undefined) return fail('Browser evidence capture is unavailable')
       const box = registry.forSession(payload.sessionId, { cwd: typeof payload.cwd === 'string' ? payload.cwd : '', busy: payload.busy === true })
-      const tab = box.snapshot().tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
+      const tab = box.snapshot(false).tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
       if (tab === undefined) return fail('unknown Browser Tab')
       return { ok: true, value: await services.browserEvidence.capture({ sessionId: payload.sessionId, tabId: payload.tabId }) }
     }
@@ -105,6 +109,10 @@ export async function handleSidebarRpcAsync(
       return { ok: true, value: { unstaged: true } }
     }
     synchronizeManagedState(registry, payload, services)
+    if (services.workspace !== undefined) {
+      const projected = await handleWorkspaceRpc(registry, endpoint, payload, services.workspace)
+      if (projected !== undefined) return projected
+    }
     return handleSidebarRpc(registry, endpoint, payload, services)
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error))
@@ -126,7 +134,7 @@ export function handleSidebarRpc(
       cwd: typeof payload.cwd === 'string' ? payload.cwd : '',
       busy: payload.busy === true,
     })
-    const tab = box.snapshot().tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
+    const tab = box.snapshot(false).tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
     if (tab === undefined) return fail('unknown Browser Tab')
     return { ok: true, value: services.browserStream.issue({ sessionId: payload.sessionId, tabId: payload.tabId }) }
   }
@@ -145,20 +153,79 @@ export function handleSidebarRpc(
     const request = decodeSnapshotRequest(payload)
     if (request === undefined) return fail('invalid sidebar snapshot request')
     const box = registry.forSession(request.sessionId, request)
-    return { ok: true, value: { snapshot: snapshotCached(request.sessionId, () => box.snapshot()) } }
+    return { ok: true, value: { snapshot: snapshotCached(request.sessionId, box.revision(), () => box.snapshot()) } }
   }
   if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
     const request = decodeDispatchRequest(payload)
     if (request === undefined) return fail('invalid sidebar dispatch request')
     const box = registry.forSession(request.sessionId, request)
     const effects = box.dispatch(request.intent)
-    snapCache.delete(request.sessionId)
+    invalidateSnapshot(request.sessionId)
     return { ok: true, value: { snapshot: box.snapshot(), effects } }
   }
   return fail(`unknown sidebar endpoint: ${endpoint}`)
 }
 
+async function handleWorkspaceRpc(
+  registry: Registry,
+  endpoint: string,
+  payload: unknown,
+  workspace: WorkspaceInspector,
+): Promise<RpcResult<unknown> | undefined> {
+  if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) {
+    const request = decodeSnapshotRequest(payload)
+    if (request === undefined) return fail('invalid sidebar snapshot request')
+    const box = registry.forSession(request.sessionId, request)
+    const base = box.snapshot(false)
+    const revision = box.revision()
+    const gateKey = projectionGateKey(request)
+    const snapshot = await snapshotCachedAsync(request.sessionId, revision, gateKey, () => projectOrBase(workspace, base, request), () => box.revision())
+    return { ok: true, value: { snapshot } }
+  }
+  if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+    const request = decodeDispatchRequest(payload)
+    if (request === undefined) return fail('invalid sidebar dispatch request')
+    const box = registry.forSession(request.sessionId, request)
+    const effects = box.dispatch(request.intent)
+    invalidateSnapshot(request.sessionId)
+    const snapshot = await projectOrBase(workspace, box.snapshot(false), request)
+    return { ok: true, value: { snapshot, effects } }
+  }
+  return undefined
+}
 
+async function projectOrBase(workspace: WorkspaceInspector, base: SidebarSnapshot, gate: Parameters<WorkspaceInspector['project']>[1]): Promise<SidebarSnapshot> {
+  try {
+    return await workspace.project(base, gate)
+  } catch {
+    return base
+  }
+}
+
+async function snapshotCachedAsync(sessionId: string, revision: number, gateKey: string, compute: () => Promise<unknown>, currentRevision: () => number): Promise<unknown> {
+  const hit = snapCache.get(sessionId)
+  if (hit !== undefined && hit.revision === revision && hit.gateKey === gateKey && Date.now() - hit.at < SNAP_TTL_MS) return hit.snapshot
+  const epoch = snapEpoch.get(sessionId) ?? 0
+  const pending = snapPending.get(sessionId)
+  if (pending !== undefined && pending.epoch === epoch && pending.revision === revision && pending.gateKey === gateKey) return pending.promise
+  let created!: Promise<unknown>
+  created = compute().then((snapshot) => {
+    if ((snapEpoch.get(sessionId) ?? 0) === epoch && currentRevision() === revision) {
+      snapCache.set(sessionId, { at: Date.now(), revision, gateKey, snapshot })
+    }
+    return snapshot
+  }).finally(() => {
+    if (snapPending.get(sessionId)?.promise === created) snapPending.delete(sessionId)
+  })
+  snapPending.set(sessionId, { epoch, revision, gateKey, promise: created })
+  return created
+}
+
+function invalidateSnapshot(sessionId: string): void {
+  snapEpoch.set(sessionId, (snapEpoch.get(sessionId) ?? 0) + 1)
+  snapCache.delete(sessionId)
+  snapPending.delete(sessionId)
+}
 
 function synchronizeManagedState(registry: Registry, payload: unknown, services: SidebarRpcServices): void {
   if (services.managedBrowser === undefined || !isRecord(payload) || typeof payload.sessionId !== 'string') return
@@ -166,9 +233,10 @@ function synchronizeManagedState(registry: Registry, payload: unknown, services:
     cwd: typeof payload.cwd === 'string' ? payload.cwd : '',
     busy: payload.busy === true,
   })
+  let changed = false
   for (const projection of services.managedBrowser.list()) {
     if (projection.sessionId !== payload.sessionId) continue
-    const current = box.snapshot().browsers[projection.tabId]
+    const current = box.snapshot(false).browsers[projection.tabId]
     if (
       current === undefined
       || (
@@ -187,7 +255,9 @@ function synchronizeManagedState(registry: Registry, payload: unknown, services:
       status: projection.status,
       ...projection.error === undefined ? {} : { error: projection.error },
     })
+    changed = true
   }
+  if (changed) invalidateSnapshot(payload.sessionId)
 }
 
 function decodeEvidence(value: unknown): BrowserEvidence | undefined {
@@ -212,13 +282,29 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
   }
 }
 
-function snapshotCached(sessionId: string, compute: () => unknown): unknown {
+function snapshotCached(sessionId: string, revision: number, compute: () => unknown): unknown {
   const hit = snapCache.get(sessionId)
   const now = Date.now()
-  if (hit !== undefined && now - hit.at < SNAP_TTL_MS) return hit.snapshot
+  if (hit !== undefined && hit.gateKey === '' && hit.revision === revision && now - hit.at < SNAP_TTL_MS) return hit.snapshot
   const snapshot = compute()
-  snapCache.set(sessionId, { at: now, snapshot })
+  snapCache.set(sessionId, { at: Date.now(), revision, gateKey: '', snapshot })
   return snapshot
+}
+
+function projectionGateKey(request: { cwd: string; busy: boolean; turnWrites: Array<{ path: string; before: string; after: string }> }): string {
+  let hash = 2166136261
+  const add = (value: string): void => {
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index)
+      hash = Math.imul(hash, 16777619)
+    }
+  }
+  add(request.cwd)
+  add(request.busy ? '1' : '0')
+  for (const write of request.turnWrites) {
+    add(write.path); add(write.before); add(write.after)
+  }
+  return String(hash >>> 0)
 }
 
 function fail(message: string): RpcResult<unknown> {

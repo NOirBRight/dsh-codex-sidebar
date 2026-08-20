@@ -9,13 +9,13 @@ import { createManagedBrowserDriveService } from './host-browser-tools.ts'
 import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-browser-tools.ts'
 import { createFsFiles } from './host-files.ts'
 import { createFilePersist } from './host-persist.ts'
-import { createHostReview } from './host-review.ts'
 import { AnnotationSendStore, installAnnotationSend, type AnnotationSendHost } from './host-annotation-send.ts'
 import { handleSidebarRpcAsync } from './host-rpc.ts'
 import { createHostSideChat } from './host-side-chat.ts'
 import { createHostTerminal } from './host-terminal.ts'
 import { createRegistry } from './registry.ts'
 import type { FilesPort } from './session.ts'
+import { createWorkspaceInspector } from './workspace-inspector.ts'
 
 export { createSidebarSession, PALETTE } from './session.ts'
 export type {
@@ -79,6 +79,7 @@ export function apply(ctx: HostContext): void {
   const managedBrowser = new ManagedBrowserRuntime()
   const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
+  const workspace = createWorkspaceInspector()
   ctx.effect(() => () => {
     void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
   }, 'dsh-codex-sidebar: managed browser lifecycle')
@@ -89,11 +90,6 @@ export function apply(ctx: HostContext): void {
       filesBySession.set(sessionId, files)
       return files
     },
-    reviewFor: (_sessionId, io) => createHostReview({
-      cwdOf: io.cwdOf,
-      turnWrites: io.turnWrites,
-      isBusy: io.isBusy,
-    }),
     browserFor: (sessionId, io) => createHostBrowser({
       isBusy: io.isBusy,
       managed: { runtime: managedBrowser, sessionId },
@@ -122,6 +118,7 @@ export function apply(ctx: HostContext): void {
           managedBrowser,
           browserEvidence: managedEvidence,
           annotationSend,
+          workspace,
           annotationPortsFor: (sessionId) => ({
             readFile: (path) => filesBySession.get(sessionId)?.read(path),
             ...saveImage === undefined ? {} : { saveImage },

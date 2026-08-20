@@ -32,17 +32,19 @@
 需要 DeepSeek Harness 0.1.0-rc.6 或更高：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.6
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.2.6
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
+
+0.3.0 起，Review/Files 工作区投影按需异步执行：收起侧栏不会扫描 git；Review 文件列表使用摘要，展开文件时才读取详情。侧栏状态默认按 `DSH_HOME` 隔离保存，并从旧的 `~/.dsh-codex-sidebar/sessions` 按需迁移。超大或二进制文件的详情会显示受限摘要，不会为了生成全量 LCS diff 阻塞宿主。
 
 不要把 `@deepseek-ai/dsh-tools` 等宿主单例写进插件的 `dependencies`。提升进配置目录会盖住宿主的工具运行时，所有工具都会在 `.prepare` 上失败。
 

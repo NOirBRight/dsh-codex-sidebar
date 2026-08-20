@@ -520,6 +520,19 @@ describe('Files seam', () => {
     expect(diff?.lines.some((line) => line.kind === 'del' && line.text.includes('old line'))).toBe(true)
   })
 
+  it('persists a bounded explicit Files hunk for reload', () => {
+    const persist = memoryPersist()
+    const files = memoryFiles({ 'deleted.ts': 'new\n' })
+    const box = createSidebarSession({ sessionId: 'sess-hunk', files, persist, isBusy: () => false })
+    box.dispatch({ type: 'open-path', path: 'deleted.ts', view: 'diff', before: 'old\n', after: 'new\n' })
+
+    const reloaded = createSidebarSession({ sessionId: 'sess-hunk', files, persist, isBusy: () => false })
+    const snapshot = reloaded.snapshot()
+    expect(snapshot.files.hunk).toEqual({ before: 'old\n', after: 'new\n' })
+    expect(snapshot.files.diff?.removed).toBe(1)
+    expect(snapshot.files.diff?.added).toBe(1)
+  })
+
   it('persists the Tab strip with the 主会话 and isolates another 主会话', () => {
     const persist = memoryPersist()
     const files = memoryFiles({ 'src/Login.tsx': 'ok', 'README.md': '# foo\n' })

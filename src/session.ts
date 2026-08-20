@@ -18,6 +18,7 @@ import { emptyTerminal, projectTerminal, reduceTerminal } from './terminal.ts'
 
 export const PALETTE = ['Review', 'Terminal', 'Browser', 'Files'] as const
 export const MAX_DELIVERED_MARKS = 100
+const MAX_PERSISTED_HUNK_BYTES = 256 * 1024
 
 export function retireSideChatTabs(tabs: readonly Tab[], active: string | null): { tabs: Tab[]; active: string | null } {
   const kept = tabs.filter((tab) => (tab.kind as string | null) !== 'Side Chat')
@@ -164,7 +165,10 @@ export type SessionOptions = {
 }
 
 export type SidebarSession = {
-  snapshot(): SidebarSnapshot
+  /** Set project=false for a pure in-memory snapshot with no Files/Review I/O. */
+  snapshot(project?: boolean): SidebarSnapshot
+  /** Monotonic state revision used to reject stale async projections. */
+  revision(): number
   dispatch(intent: Intent): Effect[]
   pullTerminal(tabId: string, since: number): { seq: number; chunk: string }
 }
@@ -196,23 +200,25 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     noteDraft: '',
     editingId: null,
   }
-  const filesOpenAtLoad = tabs.some((tab) => tab.kind === 'Files')
   files = {
     ...files,
-    tree: filesOpenAtLoad ? opts.files.tree() : (files.tree ?? []),
-    preview: filesOpenAtLoad && files.path ? opts.files.read(files.path) : files.preview,
+    // Derived workspace data is rebuilt only when a visible Files Tab demands it.
+    tree: [],
+    preview: undefined,
     treeOpen: false,
     treeWidth: clampTreeWidth(files.treeWidth),
     view: files.view === 'diff' ? 'diff' : 'preview',
     hunk: files.hunk ?? null,
+    diff: null,
     pendingRect: files.pendingRect ?? null,
     pendingSelection: files.pendingSelection ?? null,
     editingId: files.editingId ?? null,
   }
-  let review = saved?.review ?? emptyReview()
+  let review = saved?.review === undefined ? emptyReview() : rememberReview(saved.review)
   let pages = hydrateBrowserPages(saved)
   let terminal = saved?.terminal ?? emptyTerminal()
   let sideChat = saved?.sideChat ?? emptySideChat()
+  let stateRevision = 0
 
   function nid(): string {
     seq += 1
@@ -281,23 +287,31 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   }
 
   function persist(): void {
-    const snap = snapshot()
+    const snap = snapshot(false)
     const byTab: typeof snap.terminal.byTab = {}
     for (const [id, rec] of Object.entries(snap.terminal.byTab)) {
       byTab[id] = { ...rec, output: '', chunk: '' }
     }
-    opts.persist.save(opts.sessionId, { ...snap, terminal: { byTab } })
+    opts.persist.save(opts.sessionId, {
+      ...snap,
+      files: { ...snap.files, tree: [], preview: undefined, hunk: persistedFileChange(snap.files.hunk), diff: null },
+      fileStats: {},
+      review: rememberReview(snap.review),
+      terminal: { byTab },
+    })
   }
 
   function wantFiles(): boolean {
-    return tabs.some((tab) => tab.kind === 'Files')
+    if (collapsed) return false
+    return tabs.find((tab) => tab.id === active)?.kind === 'Files'
   }
 
   function wantReview(): boolean {
-    return tabs.some((tab) => tab.kind === 'Review')
+    if (collapsed) return false
+    return tabs.find((tab) => tab.id === active)?.kind === 'Review'
   }
 
-  function snapshot(): SidebarSnapshot {
+  function snapshot(project = true): SidebarSnapshot {
     foldAttachments()
     const activeTab = tabs.find((t) => t.id === active)
     const showPalette = !activeTab || activeTab.kind === null
@@ -309,14 +323,15 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
       active,
       showPalette,
       palette: PALETTE,
-      files: wantFiles() ? projectFiles() : {
+      files: project && wantFiles() ? projectFiles() : {
         ...files,
         tree: files.tree ?? [],
         preview: files.preview,
         diff: files.diff ?? null,
       },
-      fileStats: wantFiles() ? (opts.files.stats?.() ?? {}) : {},
-      review: wantReview() ? projectReview(review, opts.review) : rememberReview(review),
+      // Workspace stats are supplied by the async inspector; never run git here.
+      fileStats: {},
+      review: project && wantReview() ? projectReview(review, opts.review) : rememberReview(review),
       browser: projectBrowser(currentBrowser, opts.browser),
       browsers: projectPages(),
       terminal: projectTerminal(terminal),
@@ -440,18 +455,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   }
 
   function dispatch(intent: Intent): Effect[] {
+    stateRevision += 1
     const effects: Effect[] = []
     switch (intent.type) {
       case 'pick-tool':
         fillOrOpen(intent.kind)
-        if (intent.kind === 'Files' && !files.path) {
-          const first = opts.files.tree()[0]
-          if (first) {
-            files = { ...files, path: first.path }
-            const tab = tabs.find((t) => t.id === active)
-            if (tab) tab.target = first.path
-          }
-        }
         break
       case 'open-terminal': {
         expand()
@@ -900,12 +908,18 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     return opts.terminal?.pull?.(tabId, since) ?? { seq: 0, chunk: '' }
   }
 
-  return { snapshot, dispatch, pullTerminal }
+  return { snapshot, revision: () => stateRevision, dispatch, pullTerminal }
 }
 
 function nextTerminalTitle(list: Array<{ kind: string | null }>): string {
   const n = list.filter((tab) => tab.kind === 'Terminal').length + 1
   return n === 1 ? 'bash' : `bash ${n}`
+}
+
+function persistedFileChange(change: FileChange | null): FileChange | null {
+  if (change === null) return null
+  if (Buffer.byteLength(change.before) + Buffer.byteLength(change.after) > MAX_PERSISTED_HUNK_BYTES) return null
+  return { before: change.before, after: change.after }
 }
 
 function clampTreeWidth(width: number | undefined): number {

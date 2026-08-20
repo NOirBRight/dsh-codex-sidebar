@@ -42,12 +42,18 @@ export function apply(ctx: ClientContext): void {
     console.error('[dsh-codex-sidebar] path takeover skipped', err)
   }
   ctx.effect(() => {
+    let lastSource: unknown
+    let lastStats: ReturnType<typeof rowStatsFromSnapshot> = []
     const readStats = () => {
       const current = ctx.sessions.list.getSnapshot().current
       if (current === undefined) return []
       const binding = ctx.sessions.binding(current as never)
       if (binding === undefined) return []
-      return rowStatsFromSnapshot(binding.session.getSnapshot())
+      const source = binding.session.getSnapshot()
+      if (source === lastSource) return lastStats
+      lastSource = source
+      lastStats = rowStatsFromSnapshot(source)
+      return lastStats
     }
     const hook = installToolStats(readStats)
     const chips = installAnnotationChips({

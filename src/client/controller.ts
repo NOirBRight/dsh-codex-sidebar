@@ -49,6 +49,7 @@ export class SidebarController {
   #listeners = new Set<() => void>()
   #wrapped = new Set<string>()
   #effectPrompt = new Set<string>()
+  #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
   #layout: ILayout
@@ -272,11 +273,16 @@ export class SidebarController {
     const list = this.#ctx.sessions.list.getSnapshot()
     const summary = list.byId[sessionId as keyof typeof list.byId]
     const binding = this.#ctx.sessions.binding(sessionId as never)
-    const busy = binding?.session.getSnapshot().running === true
+    const sessionState = binding?.session.getSnapshot()
+    const busy = sessionState?.running === true
     const archived = archivedIds(this.#ctx)
     const roster = rosterFromList(list, archived)
     const logs = includeLogs ? logsFromList(this.#ctx, list.ids as string[]) : {}
-    const turnWrites = turnWritesFromSession(binding?.session.getSnapshot())
+    const cached = this.#turnWritesCache.get(sessionId)
+    const turnWrites = cached?.source === sessionState
+      ? cached.turnWrites
+      : turnWritesFromSession(sessionState)
+    if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
     return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
   }
 
