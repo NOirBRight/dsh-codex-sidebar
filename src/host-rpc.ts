@@ -18,6 +18,7 @@ import type { createRegistry } from './registry.ts'
 import type { ManagedBrowserStream } from './managed-browser-stream.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
+import { browserDeviceViewport } from './browser.ts'
 import type { BrowserEvidence, SidebarSnapshot } from './session.ts'
 import type { WorkspaceInspector } from './workspace-inspector.ts'
 import {
@@ -65,9 +66,12 @@ export async function handleSidebarRpcAsync(
       const tab = snapshot.tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
       const url = snapshot.browsers[payload.tabId]?.url || tab?.target
       if (tab === undefined || url === undefined || url.length === 0) return fail('unknown Browser Tab')
-      const projection = await services.managedBrowser.ensure({ sessionId: payload.sessionId, tabId: payload.tabId }, url)
+      const tabKey = { sessionId: payload.sessionId, tabId: payload.tabId }
+      const projection = await services.managedBrowser.ensure(tabKey, url)
       if (projection.status !== 'ready') return fail(projection.error ?? 'Browser page is not ready')
-      return { ok: true, value: services.browserStream.issue({ sessionId: payload.sessionId, tabId: payload.tabId }) }
+      const viewport = browserDeviceViewport(snapshot.browsers[payload.tabId]?.device ?? 'fit')
+      if (viewport !== null) await services.managedBrowser.resize(tabKey, viewport.width, viewport.height)
+      return { ok: true, value: services.browserStream.issue(tabKey) }
     }
     if (endpoint === SIDEBAR_BROWSER_CAPTURE_ENDPOINT) {
       if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.tabId !== 'string') {

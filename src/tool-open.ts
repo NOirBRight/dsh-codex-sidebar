@@ -1,7 +1,7 @@
 /** How a 主会话 path click should open Files — plugin-side, not DSH core. */
 
 import { isRecord } from './contract.ts'
-import { fileDiff, type ReviewChange } from './review.ts'
+import { lineStats, type ReviewChange } from './review.ts'
 
 export const WRITE_TOOL = /^(write|edit|str_replace|strreplace|search_replace|apply_patch|notebook)/i
 
@@ -42,11 +42,11 @@ export function statsFromSnapshot(snapshot: unknown): Record<string, { added: nu
 }
 
 export type RowStat = { path: string; added: number; removed: number }
-export type RowHunkStat = RowStat & { hunkId: string }
+export type RowHunkStat = RowStat & { hunkId: string; before: string; after: string }
 
 export function rowStatsFromSnapshot(snapshot: unknown): RowStat[] {
   return collectFromSnapshot(snapshot).hunks.map((hunk) => {
-    const diff = fileDiff(hunk.before, hunk.after)
+    const diff = lineStats(hunk.before, hunk.after)
     return { path: hunk.path, added: diff.added, removed: diff.removed }
   })
 }
@@ -54,18 +54,31 @@ export function rowStatsFromSnapshot(snapshot: unknown): RowStat[] {
 /** Same row stats with a snapshot-local identity for exact path opening. */
 export function rowHunksFromSnapshot(snapshot: unknown): RowHunkStat[] {
   return indexedHunks(snapshot).map((hunk) => {
-    const diff = fileDiff(hunk.before, hunk.after)
-    return { path: hunk.path, added: diff.added, removed: diff.removed, hunkId: hunk.hunkId }
+    const diff = lineStats(hunk.before, hunk.after)
+    return {
+      path: hunk.path,
+      added: diff.added,
+      removed: diff.removed,
+      hunkId: hunk.hunkId,
+      before: hunk.before,
+      after: hunk.after,
+    }
   })
 }
 
-type QueuedRow = { added: number; removed: number; hunkId?: string }
+type QueuedRow = { added: number; removed: number; hunkId?: string; before?: string; after?: string }
 
-export function queueRowStats(rows: readonly (RowStat & { hunkId?: string })[]): Map<string, QueuedRow[]> {
+export function queueRowStats(rows: readonly (RowStat & { hunkId?: string; before?: string; after?: string })[]): Map<string, QueuedRow[]> {
   const pending = new Map<string, QueuedRow[]>()
   for (const row of rows) {
     const list = pending.get(row.path) ?? []
-    list.push({ added: row.added, removed: row.removed, ...(row.hunkId === undefined ? {} : { hunkId: row.hunkId }) })
+    list.push({
+      added: row.added,
+      removed: row.removed,
+      ...(row.hunkId === undefined ? {} : { hunkId: row.hunkId }),
+      ...(row.before === undefined ? {} : { before: row.before }),
+      ...(row.after === undefined ? {} : { after: row.after }),
+    })
     pending.set(row.path, list)
   }
   return pending
@@ -207,7 +220,7 @@ function absorbView(value: unknown, out: Stats): boolean {
   for (const hunk of hunks) {
     const before = hunk.oldText ?? ''
     noteHunk(hunk.path, before, hunk.newText, before.length === 0 ? 'write' : 'edit')
-    mergeStat(out, hunk.path, fileDiff(before, hunk.newText))
+    mergeStat(out, hunk.path, lineStats(before, hunk.newText))
   }
   return true
 }
@@ -264,7 +277,7 @@ function absorbPair(rec: Record<string, unknown>, out: Stats): boolean {
     ? 'edit'
     : rec.content !== undefined || beforeText.length === 0 ? 'write' : 'edit'
   noteHunk(path, beforeText, after, op)
-  mergeStat(out, path, fileDiff(beforeText, after))
+  mergeStat(out, path, lineStats(beforeText, after))
   return true
 }
 

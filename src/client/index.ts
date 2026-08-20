@@ -15,6 +15,7 @@ import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
 import { installAnnotationChips, sourceForFlowKey } from './annotation-chips.ts'
 import { installToolStats } from './tool-stats.ts'
+import { installPathLinks } from './path-links.ts'
 import { rowHunksFromSnapshot } from '../tool-open.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
 
@@ -56,6 +57,10 @@ export function apply(ctx: ClientContext): void {
       return lastStats
     }
     const hook = installToolStats(readStats)
+    const pathLinks = installPathLinks((path) => {
+      const open = ctx.workspaces?.openPath
+      if (open !== undefined) void open(path)
+    })
     const chips = installAnnotationChips({
       sessionId: () => {
         const current = ctx.sessions.list.getSnapshot().current
@@ -97,6 +102,7 @@ export function apply(ctx: ClientContext): void {
     const stopStore = controller.subscribe(paint)
     return () => {
       hook.stop()
+      pathLinks.stop()
       chips.stop()
       stopList()
       stopStore()

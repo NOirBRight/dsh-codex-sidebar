@@ -8,7 +8,7 @@ import {
   noteBody,
 } from './annotation.ts'
 import type { BrowserIntent, BrowserPort, BrowserState } from './browser.ts'
-import { emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser, syncManagedBrowser } from './browser.ts'
+import { browserDeviceViewport, emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser, syncManagedBrowser } from './browser.ts'
 import type { FileDiff, ReviewIntent, ReviewPort, ReviewState } from './review.ts'
 import { emptyReview, fileDiff, projectReview, reduceReview, rememberReview } from './review.ts'
 import type { SideChatIntent, SideChatPort, SideChatState } from './side-chat.ts'
@@ -406,6 +406,10 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             : 'open'
       opts.browser?.manage?.(id, next.state.url, action)
     }
+    if (intent.type === 'browser-set-device') {
+      const viewport = browserDeviceViewport(next.state.device)
+      if (viewport !== null) opts.browser?.resize?.(id, viewport.width, viewport.height)
+    }
     return next.effects
   }
 
@@ -519,6 +523,11 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             opts.browser?.manage?.(tab.id, loaded.state.url, 'open')
           }
         }
+        const selectedBrowser = pages[tab.id]
+        const viewport = tab.kind === 'Browser' && selectedBrowser !== undefined
+          ? browserDeviceViewport(selectedBrowser.device)
+          : null
+        if (viewport !== null) opts.browser?.resize?.(tab.id, viewport.width, viewport.height)
         break
       }
       case 'toggle-collapsed':

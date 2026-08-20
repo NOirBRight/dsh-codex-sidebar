@@ -1,22 +1,20 @@
 /** Async, bounded workspace projection for visible Files/Review tools. */
 
 import { execFile } from 'node:child_process'
-import { open, readdir, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { open, stat } from 'node:fs/promises'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { FileChange, SidebarSnapshot, TreeNode } from './session.ts'
 import { fileDiff, type DiffLine, type FileDiff, type ReviewChange, type ReviewFile, type ReviewMode, type ReviewScopeStats, type ReviewState } from './review.ts'
+import { collectTree } from './workspace-tree.ts'
 
 const CACHE_TTL_MS = 1_500
 const GIT_TIMEOUT_MS = 3_000
 const MAX_GIT_BUFFER = 4 * 1024 * 1024
-const MAX_TREE_NODES = 400
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_DIFF_CELLS = 250_000
 const MAX_DIFF_LINES = 4_000
 const MAX_CACHE_ENTRIES = 100
-const SKIP_WALK = new Set(['node_modules', '.git', 'dist', 'lib', 'coverage', '.next', '.cache'])
-const SKIP_SHOW = new Set(['.git'])
-const SHOW_COLLAPSED = new Set(['node_modules'])
 
 export type WorkspaceGate = {
   cwd: string
@@ -53,8 +51,6 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
   const refPending = new Map<string, Promise<Record<string, Stat>>>()
   const detailCache = new Map<string, Timed<FileDiff | null>>()
   const detailPending = new Map<string, Promise<FileDiff | null>>()
-  const treeCache = new Map<string, Timed<TreeNode[]>>()
-  const treePending = new Map<string, Promise<TreeNode[]>>()
   let execs = 0
 
   async function run(args: readonly string[], cwd: string, signal?: AbortSignal): Promise<string> {
@@ -106,23 +102,15 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
 
   async function tree(cwd: string, signal?: AbortSignal): Promise<TreeNode[]> {
     if (cwd.length === 0) return []
-    const hit = treeCache.get(cwd)
-    if (hit !== undefined && now() - hit.at < ttlMs) return hit.value
-    const pending = treePending.get(cwd)
-    if (pending !== undefined) return pending
-    const created = walkWorkspace(cwd, signal).then((value) => {
-      putBounded(treeCache, cwd, { at: now(), value })
-      return value
-    }).finally(() => { treePending.delete(cwd) })
-    treePending.set(cwd, created)
-    return created
+    signal?.throwIfAborted()
+    return collectTree(cwd, signal)
   }
 
   return {
     execCount: () => execs,
     clear() {
       gitCache.clear(); gitPending.clear(); refCache.clear(); refPending.clear()
-      detailCache.clear(); detailPending.clear(); treeCache.clear(); treePending.clear(); execs = 0
+      detailCache.clear(); detailPending.clear(); execs = 0
     },
     async project(snapshot, gate, signal) {
       if (snapshot.collapsed) return snapshot
@@ -135,6 +123,9 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
       if (active?.kind === 'Files') {
         const nodes = await tree(gate.cwd, signal)
         const path = snapshot.files.path || nodes.find((node) => node.kind !== 'dir')?.path || ''
+        if (path.length > 0 && !nodes.some((node) => node.path === path)) {
+          nodes.push({ path, name: path.split('/').pop() || path })
+        }
         const preview = await readPreview(gate.cwd, path, signal)
         const hunk = snapshot.files.hunk ?? (path.length === 0 ? undefined : await readChange(gate.cwd, path, preview, run, signal))
         const diff = hunk === undefined || hunk.before === hunk.after ? null : boundedFileDiff(hunk.before, hunk.after)
@@ -391,7 +382,9 @@ async function readPreview(cwd: string, path: string, signal?: AbortSignal): Pro
     signal?.throwIfAborted()
     const info = await stat(full)
     if (!info.isFile()) return undefined
-    if (info.size > MAX_PREVIEW_BYTES) return '[File too large to preview: ' + info.size + ' bytes]'
+    const image = /\.(png|jpe?g|gif|webp|svg)$/i.test(path)
+    const limit = image ? MAX_IMAGE_BYTES : MAX_PREVIEW_BYTES
+    if (info.size > limit) return '[File too large to preview: ' + info.size + ' bytes]'
     const handle = await open(full, 'r')
     try {
       const buffer = Buffer.alloc(Number(info.size))
@@ -405,34 +398,6 @@ async function readPreview(cwd: string, path: string, signal?: AbortSignal): Pro
   } catch {
     return undefined
   }
-}
-
-async function walkWorkspace(cwd: string, signal?: AbortSignal): Promise<TreeNode[]> {
-  const nodes: TreeNode[] = []
-  async function walk(dir: string): Promise<void> {
-    if (nodes.length >= MAX_TREE_NODES) return
-    signal?.throwIfAborted()
-    let entries
-    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
-    entries.sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-      if (nodes.length >= MAX_TREE_NODES) return
-      if (SKIP_SHOW.has(entry.name)) continue
-      const full = join(dir, entry.name)
-      const rel = relative(cwd, full).split(sep).join('/')
-      if (entry.isDirectory()) {
-        if (SKIP_WALK.has(entry.name)) {
-          if (SHOW_COLLAPSED.has(entry.name)) nodes.push({ path: rel, name: entry.name, kind: 'dir' })
-          continue
-        }
-        const before = nodes.length
-        await walk(full)
-        if (nodes.length === before) nodes.push({ path: rel, name: entry.name, kind: 'dir' })
-      } else if (entry.isFile()) nodes.push({ path: rel, name: entry.name })
-    }
-  }
-  await walk(cwd)
-  return nodes
 }
 
 function safePath(cwd: string, path: string): string | undefined {

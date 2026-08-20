@@ -11,6 +11,12 @@ export const MANAGED_BROWSER_STREAM_VERSION = 1
 
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
+const FRAME_INTERVAL_MS = 50
+const HIGH_DENSITY_SCALE = 1.5
+
+export const MANAGED_BROWSER_STREAM_QUALITY = 80
+export const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560
+export const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048
 
 type StreamTicket = {
   tab: ManagedTabKey
@@ -42,6 +48,12 @@ type ScreencastPayload = {
   data?: unknown
   sessionId?: unknown
   metadata?: { deviceWidth?: unknown; deviceHeight?: unknown }
+}
+
+type CaptureRequest = {
+  width: number
+  height: number
+  fallback: string
 }
 
 type BrowserInput =
@@ -124,6 +136,8 @@ export class ManagedBrowserStream {
     let sequence = 0
     let lastFrameAt = 0
     let lastProjection = ''
+    let captureInFlight = false
+    let pendingCapture: CaptureRequest | undefined
     const sendProjection = (): void => {
       if (socket.readyState !== WebSocket.OPEN) return
       const projection = this.#runtime.projection(tab)
@@ -133,23 +147,65 @@ export class ManagedBrowserStream {
       lastProjection = signature
       socket.send(JSON.stringify({ type: 'state', projection }))
     }
-    const onFrame = (value: unknown): void => {
-      const payload = value as ScreencastPayload
-      sendProjection()
-      if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
-      const now = this.#now()
-      if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES || typeof payload.data !== 'string' || now - lastFrameAt < 33) return
-      lastFrameAt = now
-      const jpeg = Buffer.from(payload.data, 'base64')
+    const sendFrame = (jpeg: Uint8Array, width: number, height: number): void => {
+      if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
       sequence += 1
       socket.send(encodeBrowserStreamFrame({
         version: MANAGED_BROWSER_STREAM_VERSION,
         sequence,
-        sentAt: now,
-        width: finiteDimension(payload.metadata?.deviceWidth, 720),
-        height: finiteDimension(payload.metadata?.deviceHeight, 860),
+        sentAt: this.#now(),
+        width,
+        height,
         jpeg,
       }), { binary: true })
+    }
+    const captureFrame = async (request: CaptureRequest): Promise<void> => {
+      try {
+        const result = await cdp.send('Page.captureScreenshot', {
+          format: 'jpeg',
+          quality: MANAGED_BROWSER_STREAM_QUALITY,
+          fromSurface: true,
+          captureBeyondViewport: false,
+          clip: {
+            x: 0,
+            y: 0,
+            width: request.width,
+            height: request.height,
+            scale: browserStreamCaptureScale(request.width, request.height),
+          },
+        })
+        const data = screenshotData(result)
+        if (data === undefined) throw new Error('Browser screenshot returned no data')
+        sendFrame(Buffer.from(data, 'base64'), request.width, request.height)
+      } catch {
+        sendFrame(Buffer.from(request.fallback, 'base64'), request.width, request.height)
+      }
+    }
+    const requestFrame = (request: CaptureRequest): void => {
+      if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
+      const now = this.#now()
+      if (now - lastFrameAt < FRAME_INTERVAL_MS) return
+      if (captureInFlight) {
+        pendingCapture = request
+        return
+      }
+      lastFrameAt = now
+      captureInFlight = true
+      void captureFrame(request).finally(() => {
+        captureInFlight = false
+        const pending = pendingCapture
+        pendingCapture = undefined
+        if (pending !== undefined) requestFrame(pending)
+      })
+    }
+    const onFrame = (value: unknown): void => {
+      const payload = value as ScreencastPayload
+      sendProjection()
+      if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
+      if (typeof payload.data !== 'string') return
+      const width = finiteDimension(payload.metadata?.deviceWidth, 720)
+      const height = finiteDimension(payload.metadata?.deviceHeight, 860)
+      requestFrame({ width, height, fallback: payload.data })
     }
     let detached = false
     const detach = async (): Promise<void> => {
@@ -157,6 +213,7 @@ export class ManagedBrowserStream {
       detached = true
       cdp.off('Page.screencastFrame', onFrame)
       this.#sockets.delete(socket)
+      pendingCapture = undefined
       if (this.#tabSockets.get(tabKey) !== socket) return
       this.#tabSockets.delete(tabKey)
       await cdp.send('Page.stopScreencast').catch(() => undefined)
@@ -171,9 +228,9 @@ export class ManagedBrowserStream {
     try {
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 62,
-        maxWidth: 1920,
-        maxHeight: 1440,
+        quality: MANAGED_BROWSER_STREAM_QUALITY,
+        maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
+        maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
         everyNthFrame: 1,
       })
       socket.send(JSON.stringify({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION }))
@@ -296,6 +353,21 @@ function sameOriginHost(origin: string, host: string): boolean {
   } catch {
     return false
   }
+}
+
+export function browserStreamCaptureScale(width: number, height: number): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1
+  return Math.max(0.1, Math.min(
+    HIGH_DENSITY_SCALE,
+    MANAGED_BROWSER_STREAM_MAX_WIDTH / width,
+    MANAGED_BROWSER_STREAM_MAX_HEIGHT / height,
+  ))
+}
+
+function screenshotData(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const data = (value as { data?: unknown }).data
+  return typeof data === 'string' && data.length > 0 ? data : undefined
 }
 
 function finiteDimension(value: unknown, fallback: number): number {

@@ -21,6 +21,7 @@ import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
+import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
@@ -55,6 +56,7 @@ export class SidebarController {
   #layout: ILayout
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
+  #pathTakeover = false
 
   constructor(ctx: ClientContext) {
     this.#ctx = ctx
@@ -205,19 +207,26 @@ export class SidebarController {
   }
 
   installPathTakeover(): void {
+    if (this.#pathTakeover) return
     const workspaces = this.#ctx.workspaces
     if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
+    this.#pathTakeover = true
     const original = workspaces.openPath.bind(workspaces)
     let lastTool: string | undefined
     let lastHunkId: string | undefined
+    let lastRowHunk: ToolRowHunk | undefined
     if (typeof document !== 'undefined') {
-      document.addEventListener('pointerdown', (event) => {
-        const raw = event.target
+      const captureToolContext = (target: EventTarget | null): void => {
+        const raw = target
         const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
         const host = node instanceof Element ? node.closest('[data-tool]') : null
         lastTool = host instanceof Element ? host.getAttribute('data-tool') ?? undefined : undefined
         lastHunkId = host instanceof HTMLElement ? host.dataset.dcsHunkId : undefined
-      }, true)
+        lastRowHunk = host instanceof HTMLElement ? hunkForToolRow(host) : undefined
+      }
+      document.addEventListener('pointerdown', (event) => { captureToolContext(event.target) }, true)
+      // Keyboard activation has no pointerdown; capture the row before the host click handler runs.
+      document.addEventListener('click', (event) => { captureToolContext(event.target) }, true)
     }
     workspaces.openPath = async (path: string): Promise<void> => {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
@@ -232,9 +241,11 @@ export class SidebarController {
       const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
       const view = viewForTool(lastTool)
       const binding = this.#ctx.sessions.binding(sessionId as never)
-      const hunk = binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool, lastHunkId)
+      const hunk = lastRowHunk
+        ?? (binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool, lastHunkId))
       lastTool = undefined
       lastHunkId = undefined
+      lastRowHunk = undefined
       await this.dispatch(String(sessionId), {
         type: 'open-path',
         path: relativize(path, cwd),

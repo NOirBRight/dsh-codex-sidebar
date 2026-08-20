@@ -1,14 +1,10 @@
 /** Read-only workspace FilesPort backed by the 主会话 cwd. */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 import { defaultGitExec, gitRepo } from './git-status.ts'
-import type { FilesPort, TreeNode } from './session.ts'
-
-const SKIP_WALK = new Set(['node_modules', '.git', 'dist', 'lib', 'coverage', '.next', '.cache'])
-const SKIP_SHOW = new Set(['.git'])
-const SHOW_COLLAPSED = new Set(['node_modules'])
-const MAX_FILES = 400
+import type { FilesPort } from './session.ts'
+import { collectTree } from './workspace-tree.ts'
 
 export function createFsFiles(cwdOf: () => string): FilesPort {
   return {
@@ -27,11 +23,7 @@ export function createFsFiles(cwdOf: () => string): FilesPort {
       }
     },
     tree() {
-      const cwd = cwdOf()
-      if (cwd.length === 0) return []
-      const nodes: TreeNode[] = []
-      walk(cwd, cwd, nodes)
-      return nodes
+      return collectTree(cwdOf())
     },
     change(path) {
       const cwd = cwdOf()
@@ -66,38 +58,5 @@ function readWork(cwd: string, path: string): string {
     return readFileSync(join(cwd, path), 'utf8')
   } catch {
     return ''
-  }
-}
-
-function walk(root: string, dir: string, nodes: TreeNode[]): void {
-  if (nodes.length >= MAX_FILES) return
-  let entries: string[]
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return
-  }
-  for (const name of entries.sort()) {
-    if (nodes.length >= MAX_FILES) return
-    if (SKIP_SHOW.has(name)) continue
-    const full = join(dir, name)
-    let isDir = false
-    try {
-      isDir = statSync(full).isDirectory()
-    } catch {
-      continue
-    }
-    const rel = relative(root, full).split(sep).join('/')
-    if (isDir) {
-      if (SKIP_WALK.has(name)) {
-        if (SHOW_COLLAPSED.has(name)) nodes.push({ path: rel, name, kind: 'dir' })
-        continue
-      }
-      const before = nodes.length
-      walk(root, full, nodes)
-      if (nodes.length === before) nodes.push({ path: rel, name, kind: 'dir' })
-      continue
-    }
-    nodes.push({ path: rel, name })
   }
 }

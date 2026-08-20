@@ -118,6 +118,7 @@ type LaunchContext = (profileDir: string, opts: {
         width: number;
         height: number;
     };
+    deviceScaleFactor: number;
     ignoreDefaultArgs: string[];
 }) => Promise<ContextLike>;
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {

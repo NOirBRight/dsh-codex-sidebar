@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  browserStreamCaptureScale,
   decodeBrowserStreamFrame,
   encodeBrowserStreamFrame,
   ManagedBrowserStream,
@@ -29,6 +30,13 @@ describe('managed browser stream protocol', () => {
 
   it('rejects frames shorter than the versioned header', () => {
     expect(() => decodeBrowserStreamFrame(new Uint8Array(16))).toThrow('shorter than its header')
+  })
+
+  it('uses a bounded high-density capture scale for visible frames', () => {
+    expect(browserStreamCaptureScale(720, 860)).toBe(1.5)
+    expect(browserStreamCaptureScale(1280, 800)).toBe(1.5)
+    expect(browserStreamCaptureScale(1920, 1440)).toBeCloseTo(4 / 3)
+    expect(browserStreamCaptureScale(0, 0)).toBe(1)
   })
 
   it('issues one-use tab-scoped tickets with a TTL', () => {

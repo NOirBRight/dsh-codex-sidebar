@@ -100,6 +100,7 @@ type LaunchContext = (profileDir: string, opts: {
   executablePath: string
   headless: boolean
   viewport: { width: number; height: number }
+  deviceScaleFactor: number
   ignoreDefaultArgs: string[]
 }) => Promise<ContextLike>
 
@@ -129,6 +130,7 @@ type PageRecord = {
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
+const DEFAULT_DEVICE_SCALE_FACTOR = 2
 
 export class ManagedBrowserRuntime {
   readonly profileDir: string
@@ -137,6 +139,7 @@ export class ManagedBrowserRuntime {
   #launch: LaunchContext
   #context: Promise<ContextLike> | undefined
   #pages = new Map<string, PageRecord>()
+  #requestedViewports = new Map<string, { width: number; height: number }>()
   #captureSeq = 0
   #onProjection: ((projection: ManagedBrowserProjection) => void) | undefined
   #onPopup: ((opener: ManagedTabKey, page: unknown) => void) | undefined
@@ -194,9 +197,11 @@ export class ManagedBrowserRuntime {
   }
 
   async resize(tab: ManagedTabKey, width: number, height: number): Promise<void> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined) return
+    const key = this.keyOf(tab)
     const size = { width: clamp(Math.round(width), 320, 1920), height: clamp(Math.round(height), 240, 1440) }
+    this.#requestedViewports.set(key, size)
+    const record = this.#pages.get(key)
+    if (record === undefined) return
     const current = record.page.viewportSize()
     if (current?.width === size.width && current.height === size.height) return
     await record.page.setViewportSize(size)
@@ -277,6 +282,7 @@ export class ManagedBrowserRuntime {
   async close(tab: ManagedTabKey): Promise<void> {
     const key = this.keyOf(tab)
     const record = this.#pages.get(key)
+    this.#requestedViewports.delete(key)
     if (record === undefined) return
     this.#pages.delete(key)
     await record.cdp.detach().catch(() => undefined)
@@ -286,6 +292,7 @@ export class ManagedBrowserRuntime {
   async dispose(): Promise<void> {
     const pages = [...this.#pages.values()]
     this.#pages.clear()
+    this.#requestedViewports.clear()
     await Promise.all(pages.map(async (record) => {
       await record.cdp.detach().catch(() => undefined)
       if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
@@ -301,6 +308,8 @@ export class ManagedBrowserRuntime {
     if (existing !== undefined) return existing
     const context = await this.#ensureContext()
     const page = await context.newPage()
+    const requestedViewport = this.#requestedViewports.get(key)
+    if (requestedViewport !== undefined) await page.setViewportSize(requestedViewport)
     const cdp = await context.newCDPSession(page)
     const record: PageRecord = {
       tab,
@@ -352,6 +361,7 @@ export class ManagedBrowserRuntime {
         executablePath,
         headless: this.headless,
         viewport: DEFAULT_VIEWPORT,
+        deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
         ignoreDefaultArgs: ['--disable-dev-shm-usage'],
       })
     })()
@@ -556,6 +566,7 @@ async function launchPlaywright(profileDir: string, opts: {
   executablePath: string
   headless: boolean
   viewport: { width: number; height: number }
+  deviceScaleFactor: number
   ignoreDefaultArgs: string[]
 }): Promise<ContextLike> {
   await mkdir(dirname(profileDir), { recursive: true, mode: 0o700 })
@@ -563,6 +574,7 @@ async function launchPlaywright(profileDir: string, opts: {
     executablePath: opts.executablePath,
     headless: opts.headless,
     viewport: opts.viewport,
+    deviceScaleFactor: opts.deviceScaleFactor,
     ignoreDefaultArgs: opts.ignoreDefaultArgs,
   })
   return context as unknown as ContextLike

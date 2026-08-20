@@ -36,6 +36,11 @@ describe('Files preview rendering', () => {
     expect(SIDEBAR_CSS).toMatch(/\.dcs-md\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0[^}]*overflow:\s*auto/s)
   })
 
+  it('wraps Files preview/diff in an equal-width switch', () => {
+    expect(SIDEBAR_CSS).toMatch(/\.dcs-fseg\s*\{[^}]*grid-auto-columns:\s*1fr[^}]*border:\s*1px solid/s)
+    expect(SIDEBAR_CSS).toMatch(/\.dcs-fseg button\s*\{[^}]*justify-content:\s*center/s)
+  })
+
   it('recognizes headings in CRLF Markdown files', () => {
     const blocks = parseMarkdown('# Verification Report\r\n\r\n### Key Link Verification\r\n')
     expect(blocks.map((block) => block.type)).toEqual(['h', 'h'])

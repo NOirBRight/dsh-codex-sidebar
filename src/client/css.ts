@@ -330,19 +330,29 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
 [data-theme='dark'] .dcs-tok-num { color: #fdba74; }
 [data-theme='dark'] .dcs-tok-punc { color: #94a3b8; }
 .dcs-fseg {
-  display: flex; flex-shrink: 0; background: var(--dsw-alias-bg-layer-2);
-  border-radius: 7px; padding: 2px; margin-right: 4px;
+  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  flex-shrink: 0; align-items: stretch; margin-right: 6px; padding: 2px;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2); box-sizing: border-box;
 }
 .dcs-fseg button {
-  border: 0; background: transparent; padding: 3px 8px; border-radius: 5px;
-  font-size: 11px; cursor: pointer; color: var(--dsw-alias-label-secondary); white-space: nowrap;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  min-width: 0; border: 0; background: transparent; padding: 4px 10px; border-radius: 6px;
+  font-size: 11px; line-height: 16px; cursor: pointer; color: var(--dsw-alias-label-secondary);
+  white-space: nowrap; box-sizing: border-box;
 }
+.dcs-fseg button:hover:not([data-on]) { color: var(--dsw-alias-label-primary); }
 .dcs-fseg button[data-on] {
-  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-weight: 500;
   box-shadow: 0 0 0 1px var(--dsw-alias-border-l2);
 }
 .dcs-fseg .dcs-addn { color: #16a34a; }
 .dcs-fseg .dcs-deln { color: #dc2626; }
+.dcs-path-link {
+  cursor: pointer; color: var(--dsw-alias-color-accent, var(--dsw-alias-label-primary));
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px;
+}
+.dcs-path-link:hover { opacity: 0.82; }
 .dcs-code { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .dcs-fd {
   flex: 1; min-width: 0; min-height: 0; width: 100%; overflow: auto; box-sizing: border-box;

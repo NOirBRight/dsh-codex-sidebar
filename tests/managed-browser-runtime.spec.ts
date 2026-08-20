@@ -229,13 +229,15 @@ describe('ManagedBrowserRuntime', () => {
 
 
 
-  it('keeps Chromium font shared memory on /dev/shm', async () => {
+  it('keeps Chromium font shared memory on /dev/shm and uses a dense viewport', async () => {
     let ignored: string[] | undefined
+    let scale: number | undefined
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-shm-' + Math.random().toString(36).slice(2),
       launch: async (_profileDir, options) => {
         ignored = (options as { ignoreDefaultArgs?: string[] }).ignoreDefaultArgs
+        scale = (options as { deviceScaleFactor?: number }).deviceScaleFactor
         return {
           async newPage() { return new FakePage() },
           async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
@@ -246,6 +248,7 @@ describe('ManagedBrowserRuntime', () => {
     })
     await runtime.ensure({ sessionId: 'shm', tabId: 'tab' }, 'https://example.com')
     expect(ignored).toContain('--disable-dev-shm-usage')
+    expect(scale).toBe(2)
     await runtime.dispose()
   })
 

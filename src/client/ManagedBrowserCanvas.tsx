@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type WheelEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
 import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
+import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
 type StreamTicket = { path: string; expiresAt: number }
@@ -14,22 +15,30 @@ type ManagedProjection = {
 
 type ManagedBrowserCanvasProps = {
   tabId: string
+  device: BrowserDevice
   annotate: boolean
   selectedRect: AnnotationRect | null
   selectedSelector: string | null
   requestTicket: (tabId: string) => Promise<StreamTicket | undefined>
   onPick: (rect: AnnotationRect, anchor: Point) => void | Promise<void>
   onState: (projection: ManagedProjection) => void
+  children?: ReactNode
 }
 
 type Point = { x: number; y: number }
+type Size = { width: number; height: number }
 
-export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState }: ManagedBrowserCanvasProps): ReactElement {
+export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const ticketRef = useRef(requestTicket)
   const stateRef = useRef(onState)
+  const deviceRef = useRef(device)
+  const viewportRef = useRef<Size>({ width: 720, height: 860 })
   ticketRef.current = requestTicket
   stateRef.current = onState
+  deviceRef.current = device
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const annotateRef = useRef(annotate)
@@ -50,8 +59,8 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
   const [hovered, setHovered] = useState<AnnotationRect | null>(null)
   const [selectedLiveRect, setSelectedLiveRect] = useState<AnnotationRect | null>(selectedRect)
   const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
-
-
+  const [surfaceSize, setSurfaceSize] = useState<Size>({ width: 0, height: 0 })
+  const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
 
   const requestOutline = (delay = 0): void => {
     if (outlineTimerRef.current !== undefined) clearTimeout(outlineTimerRef.current)
@@ -63,6 +72,57 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
     }, delay)
   }
 
+  const sendLayout = (socket: WebSocket | null = socketRef.current): void => {
+    const root = rootRef.current
+    if (root === null) return
+    const bounds = root.getBoundingClientRect()
+    if (bounds.width <= 0 || bounds.height <= 0) return
+    const fixed = browserDeviceViewport(deviceRef.current)
+    const viewport = fixed ?? {
+      width: clamp(Math.round(bounds.width), 320, 1920),
+      height: clamp(Math.round(bounds.height), 240, 1440),
+    }
+    viewportRef.current = viewport
+    const surface = fixed === null
+      ? { width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)) }
+      : fitSurface(bounds.width, bounds.height, fixed)
+    setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
+    send(socket, { type: 'resize', width: viewport.width, height: viewport.height })
+  }
+
+  useEffect(() => {
+    const root = rootRef.current
+    let intersecting = true
+    const update = (): void => {
+      const pageVisible = typeof document === 'undefined' || document.visibilityState === 'visible'
+      setVisible(pageVisible && intersecting)
+    }
+    const onVisibility = (): void => { update() }
+    document.addEventListener('visibilitychange', onVisibility)
+    let observer: IntersectionObserver | undefined
+    if (root !== null && typeof IntersectionObserver !== 'undefined') {
+      observer = new IntersectionObserver((entries) => {
+        intersecting = entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0)
+        update()
+      })
+      observer.observe(root)
+    }
+    update()
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      observer?.disconnect()
+    }
+  }, [tabId])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (root === null) return
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => { sendLayout() })
+    observer?.observe(root)
+    sendLayout()
+    return () => { observer?.disconnect() }
+  }, [device, tabId])
+
   useEffect(() => {
     setOutlineNodes([])
     setHovered(null)
@@ -73,8 +133,6 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
     }
   }, [annotate, tabId])
 
-
-
   useEffect(() => {
     setSelectedLiveRect(selectedRect)
     if (selectedSelector !== null) requestOutline()
@@ -84,9 +142,13 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
     let stopped = false
     let reconnect: ReturnType<typeof setTimeout> | undefined
     let attempt = 0
-    let resize: ResizeObserver | undefined
     let decoding = false
     let latest: ArrayBuffer | undefined
+
+    if (!visible) {
+      setStatus('connecting')
+      return () => { inputQueueRef.current?.cancel() }
+    }
 
     const drawLatest = async (): Promise<void> => {
       if (decoding) return
@@ -99,11 +161,11 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
           if (frame.version !== 1) throw new Error('Unsupported Browser stream version')
           const canvas = canvasRef.current
           if (canvas === null) return
-          if (canvas.width !== frame.width || canvas.height !== frame.height) {
-            canvas.width = frame.width
-            canvas.height = frame.height
-          }
           const bitmap = await createImageBitmap(new Blob([frame.jpeg], { type: 'image/jpeg' }))
+          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+            canvas.width = bitmap.width
+            canvas.height = bitmap.height
+          }
           const context = canvas.getContext('bitmaprenderer')
           if (context !== null) context.transferFromImageBitmap(bitmap)
           else canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
@@ -127,20 +189,8 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
       socketRef.current = socket
       socket.onopen = () => {
         attempt = 0
+        sendLayout(socket)
         if (annotateRef.current) requestOutline()
-        const canvas = canvasRef.current
-        if (canvas !== null) {
-          resize = new ResizeObserver(() => {
-            const bounds = canvas.getBoundingClientRect()
-            send(socket, { type: 'resize', width: bounds.width, height: bounds.height })
-            if (annotateRef.current) {
-              setOutlineNodes([])
-              setHovered(null)
-              requestOutline(180)
-            }
-          })
-          resize.observe(canvas)
-        }
       }
       socket.onmessage = (event) => {
         if (browserStreamSignalsReady(event.data)) setStatus('ready')
@@ -185,7 +235,6 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
       }
       socket.onerror = () => { setStatus('error') }
       socket.onclose = () => {
-        resize?.disconnect()
         if (socketRef.current === socket) socketRef.current = null
         if (!stopped) reconnect = setTimeout(() => { void connect() }, Math.min(2000, 250 * 2 ** attempt++))
       }
@@ -195,20 +244,20 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
     return () => {
       stopped = true
       if (reconnect !== undefined) clearTimeout(reconnect)
-      resize?.disconnect()
-      socketRef.current?.close(1000, 'Browser Tab hidden')
+      socketRef.current?.close(1000, 'Browser surface hidden')
       socketRef.current = null
       inputQueueRef.current?.cancel()
     }
-  }, [tabId])
+  }, [tabId, visible])
 
   const point = (event: { clientX: number; clientY: number }): Point => {
     const canvas = canvasRef.current
     if (canvas === null) return { x: 0, y: 0 }
     const bounds = canvas.getBoundingClientRect()
+    const viewport = viewportRef.current
     return {
-      x: (event.clientX - bounds.left) * canvas.width / Math.max(1, bounds.width),
-      y: (event.clientY - bounds.top) * canvas.height / Math.max(1, bounds.height),
+      x: (event.clientX - bounds.left) * viewport.width / Math.max(1, bounds.width),
+      y: (event.clientY - bounds.top) * viewport.height / Math.max(1, bounds.height),
     }
   }
 
@@ -247,9 +296,10 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
       setSelection(null)
       setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
       const canvasBounds = event.currentTarget.getBoundingClientRect()
+      const rootBounds = rootRef.current?.getBoundingClientRect() ?? canvasBounds
       void onPick(
         rect.w < 4 && rect.h < 4 ? { x: at.x - 8, y: at.y - 8, w: 16, h: 16 } : rect,
-        { x: event.clientX - canvasBounds.left, y: event.clientY - canvasBounds.top },
+        { x: event.clientX - rootBounds.left, y: event.clientY - rootBounds.top },
       )
       return
     }
@@ -277,23 +327,29 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
   }
 
   const highlights = browserAnnotationHighlightRects(selectedLiveRect, hovered)
+  const surfaceStyle = surfaceSize.width <= 0 || surfaceSize.height <= 0
+    ? { width: '100%', height: '100%' }
+    : { width: surfaceSize.width + 'px', height: surfaceSize.height + 'px' }
 
   return (
-    <div className="dcs-managed-browser">
-      <canvas
-        ref={canvasRef}
-        className="dcs-managed-browser-canvas"
-        tabIndex={-1}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => { dragRef.current = null; setSelection(null); setHovered(null) }}
-        onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
-        onWheel={onWheel}
-      />
-      {annotate && selection === null && highlights.selected !== null && <div className="dcs-managed-selected" style={selectionStyle(highlights.selected, canvasRef.current)} />}
-      {annotate && selection === null && highlights.hovered !== null && <div className="dcs-managed-hover" style={selectionStyle(highlights.hovered, canvasRef.current)} />}
-      {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, canvasRef.current)} />}
+    <div className="dcs-managed-browser" ref={rootRef}>
+      <div className="dcs-managed-browser-surface" ref={surfaceRef} style={surfaceStyle}>
+        <canvas
+          ref={canvasRef}
+          className="dcs-managed-browser-canvas"
+          tabIndex={-1}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={() => { dragRef.current = null; setSelection(null); setHovered(null) }}
+          onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
+          onWheel={onWheel}
+        />
+        {annotate && selection === null && highlights.selected !== null && <div className="dcs-managed-selected" style={selectionStyle(highlights.selected, viewportRef.current)} />}
+        {annotate && selection === null && highlights.hovered !== null && <div className="dcs-managed-hover" style={selectionStyle(highlights.hovered, viewportRef.current)} />}
+        {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, viewportRef.current)} />}
+        {children}
+      </div>
       <textarea
         ref={inputRef}
         className="dcs-managed-ime"
@@ -310,7 +366,6 @@ export function ManagedBrowserCanvas({ tabId, annotate, selectedRect, selectedSe
     </div>
   )
 }
-
 
 function managedProjection(value: unknown): value is ManagedProjection {
   if (typeof value !== 'object' || value === null) return false
@@ -334,12 +389,23 @@ function modifiers(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean;
   return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0)
 }
 
-function selectionStyle(rect: AnnotationRect, canvas: HTMLCanvasElement | null): Record<string, string> {
-  if (canvas === null) return {}
+function selectionStyle(rect: AnnotationRect, viewport: Size): Record<string, string> {
   return {
-    left: rect.x / Math.max(1, canvas.width) * 100 + '%',
-    top: rect.y / Math.max(1, canvas.height) * 100 + '%',
-    width: rect.w / Math.max(1, canvas.width) * 100 + '%',
-    height: rect.h / Math.max(1, canvas.height) * 100 + '%',
+    left: rect.x / Math.max(1, viewport.width) * 100 + '%',
+    top: rect.y / Math.max(1, viewport.height) * 100 + '%',
+    width: rect.w / Math.max(1, viewport.width) * 100 + '%',
+    height: rect.h / Math.max(1, viewport.height) * 100 + '%',
   }
+}
+
+function fitSurface(containerWidth: number, containerHeight: number, viewport: Size): Size {
+  const scale = Math.min(containerWidth / Math.max(1, viewport.width), containerHeight / Math.max(1, viewport.height))
+  return {
+    width: Math.max(1, Math.round(viewport.width * scale)),
+    height: Math.max(1, Math.round(viewport.height * scale)),
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }

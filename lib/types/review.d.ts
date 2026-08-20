@@ -97,5 +97,10 @@ export type FileDiff = {
     hunk: string;
     lines: DiffLine[];
 };
+/** +/− for badges. Strip shared ends, then LCS only the unique middle. */
+export declare function lineStats(before: string, after: string): {
+    added: number;
+    removed: number;
+};
 export declare function fileDiff(before: string, after: string): FileDiff;
 //# sourceMappingURL=review.d.ts.map

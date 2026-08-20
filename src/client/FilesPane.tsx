@@ -42,6 +42,7 @@ export function FilesPane({
   const image = imageSrc(files.path, files.preview)
   const markdown = image === undefined && isMarkdown(files.path)
   const missing = files.path.length > 0 && files.preview === undefined
+  const tooLarge = image === undefined && isImagePath(files.path) && (files.preview?.startsWith('[File too large') ?? false)
   const empty = files.path.length === 0
   const showDiff = files.view === 'diff' && files.diff !== null
   const lines = !empty && image === undefined && !markdown && !missing && !showDiff ? (files.preview ?? '').split('\n') : []
@@ -227,9 +228,11 @@ export function FilesPane({
         )}
         <div className="dcs-fh-actions">
           {files.diff !== null && (
-            <div className="dcs-fseg">
+            <div className="dcs-fseg" role="tablist" aria-label={previewLabel + ' / ' + diffLabel}>
               <button
                 type="button"
+                role="tab"
+                aria-selected={files.view === 'preview'}
                 data-on={files.view === 'preview' || undefined}
                 onClick={() => { onIntent({ type: 'set-files-view', view: 'preview' }) }}
               >
@@ -237,11 +240,15 @@ export function FilesPane({
               </button>
               <button
                 type="button"
+                role="tab"
+                aria-selected={files.view === 'diff'}
                 data-on={files.view === 'diff' || undefined}
                 onClick={() => { onIntent({ type: 'set-files-view', view: 'diff' }) }}
               >
-                {diffLabel}{' '}
-                <span className="dcs-addn">+{files.diff.added}</span>{' '}
+                {diffLabel}
+                {' '}
+                <span className="dcs-addn">+{files.diff.added}</span>
+                {' '}
                 <span className="dcs-deln">−{files.diff.removed}</span>
               </button>
             </div>
@@ -290,6 +297,8 @@ export function FilesPane({
           >
             {missing ? (
               <div className="dcs-missing">无法读取 {files.path}</div>
+            ) : tooLarge ? (
+              <div className="dcs-missing">{files.preview}</div>
             ) : image !== undefined ? (
               <div className="dcs-media-surface" data-dcs-line={1} onMouseUp={markSurface}>
                 <img
@@ -698,6 +707,10 @@ function FileDiffBody({
 
 function isMarkdown(path: string): boolean {
   return /\.(md|markdown)$/i.test(path)
+}
+
+function isImagePath(path: string): boolean {
+  return /\.(png|jpe?g|gif|webp|svg)$/i.test(path)
 }
 
 function imageSrc(path: string, preview: string | undefined): string | undefined {

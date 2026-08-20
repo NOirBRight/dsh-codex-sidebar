@@ -6,7 +6,9 @@ export type IconName =
   | 'review' | 'terminal' | 'globe' | 'folder' | 'chat' | 'panel'
   | 'plus' | 'x' | 'pencil' | 'tree' | 'file' | 'search' | 'chevron'
   | 'back' | 'fwd' | 'refresh' | 'external' | 'file-plus' | 'folder-plus' | 'more'
-  | 'inspect' | 'send' | 'enter' | 'trash'
+  | 'inspect'
+  | 'device-responsive' | 'device-phone' | 'device-tablet' | 'device-laptop' | 'chevron-down'
+  | 'send' | 'enter' | 'trash'
 
 export function Ico({ name, size = 16 }: { name: IconName; size?: number }): ReactElement {
   const p = {
@@ -33,6 +35,16 @@ export function Ico({ name, size = 16 }: { name: IconName; size?: number }): Rea
       return <svg {...p}><path d="M20.2 11.2a7.4 7.4 0 01-8.1 7.4L6 21.2l.7-3.3A7.4 7.4 0 1119.6 8" /><path d="M12 9v5M9.5 11.5h5" /></svg>
     case 'panel':
       return <svg {...p}><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M15.5 4.5v15" /></svg>
+    case 'device-responsive':
+      return <svg {...p}><path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3" /></svg>
+    case 'device-phone':
+      return <svg {...p}><rect x="7.5" y="3.5" width="9" height="17" rx="1.8" /><path d="M10.5 17.5h3" /></svg>
+    case 'device-tablet':
+      return <svg {...p}><rect x="5.5" y="3.5" width="13" height="17" rx="1.8" /><path d="M10.5 17.5h3" /></svg>
+    case 'device-laptop':
+      return <svg {...p}><rect x="5" y="4.5" width="14" height="11" rx="1.5" /><path d="M3 19h18M7 19l1-3.5h8L17 19" /></svg>
+    case 'chevron-down':
+      return <svg {...p}><path d="m6 9 6 6 6-6" /></svg>
     case 'plus':
       return <svg {...p}><path d="M12 6v12M6 12h12" /></svg>
     case 'x':

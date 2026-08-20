@@ -25,6 +25,8 @@ export type RowStat = {
 };
 export type RowHunkStat = RowStat & {
     hunkId: string;
+    before: string;
+    after: string;
 };
 export declare function rowStatsFromSnapshot(snapshot: unknown): RowStat[];
 /** Same row stats with a snapshot-local identity for exact path opening. */
@@ -33,9 +35,13 @@ type QueuedRow = {
     added: number;
     removed: number;
     hunkId?: string;
+    before?: string;
+    after?: string;
 };
 export declare function queueRowStats(rows: readonly (RowStat & {
     hunkId?: string;
+    before?: string;
+    after?: string;
 })[]): Map<string, QueuedRow[]>;
 export declare function takeRowStat(pending: Map<string, QueuedRow[]>, label: string): {
     added: number;

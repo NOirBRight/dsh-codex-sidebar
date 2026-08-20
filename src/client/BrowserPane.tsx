@@ -1,11 +1,11 @@
 /** Managed Chromium Browser chrome, Canvas stream, and screenshot-backed 批注. */
 
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactElement } from 'react'
-import { liveHref } from '../browser.ts'
+import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice } from '../browser.ts'
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
-import { Ico } from './icons.tsx'
+import { Ico, type IconName } from './icons.tsx'
 import { ManagedBrowserCanvas } from './ManagedBrowserCanvas.tsx'
 import { NoteComposer } from './NoteComposer.tsx'
 
@@ -17,14 +17,26 @@ const BROWSER_CSS = `
 .dcs-b-nav[data-on]:hover { background:var(--dsw-alias-interactive-bg-hover); }
 .dcs-b-url { flex:1; display:flex; align-items:center; background:var(--dsw-alias-bg-base); border:1px solid var(--dsw-alias-border-l2); border-radius:8px; height:32px; padding:0 6px 0 10px; }
 .dcs-b-url input { flex:1; background:transparent; border:0; color:var(--dsw-alias-label-primary); outline:none; font-size:12.5px; padding:0; min-width:0; }
+.dcs-b-device { position:relative; flex-shrink:0; }
+.dcs-b-device-trigger { width:38px; height:32px; display:flex; align-items:center; justify-content:center; gap:1px; border:0; border-radius:8px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); cursor:pointer; }
+.dcs-b-device-trigger:hover, .dcs-b-device-trigger[data-open] { background:var(--dsw-alias-interactive-bg-hover); color:var(--dsw-alias-label-primary); }
+.dcs-b-device-chevron { display:grid; place-items:center; opacity:.72; }
+.dcs-b-device-menu { position:absolute; top:calc(100% + 4px); right:0; z-index:30; box-sizing:border-box; min-width:230px; width:max-content; max-width:min(280px, 70vw); max-height:calc(100vh - 84px); overflow:auto; padding:6px; border:1px solid var(--dsw-alias-border-l2); border-radius:10px; background:var(--dsw-alias-bg-base); box-shadow:var(--dsw-shadow-lv2); font-family:var(--dsw-font-family); font-size:12.5px; font-weight:500; line-height:18px; color:var(--dsw-alias-label-primary); }
+.dcs-b-device-option { display:grid; grid-template-columns:16px 18px minmax(0, 1fr); align-items:center; gap:8px; width:100%; border:0; border-radius:7px; padding:7px 8px; background:transparent; color:var(--dsw-alias-label-primary); text-align:left; font:inherit; line-height:18px; cursor:pointer; }
+.dcs-b-device-option:hover { background:var(--dsw-alias-interactive-bg-hover); }
+.dcs-b-device-option[data-selected] { background:var(--dsw-alias-bg-layer-2); }
+.dcs-b-device-check { color:var(--dsw-alias-label-secondary); font-size:12px; text-align:center; }
+.dcs-b-device-icon { width:18px; height:18px; display:grid; place-items:center; color:var(--dsw-alias-label-tertiary); }
+.dcs-b-device-option[data-selected] .dcs-b-device-icon { color:var(--dsw-alias-label-primary); }
 .dcs-b-empty { flex:1; min-height:0; width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; color:var(--dsw-alias-label-tertiary); background:var(--dsw-alias-bg-base); }
 .dcs-b-empty h2 { margin:10px 0 0; font-size:17px; font-weight:600; color:var(--dsw-alias-label-secondary); }
 .dcs-b-empty p { margin:0; font-size:13px; color:var(--dsw-alias-label-tertiary); max-width:320px; text-align:center; }
 .dcs-b-page { flex:1; min-height:0; width:100%; position:relative; overflow:hidden; background:#fff; }
-.dcs-managed-browser { position:absolute; inset:0; overflow:hidden; background:#fff; }
+.dcs-managed-browser { position:absolute; inset:0; overflow:hidden; display:grid; place-items:center; background:#f3f4f6; }
+.dcs-managed-browser-surface { position:relative; flex:none; overflow:hidden; background:#fff; box-shadow:0 1px 8px rgba(15,23,42,.16); }
 .dcs-managed-browser-canvas { width:100%; height:100%; display:block; touch-action:none; user-select:none; outline:none; }
 .dcs-managed-ime { position:absolute; left:-10000px; top:0; width:1px; height:1px; opacity:0; }
-.dcs-managed-browser-status { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-bg-base); font-size:13px; }
+.dcs-managed-browser-status { position:absolute; inset:0; z-index:6; display:grid; place-items:center; pointer-events:none; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-bg-base); font-size:13px; }
 .dcs-managed-selected, .dcs-managed-hover, .dcs-managed-selection { position:absolute; pointer-events:none; box-sizing:border-box; z-index:2; }
 .dcs-managed-selected { border:2px solid #0ea5e9; background:rgba(14,165,233,.2); box-shadow:0 0 0 1px rgba(255,255,255,.7) inset; }
 .dcs-managed-hover { border:1.5px solid #38bdf8; background:rgba(56,189,248,.1); }
@@ -63,11 +75,14 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
   const pageRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState(browser.draft)
   const [capturing, setCapturing] = useState(false)
+  const [deviceOverride, setDeviceOverride] = useState<BrowserDevice | null>(null)
+  const device = deviceOverride ?? browser.device
   const href = liveHref(browser.url)
   const hasPage = href !== undefined
   const tabId = snapshot.tabs.find((tab) => tab.id === snapshot.active && tab.kind === 'Browser')?.id
 
   useEffect(() => { setDraft(browser.draft) }, [browser.draft])
+  useEffect(() => { setDeviceOverride(null) }, [browser.device])
   useEffect(() => {
     if (!browser.annotate) return
     const onKey = (event: globalThis.KeyboardEvent): void => {
@@ -125,6 +140,10 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
           <input value={draft} placeholder="Enter a URL" onChange={(event) => { setDraft(event.target.value) }} />
           <NavButton title="外部打开" enabled={hasPage} icon="external" onClick={openLive} />
         </form>
+        <DevicePicker value={device} onChange={(next) => {
+          setDeviceOverride(next)
+          onIntent({ type: 'browser-set-device', device: next })
+        }} />
         {browser.canAnnotate && (
           <button type="button" title="批注" className="dcs-tool" data-on={browser.annotate || undefined} onClick={() => { onIntent({ type: 'browser-set-annotate', on: !browser.annotate }) }}>
             <Ico name="pencil" size={14} />
@@ -137,6 +156,7 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
         <div className="dcs-b-page" ref={pageRef}>
           <ManagedBrowserCanvas
             tabId={tabId}
+            device={device}
             annotate={browser.annotate}
             selectedRect={browser.pendingRect}
             selectedSelector={browser.pendingSelector}
@@ -153,17 +173,18 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
                 ...projection.error === undefined ? {} : { error: projection.error },
               })
             }}
-          />
-          <StackedBadges attachments={visibleAnnotations(snapshot)} url={browser.url} onEdit={(id, event) => {
-            const body = bodyRef.current
-            const box = body?.getBoundingClientRect()
-            if (snapshot.attachments.some((item) => item.id === id)) {
-              onIntent({ type: 'edit-attachment', id, x: box === undefined ? 180 : event.clientX - box.left, y: box === undefined ? 72 : event.clientY - box.top })
-              return
-            }
-            const delivered = snapshot.deliveredMarks.find((item) => item.id === id)
-            if (delivered !== undefined) onIntent({ type: 'reveal-mark', mark: delivered })
-          }} />
+          >
+            <StackedBadges attachments={visibleAnnotations(snapshot)} url={browser.url} onEdit={(id, event) => {
+              const body = bodyRef.current
+              const box = body?.getBoundingClientRect()
+              if (snapshot.attachments.some((item) => item.id === id)) {
+                onIntent({ type: 'edit-attachment', id, x: box === undefined ? 180 : event.clientX - box.left, y: box === undefined ? 72 : event.clientY - box.top })
+                return
+              }
+              const delivered = snapshot.deliveredMarks.find((item) => item.id === id)
+              if (delivered !== undefined) onIntent({ type: 'reveal-mark', mark: delivered })
+            }} />
+          </ManagedBrowserCanvas>
           {capturing && <div className="dcs-b-capturing">Capturing screenshot…</div>}
         </div>
       )}
@@ -192,6 +213,81 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
 
 function NavButton({ title, enabled, icon, onClick }: { title: string; enabled: boolean; icon: 'back' | 'fwd' | 'refresh' | 'external'; onClick: () => void }): ReactElement {
   return <button type="button" title={title} className="dcs-b-nav" data-on={enabled || undefined} disabled={!enabled} onClick={onClick}><Ico name={icon} size={15} /></button>
+}
+
+function DevicePicker({ value, onChange }: { value: BrowserDevice; onChange: (device: BrowserDevice) => void }): ReactElement {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const selected = BROWSER_DEVICE_PRESETS.find((preset) => preset.id === value) ?? BROWSER_DEVICE_PRESETS[0]
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: globalThis.PointerEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div className="dcs-b-device" ref={rootRef}>
+      <button
+        type="button"
+        className="dcs-b-device-trigger"
+        data-open={open || undefined}
+        aria-label={selected?.label ?? '页面尺寸'}
+        title={selected?.label ?? '页面尺寸'}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => { setOpen((current) => !current) }}
+      >
+        <Ico name={deviceIcon(value)} size={20} />
+        <span className="dcs-b-device-chevron"><Ico name="chevron-down" size={10} /></span>
+      </button>
+      {open && (
+        <div className="dcs-b-device-menu" role="menu" aria-label="页面尺寸">
+          {BROWSER_DEVICE_PRESETS.map((preset) => {
+            const current = preset.id === value
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={current}
+                className="dcs-b-device-option"
+                data-selected={current || undefined}
+                onClick={() => {
+                  onChange(preset.id)
+                  setOpen(false)
+                }}
+              >
+                <span className="dcs-b-device-check">{current ? '✓' : ''}</span>
+                <span className="dcs-b-device-icon"><Ico name={deviceIcon(preset.id)} size={16} /></span>
+                <span>{preset.label}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function deviceIcon(device: BrowserDevice): IconName {
+  if (device === 'phone') return 'device-phone'
+  if (device === 'tablet') return 'device-tablet'
+  if (device === 'laptop') return 'device-laptop'
+  return 'device-responsive'
 }
 
 function Empty({ title, detail }: { title: string; detail: string }): ReactElement {

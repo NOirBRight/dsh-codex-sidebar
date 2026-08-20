@@ -1,9 +1,18 @@
 /** Paint +N −M after the filename on each 主会话 edit/write tool row. */
 
-import { queueRowStats, takeRowHunk, WRITE_TOOL, type RowStat } from '../tool-open.ts'
+import { queueRowStats, takeRowHunk, WRITE_TOOL, type OpenHunk, type RowStat } from '../tool-open.ts'
 
 const MARK = 'dcs-tool-stat'
 const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
+
+export type ToolRowHunk = Pick<OpenHunk, 'before' | 'after'>
+
+const rowHunks = new WeakMap<HTMLElement, ToolRowHunk>()
+
+/** Return the exact transcript hunk bound to one rendered host tool row. */
+export function hunkForToolRow(row: HTMLElement): ToolRowHunk | undefined {
+  return rowHunks.get(row)
+}
 
 export function installToolStats(getStats: () => readonly RowStat[]): { stop: () => void; paint: () => void } {
   if (typeof document === 'undefined') {
@@ -35,6 +44,8 @@ export function decorate(stats: readonly RowStat[], root: ParentNode = document)
     const pathBtn = pathButton(row)
     const label = pathBtn === undefined ? pathLabel(row) : pathText(pathBtn)
     const stat = label === undefined ? undefined : takeRowHunk(pending, label)
+    if (stat?.before === undefined || stat.after === undefined) rowHunks.delete(row)
+    else rowHunks.set(row, { before: stat.before, after: stat.after })
     if (stat?.hunkId === undefined) delete row.dataset.dcsHunkId
     else row.dataset.dcsHunkId = stat.hunkId
     const existing = row.querySelector('.' + MARK)

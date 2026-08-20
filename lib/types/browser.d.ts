@@ -12,6 +12,19 @@ export type PageDocument = {
 };
 export type BrowserStatus = 'empty' | 'loaded' | 'unreachable';
 export type BrowserRuntimeStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed';
+export type BrowserDevice = 'fit' | 'phone' | 'tablet' | 'laptop';
+export type BrowserDevicePreset = {
+    id: BrowserDevice;
+    label: string;
+    width?: number;
+    height?: number;
+};
+export declare const BROWSER_DEVICE_PRESETS: readonly BrowserDevicePreset[];
+export declare function browserDeviceViewport(device: BrowserDevice): {
+    width: number;
+    height: number;
+} | null;
+export declare function normalizeBrowserDevice(value: unknown): BrowserDevice;
 export type BrowserIntent = {
     type: 'open-url';
     url: string;
@@ -25,6 +38,9 @@ export type BrowserIntent = {
     type: 'browser-forward';
 } | {
     type: 'browser-refresh';
+} | {
+    type: 'browser-set-device';
+    device: BrowserDevice;
 } | {
     type: 'browser-open-external';
 } | {
@@ -64,6 +80,7 @@ export type BrowserPort = {
     openExternal(url: string): void;
     isBusy(): boolean;
     manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void;
+    resize?(tabId: string, width: number, height: number): void;
     close?(tabId: string): void;
     spawn?(command: string): void;
 };
@@ -72,6 +89,7 @@ export type BrowserState = {
     draft: string;
     status: BrowserStatus;
     runtimeStatus: BrowserRuntimeStatus;
+    device: BrowserDevice;
     documentId: string | null;
     runtimeError: string | null;
     page: PageDocument | null;

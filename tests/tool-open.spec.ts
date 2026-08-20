@@ -235,6 +235,29 @@ describe('tool-open', () => {
     expect(hunkForOpen(snap, 'gateway_transport.py', 'edit', '0')).toEqual({ before: 'old\n', after: '' })
   })
 
+  it('preserves the exact before/after payload while queueing same-file rows', () => {
+    const snap = {
+      nodes: [
+        settled({ callId: 'payload-1', resultView: diffView({ path: 'src-python/vision_proxy.py', oldText: 'old\n', newText: '' }) }),
+        settled({ callId: 'payload-2', resultView: diffView({ path: 'src-python/vision_proxy.py', oldText: 'keep\n', newText: 'keep\nplus\n' }) }),
+      ],
+      runningCalls: [],
+    }
+    const rows = rowHunksFromSnapshot(snap)
+    const pending = queueRowStats(rows)
+
+    expect(takeRowHunk(pending, 'vision_proxy.py')).toMatchObject({
+      hunkId: rows[0]?.hunkId,
+      before: 'old\n',
+      after: '',
+    })
+    expect(takeRowHunk(pending, 'src-python/vision_proxy.py')).toMatchObject({
+      hunkId: rows[1]?.hunkId,
+      before: 'keep\n',
+      after: 'keep\nplus\n',
+    })
+  })
+
   it('hands each edit of the same file its own increment, in log order', () => {
     const snap = {
       nodes: [

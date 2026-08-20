@@ -139,7 +139,7 @@ function tally(changes: ReviewChange[]): ReviewScopeStats {
   let added = 0
   let removed = 0
   for (const change of changes) {
-    const diff = fileDiff(change.before, change.after)
+    const diff = lineStats(change.before, change.after)
     added += diff.added
     removed += diff.removed
   }
@@ -251,15 +251,100 @@ export type FileDiff = {
   lines: DiffLine[]
 }
 
-export function fileDiff(before: string, after: string): FileDiff {
-  const lines = lineDiff(splitLines(before), splitLines(after))
+const MAX_DIFF_LINES = 4_000
+const MAX_DIFF_CELLS = 250_000
+const CONTEXT = 3
+
+function sharedEnds(oldLines: readonly string[], newLines: readonly string[]): { prefix: number; suffix: number } {
+  let prefix = 0
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1
+  let suffix = 0
+  while (
+    suffix < oldLines.length - prefix
+    && suffix < newLines.length - prefix
+    && oldLines[oldLines.length - suffix - 1] === newLines[newLines.length - suffix - 1]
+  ) suffix += 1
+  return { prefix, suffix }
+}
+
+function tooLarge(oldCount: number, newCount: number): boolean {
+  return oldCount > MAX_DIFF_LINES
+    || newCount > MAX_DIFF_LINES
+    || (oldCount + 1) * (newCount + 1) > MAX_DIFF_CELLS
+}
+
+function countMarks(lines: readonly DiffLine[]): { added: number; removed: number } {
   let added = 0
   let removed = 0
   for (const line of lines) {
     if (line.kind === 'add') added += 1
     if (line.kind === 'del') removed += 1
   }
-  return { added, removed, hunk: hunkHeader(lines), lines }
+  return { added, removed }
+}
+
+function shiftLineNos(lines: readonly DiffLine[], offset: number): DiffLine[] {
+  return lines.map((line) => ({
+    ...line,
+    oldNo: line.oldNo === null ? null : line.oldNo + offset,
+    newNo: line.newNo === null ? null : line.newNo + offset,
+  }))
+}
+
+/** Keep ctx only near an add/del so two distant edits do not paint the whole file. */
+function compactHunk(lines: readonly DiffLine[], context: number): DiffLine[] {
+  const keep = new Array<boolean>(lines.length).fill(false)
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i]?.kind === 'ctx') continue
+    const from = Math.max(0, i - context)
+    const to = Math.min(lines.length - 1, i + context)
+    for (let j = from; j <= to; j += 1) keep[j] = true
+  }
+  const out: DiffLine[] = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (keep[i] === true && line !== undefined) out.push(line)
+  }
+  return out
+}
+
+/** +/− for badges. Strip shared ends, then LCS only the unique middle. */
+export function lineStats(before: string, after: string): { added: number; removed: number } {
+  const oldLines = splitLines(before)
+  const newLines = splitLines(after)
+  const { prefix, suffix } = sharedEnds(oldLines, newLines)
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix)
+  const newMid = newLines.slice(prefix, newLines.length - suffix)
+  if (oldMid.length === 0 && newMid.length === 0) return { added: 0, removed: 0 }
+  if (tooLarge(oldMid.length, newMid.length)) return { added: newMid.length, removed: oldMid.length }
+  return countMarks(lineDiff(oldMid, newMid))
+}
+
+export function fileDiff(before: string, after: string): FileDiff {
+  const oldLines = splitLines(before)
+  const newLines = splitLines(after)
+  const { prefix, suffix } = sharedEnds(oldLines, newLines)
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix)
+  const newMid = newLines.slice(prefix, newLines.length - suffix)
+  if (tooLarge(oldMid.length, newMid.length)) {
+    const stats = { added: newMid.length, removed: oldMid.length }
+    return { ...stats, hunk: '@@ diff truncated: file too large @@', lines: [] }
+  }
+  const mid = shiftLineNos(lineDiff(oldMid, newMid), prefix)
+  const stats = countMarks(mid)
+  const preFrom = Math.max(0, prefix - CONTEXT)
+  const lines: DiffLine[] = []
+  for (let i = preFrom; i < prefix; i += 1) {
+    lines.push({ kind: 'ctx', text: oldLines[i] ?? '', oldNo: i + 1, newNo: i + 1 })
+  }
+  lines.push(...compactHunk(mid, CONTEXT))
+  const sufCount = Math.min(CONTEXT, suffix)
+  const sufOld = oldLines.length - suffix
+  const sufNew = newLines.length - suffix
+  for (let i = 0; i < sufCount; i += 1) {
+    lines.push({ kind: 'ctx', text: oldLines[sufOld + i] ?? '', oldNo: sufOld + i + 1, newNo: sufNew + i + 1 })
+  }
+  return { ...stats, hunk: hunkHeader(lines), lines }
 }
 
 function toFile(change: ReviewChange): ReviewFile {

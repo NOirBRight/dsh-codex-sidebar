@@ -17,12 +17,40 @@ export type PageDocument = {
 export type BrowserStatus = 'empty' | 'loaded' | 'unreachable'
 export type BrowserRuntimeStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed'
 
+export type BrowserDevice = 'fit' | 'phone' | 'tablet' | 'laptop'
+
+export type BrowserDevicePreset = {
+  id: BrowserDevice
+  label: string
+  width?: number
+  height?: number
+}
+
+export const BROWSER_DEVICE_PRESETS: readonly BrowserDevicePreset[] = [
+  { id: 'fit', label: '适应窗口' },
+  { id: 'phone', label: '手机 390×844', width: 390, height: 844 },
+  { id: 'tablet', label: '平板 768×1024', width: 768, height: 1024 },
+  { id: 'laptop', label: '笔记本 1280×800', width: 1280, height: 800 },
+]
+
+export function browserDeviceViewport(device: BrowserDevice): { width: number; height: number } | null {
+  const preset = BROWSER_DEVICE_PRESETS.find((item) => item.id === device)
+  return preset?.width === undefined || preset.height === undefined
+    ? null
+    : { width: preset.width, height: preset.height }
+}
+
+export function normalizeBrowserDevice(value: unknown): BrowserDevice {
+  return value === 'phone' || value === 'tablet' || value === 'laptop' ? value : 'fit'
+}
+
 export type BrowserIntent =
   | { type: 'open-url'; url: string; reveal?: boolean }
   | { type: 'browser-follow'; url: string }
   | { type: 'browser-back' }
   | { type: 'browser-forward' }
   | { type: 'browser-refresh' }
+  | { type: 'browser-set-device'; device: BrowserDevice }
   | { type: 'browser-open-external' }
   | { type: 'browser-runtime-sync'; tabId: string; url: string; title: string; documentId: string; status: BrowserRuntimeStatus; error?: string }
   | { type: 'browser-set-annotate'; on: boolean }
@@ -37,6 +65,7 @@ export type BrowserPort = {
   openExternal(url: string): void
   isBusy(): boolean
   manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void
+  resize?(tabId: string, width: number, height: number): void
   close?(tabId: string): void
   spawn?(command: string): void
 }
@@ -46,6 +75,7 @@ export type BrowserState = {
   draft: string
   status: BrowserStatus
   runtimeStatus: BrowserRuntimeStatus
+  device: BrowserDevice
   documentId: string | null
   runtimeError: string | null
   page: PageDocument | null
@@ -169,6 +199,10 @@ export function reduceBrowser(
       if (current.url.length === 0) return { state: current, effects: [] }
       return { state: show(current, current.url, port, current.history, current.index), effects: [] }
     }
+    case 'browser-set-device': {
+      const device = normalizeBrowserDevice((intent as BrowserIntent & { type: 'browser-set-device' }).device)
+      return { state: flags({ ...current, device }), effects: [] }
+    }
     case 'browser-open-external': {
       if (current.url.length > 0) port?.openExternal(current.url)
       return { state: current, effects: [] }
@@ -253,6 +287,7 @@ function hydrate(state: Partial<BrowserState> & { url: string }): BrowserState {
     draft: state.draft ?? state.url,
     status: state.status ?? (state.url.length === 0 ? 'empty' : 'unreachable'),
     runtimeStatus: state.runtimeStatus ?? 'idle',
+    device: normalizeBrowserDevice(state.device),
     documentId: state.documentId ?? null,
     runtimeError: state.runtimeError ?? null,
     page: state.page ?? null,

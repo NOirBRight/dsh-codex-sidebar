@@ -40,6 +40,18 @@ describe('host Files', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  it('still lists a later sibling file when an earlier directory is huge', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dcs-tree-cap-'))
+    mkdirSync(join(root, 'flutter'))
+    for (let i = 0; i < 450; i += 1) writeFileSync(join(root, 'flutter', 'f' + String(i) + '.cc'), 'x')
+    mkdirSync(join(root, 'generated'))
+    writeFileSync(join(root, 'generated', 'grok-imagine-probe.png'), PNG)
+    const files = createFsFiles(() => root)
+    const paths = files.tree().map((node) => node.path)
+    expect(paths).toContain('generated/grok-imagine-probe.png')
+    rmSync(root, { recursive: true, force: true })
+  })
+
   it('counts tracked diffs and untracked files in stats()', () => {
     const root = mkdtempSync(join(tmpdir(), 'dcs-stats-'))
     execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' })

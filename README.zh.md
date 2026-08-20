@@ -32,14 +32,14 @@
 需要 DeepSeek Harness 0.1.0-rc.6 或更高：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.2
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.0
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.2
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。

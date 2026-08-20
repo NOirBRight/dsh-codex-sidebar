@@ -36,6 +36,10 @@ export function createHostBrowser(opts: {
               : opts.managed?.runtime.ensure(tab, url)
         void command?.catch(() => undefined)
       },
+      resize(tabId, width, height) {
+        const command = opts.managed?.runtime.resize({ sessionId: opts.managed.sessionId, tabId }, width, height)
+        void command?.catch(() => undefined)
+      },
       close(tabId) {
         void opts.managed?.runtime.close({ sessionId: opts.managed.sessionId, tabId })
       },

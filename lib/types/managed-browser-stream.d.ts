@@ -4,6 +4,9 @@ import type { Duplex } from 'node:stream';
 import type { ManagedBrowserRuntime, ManagedTabKey } from './managed-browser-runtime.ts';
 export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
 export declare const MANAGED_BROWSER_STREAM_VERSION = 1;
+export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
+export declare const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560;
+export declare const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048;
 export type BrowserStreamTicket = {
     ticket: string;
     path: string;
@@ -32,4 +35,5 @@ export declare class ManagedBrowserStream {
 }
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;
+export declare function browserStreamCaptureScale(width: number, height: number): number;
 //# sourceMappingURL=managed-browser-stream.d.ts.map
