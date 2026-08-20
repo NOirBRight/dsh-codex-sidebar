@@ -79,6 +79,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
       if (frame.style.getPropertyValue('--dcs-details-track') !== details) {
         frame.style.setProperty('--dcs-details-track', details)
       }
+      if (frame.getAttribute('data-dcs-pin') !== '') frame.setAttribute('data-dcs-pin', '')
       if (collapsed === false) frame.setAttribute('data-dcs-open', '')
       else frame.removeAttribute('data-dcs-open')
     }

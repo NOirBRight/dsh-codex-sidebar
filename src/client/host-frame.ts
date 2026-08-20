@@ -21,4 +21,5 @@ export function clearDetailsTrackStyle(frame: {
 }): void {
   frame.style.setProperty('--dcs-details-track', '0px')
   frame.removeAttribute('data-dcs-open')
+  frame.removeAttribute('data-dcs-pin')
 }

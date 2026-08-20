@@ -28,5 +28,8 @@ describe('侧栏开关 placement', () => {
     expect(index).not.toContain('conversation.session.header.utilities')
     expect(css).not.toContain('left: calc(100% - var(--dcs-details-track, 0px))')
     expect(css).toContain('.dcs-overlay')
+    expect(css).toContain('[class$="_frame"][data-dcs-pin]')
+    expect(css).not.toContain('[class$="_frame"]:has([data-shell-overlay])')
+    expect(drawer).toContain("setAttribute('data-dcs-pin'")
   })
 })

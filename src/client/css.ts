@@ -757,7 +757,10 @@ button.dcs-toggle {
 [class$="_frame"]:not([data-details-collapsed]) [class*="detailsCol"] {
   overflow: visible !important;
 }
-[class$="_frame"]:has([data-shell-overlay]) {
+/* Pin only while a 主会话 is open. :has([data-shell-overlay]) is also true
+   for the assistant seat, which would crush the host workspace rail to the
+   56px fallback on the empty chooser. */
+[class$="_frame"][data-dcs-pin] {
   grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
   transition: none !important;
 }

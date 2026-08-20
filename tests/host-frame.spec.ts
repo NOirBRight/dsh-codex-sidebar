@@ -30,6 +30,6 @@ describe('AppFrame details track', () => {
       removeAttribute(name: string) { calls.push('remove:' + name) },
     }
     clearDetailsTrackStyle(frame)
-    expect(calls).toEqual(['--dcs-details-track=0px', 'remove:data-dcs-open'])
+    expect(calls).toEqual(['--dcs-details-track=0px', 'remove:data-dcs-open', 'remove:data-dcs-pin'])
   })
 })
