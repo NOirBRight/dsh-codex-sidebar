@@ -15,7 +15,7 @@ import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
 import { installAnnotationChips, sourceForFlowKey } from './annotation-chips.ts'
 import { installToolStats } from './tool-stats.ts'
-import { rowStatsFromSnapshot } from '../tool-open.ts'
+import { rowHunksFromSnapshot } from '../tool-open.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -43,7 +43,7 @@ export function apply(ctx: ClientContext): void {
   }
   ctx.effect(() => {
     let lastSource: unknown
-    let lastStats: ReturnType<typeof rowStatsFromSnapshot> = []
+    let lastStats: ReturnType<typeof rowHunksFromSnapshot> = []
     const readStats = () => {
       const current = ctx.sessions.list.getSnapshot().current
       if (current === undefined) return []
@@ -52,7 +52,7 @@ export function apply(ctx: ClientContext): void {
       const source = binding.session.getSnapshot()
       if (source === lastSource) return lastStats
       lastSource = source
-      lastStats = rowStatsFromSnapshot(source)
+      lastStats = rowHunksFromSnapshot(source)
       return lastStats
     }
     const hook = installToolStats(readStats)

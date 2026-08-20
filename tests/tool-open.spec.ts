@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hunkForOpen, queueRowStats, rowStatsFromSnapshot, statForLabel, statsFromSnapshot, takeRowStat, viewForTool } from '../src/tool-open.ts'
+import { hunkForOpen, queueRowStats, rowHunksFromSnapshot, rowStatsFromSnapshot, statForLabel, statsFromSnapshot, takeRowHunk, takeRowStat, viewForTool } from '../src/tool-open.ts'
 
 type DiffHunk = { path: string; oldText: string | null; newText: string }
 
@@ -215,6 +215,24 @@ describe('tool-open', () => {
       after: '# created\n# extra\n',
     })
     expect(hunkForOpen(snap, 'diff-display-test.md', 'write')?.before).toBe('')
+  })
+
+  it('opens the exact same-file hunk selected from an old transcript', () => {
+    const snap = {
+      nodes: [
+        settled({ callId: 'old-1', resultView: diffView({ path: 'src-python/gateway_transport.py', oldText: 'old\n', newText: '' }) }),
+        settled({ callId: 'old-2', resultView: diffView({ path: 'src-python/gateway_transport.py', oldText: 'a\n', newText: 'a\nb\n' }) }),
+        settled({ callId: 'old-3', resultView: diffView({ path: 'src-python/gateway_transport.py', oldText: 'x\n', newText: 'y\n' }) }),
+      ],
+      runningCalls: [],
+    }
+    const rows = rowHunksFromSnapshot(snap)
+    expect(rows.map((row) => row.hunkId)).toEqual(['0', '1', '2'])
+    const pending = queueRowStats(rows)
+    expect(takeRowHunk(pending, 'gateway_transport.py')?.hunkId).toBe('0')
+    expect(takeRowHunk(pending, 'gateway_transport.py')?.hunkId).toBe('1')
+    expect(hunkForOpen(snap, 'gateway_transport.py', 'edit', '1')).toEqual({ before: 'a\n', after: 'a\nb\n' })
+    expect(hunkForOpen(snap, 'gateway_transport.py', 'edit', '0')).toEqual({ before: 'old\n', after: '' })
   })
 
   it('hands each edit of the same file its own increment, in log order', () => {

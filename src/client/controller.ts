@@ -209,12 +209,14 @@ export class SidebarController {
     if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
     const original = workspaces.openPath.bind(workspaces)
     let lastTool: string | undefined
+    let lastHunkId: string | undefined
     if (typeof document !== 'undefined') {
       document.addEventListener('pointerdown', (event) => {
         const raw = event.target
         const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
         const host = node instanceof Element ? node.closest('[data-tool]') : null
         lastTool = host instanceof Element ? host.getAttribute('data-tool') ?? undefined : undefined
+        lastHunkId = host instanceof HTMLElement ? host.dataset.dcsHunkId : undefined
       }, true)
     }
     workspaces.openPath = async (path: string): Promise<void> => {
@@ -230,8 +232,9 @@ export class SidebarController {
       const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
       const view = viewForTool(lastTool)
       const binding = this.#ctx.sessions.binding(sessionId as never)
-      const hunk = binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool)
+      const hunk = binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool, lastHunkId)
       lastTool = undefined
+      lastHunkId = undefined
       await this.dispatch(String(sessionId), {
         type: 'open-path',
         path: relativize(path, cwd),

@@ -23,21 +23,29 @@ export type RowStat = {
     added: number;
     removed: number;
 };
+export type RowHunkStat = RowStat & {
+    hunkId: string;
+};
 export declare function rowStatsFromSnapshot(snapshot: unknown): RowStat[];
-export declare function queueRowStats(rows: readonly RowStat[]): Map<string, Array<{
+/** Same row stats with a snapshot-local identity for exact path opening. */
+export declare function rowHunksFromSnapshot(snapshot: unknown): RowHunkStat[];
+type QueuedRow = {
     added: number;
     removed: number;
-}>>;
-export declare function takeRowStat(pending: Map<string, Array<{
-    added: number;
-    removed: number;
-}>>, label: string): {
+    hunkId?: string;
+};
+export declare function queueRowStats(rows: readonly (RowStat & {
+    hunkId?: string;
+})[]): Map<string, QueuedRow[]>;
+export declare function takeRowStat(pending: Map<string, QueuedRow[]>, label: string): {
     added: number;
     removed: number;
 } | undefined;
+export declare function takeRowHunk(pending: Map<string, QueuedRow[]>, label: string): QueuedRow | undefined;
 export declare function reviewChangesFromSnapshot(snapshot: unknown): ReviewChange[];
-export declare function hunkForOpen(snapshot: unknown, path: string, tool?: string): {
+export declare function hunkForOpen(snapshot: unknown, path: string, tool?: string, hunkId?: string): {
     before: string;
     after: string;
 } | undefined;
+export {};
 //# sourceMappingURL=tool-open.d.ts.map

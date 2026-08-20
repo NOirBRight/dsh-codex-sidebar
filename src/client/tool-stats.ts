@@ -1,6 +1,6 @@
 /** Paint +N −M after the filename on each 主会话 edit/write tool row. */
 
-import { queueRowStats, takeRowStat, WRITE_TOOL, type RowStat } from '../tool-open.ts'
+import { queueRowStats, takeRowHunk, WRITE_TOOL, type RowStat } from '../tool-open.ts'
 
 const MARK = 'dcs-tool-stat'
 const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
@@ -34,7 +34,9 @@ export function decorate(stats: readonly RowStat[], root: ParentNode = document)
     if (!WRITE_TOOL.test(tool)) continue
     const pathBtn = pathButton(row)
     const label = pathBtn === undefined ? pathLabel(row) : pathText(pathBtn)
-    const stat = label === undefined ? undefined : takeRowStat(pending, label)
+    const stat = label === undefined ? undefined : takeRowHunk(pending, label)
+    if (stat?.hunkId === undefined) delete row.dataset.dcsHunkId
+    else row.dataset.dcsHunkId = stat.hunkId
     const existing = row.querySelector('.' + MARK)
     if (stat === undefined || (stat.added === 0 && stat.removed === 0)) {
       existing?.remove()

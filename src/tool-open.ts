@@ -8,6 +8,7 @@ export const WRITE_TOOL = /^(write|edit|str_replace|strreplace|search_replace|ap
 export type OpenHunk = { before: string; after: string; op: 'write' | 'edit' }
 
 let collecting: Array<OpenHunk & { path: string }> | undefined
+const collectedCache = new WeakMap<object, { stats: Stats; hunks: Array<OpenHunk & { path: string }> }>()
 
 export function viewForTool(toolName: string | undefined): 'preview' | 'diff' {
   if (toolName !== undefined && WRITE_TOOL.test(toolName)) return 'diff'
@@ -41,6 +42,7 @@ export function statsFromSnapshot(snapshot: unknown): Record<string, { added: nu
 }
 
 export type RowStat = { path: string; added: number; removed: number }
+export type RowHunkStat = RowStat & { hunkId: string }
 
 export function rowStatsFromSnapshot(snapshot: unknown): RowStat[] {
   return collectFromSnapshot(snapshot).hunks.map((hunk) => {
@@ -49,20 +51,35 @@ export function rowStatsFromSnapshot(snapshot: unknown): RowStat[] {
   })
 }
 
-export function queueRowStats(rows: readonly RowStat[]): Map<string, Array<{ added: number; removed: number }>> {
-  const pending = new Map<string, Array<{ added: number; removed: number }>>()
+/** Same row stats with a snapshot-local identity for exact path opening. */
+export function rowHunksFromSnapshot(snapshot: unknown): RowHunkStat[] {
+  return indexedHunks(snapshot).map((hunk) => {
+    const diff = fileDiff(hunk.before, hunk.after)
+    return { path: hunk.path, added: diff.added, removed: diff.removed, hunkId: hunk.hunkId }
+  })
+}
+
+type QueuedRow = { added: number; removed: number; hunkId?: string }
+
+export function queueRowStats(rows: readonly (RowStat & { hunkId?: string })[]): Map<string, QueuedRow[]> {
+  const pending = new Map<string, QueuedRow[]>()
   for (const row of rows) {
     const list = pending.get(row.path) ?? []
-    list.push({ added: row.added, removed: row.removed })
+    list.push({ added: row.added, removed: row.removed, ...(row.hunkId === undefined ? {} : { hunkId: row.hunkId }) })
     pending.set(row.path, list)
   }
   return pending
 }
 
 export function takeRowStat(
-  pending: Map<string, Array<{ added: number; removed: number }>>,
+  pending: Map<string, QueuedRow[]>,
   label: string,
 ): { added: number; removed: number } | undefined {
+  const next = takeRowHunk(pending, label)
+  return next === undefined ? undefined : { added: next.added, removed: next.removed }
+}
+
+export function takeRowHunk(pending: Map<string, QueuedRow[]>, label: string): QueuedRow | undefined {
   const text = label.trim().replace(/\\/g, '/')
   if (text.length === 0) return undefined
   const keys = [...pending.keys()]
@@ -94,9 +111,13 @@ export function reviewChangesFromSnapshot(snapshot: unknown): ReviewChange[] {
   return [...byPath.values()]
 }
 
-export function hunkForOpen(snapshot: unknown, path: string, tool?: string): { before: string; after: string } | undefined {
-  const hunks = collectFromSnapshot(snapshot).hunks.filter((hunk) => statForLabel({ [hunk.path]: { added: 1, removed: 0 } }, path) !== undefined)
+export function hunkForOpen(snapshot: unknown, path: string, tool?: string, hunkId?: string): { before: string; after: string } | undefined {
+  const hunks = indexedHunks(snapshot).filter((hunk) => statForLabel({ [hunk.path]: { added: 1, removed: 0 } }, path) !== undefined)
   if (hunks.length === 0) return undefined
+  if (hunkId !== undefined) {
+    const exact = hunks.find((hunk) => hunk.hunkId === hunkId)
+    if (exact !== undefined) return { before: exact.before, after: exact.after }
+  }
   const want = tool !== undefined && /^write$/i.test(tool) ? 'write' : tool !== undefined && WRITE_TOOL.test(tool) ? 'edit' : undefined
   const picked = want === undefined ? hunks : hunks.filter((hunk) => hunk.op === want)
   const use = picked.length > 0 ? picked : hunks
@@ -104,10 +125,16 @@ export function hunkForOpen(snapshot: unknown, path: string, tool?: string): { b
   return last === undefined ? undefined : { before: last.before, after: last.after }
 }
 
+function indexedHunks(snapshot: unknown): Array<OpenHunk & { path: string; hunkId: string }> {
+  return collectFromSnapshot(snapshot).hunks.map((hunk, index) => ({ ...hunk, hunkId: String(index) }))
+}
+
 function collectFromSnapshot(snapshot: unknown): { stats: Stats; hunks: Array<OpenHunk & { path: string }> } {
   const stats: Stats = {}
   const hunks: Array<OpenHunk & { path: string }> = []
   if (!isRecord(snapshot)) return { stats, hunks }
+  const cached = collectedCache.get(snapshot)
+  if (cached !== undefined) return cached
   collecting = hunks
   try {
     const seen = new Set<object>()
@@ -122,7 +149,9 @@ function collectFromSnapshot(snapshot: unknown): { stats: Stats; hunks: Array<Op
   } finally {
     collecting = undefined
   }
-  return { stats, hunks }
+  const collected = { stats, hunks }
+  collectedCache.set(snapshot, collected)
+  return collected
 }
 
 type CallState = 'settled' | 'running'
