@@ -12,7 +12,7 @@
 
 - **Files（文件）** — 只读预览（源码、Markdown、图片）和工作区树。点对话里的路径会填进来。
 - **Review（审查）** — 先看本轮变更，再看工作区剩余差异。只读：不能暂存、还原或提交。
-- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作本机网页，侧栏开着或关着都行。
+- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作本机网页，侧栏开着或关着都行。空闲页会回收；禁止在里面再打开 DSH Web 自己。
 - **Terminal（终端）** — 给人用的伪终端（有 `script` 就用），不是智能体的命令行。
 - **批注** — 点文件行或页面写备注。发送后官方气泡保持原样，编号标签在气泡下方。定位信息和截图作为同一条用户消息的模型证据，不塞进气泡。
 - **编辑行的 +/−** — 每一行 edit/write 显示这一次的增减，跟在文件名后面。

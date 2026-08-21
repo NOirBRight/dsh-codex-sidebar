@@ -1,5 +1,8 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts';
+export declare const MANAGED_BROWSER_MAX_LIVE_PAGES = 3;
+export declare const MANAGED_BROWSER_IDLE_MS = 120000;
+export declare const PLAYWRIGHT_IGNORE_DEFAULT_ARGS: string[];
 export type ManagedTabKey = {
     sessionId: string;
     tabId: string;
@@ -125,6 +128,9 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     launch?: LaunchContext;
     onProjection?: (projection: ManagedBrowserProjection) => void;
     onPopup?: (opener: ManagedTabKey, page: unknown) => void;
+    now?: () => number;
+    maxLivePages?: number;
+    idleMs?: number;
 };
 export declare class ManagedBrowserRuntime {
     #private;
@@ -135,6 +141,9 @@ export declare class ManagedBrowserRuntime {
     list(): ManagedBrowserProjection[];
     projection(tab: ManagedTabKey): ManagedBrowserProjection | undefined;
     ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection>;
+    closeSession(sessionId: string): Promise<void>;
+    reap(): Promise<void>;
+    touch(tab: ManagedTabKey): void;
     back(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     forward(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;

@@ -5,7 +5,17 @@ import { access, mkdir, readlink, readdir, unlink } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
+import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
+
+export const MANAGED_BROWSER_MAX_LIVE_PAGES = 3
+export const MANAGED_BROWSER_IDLE_MS = 120_000
+export const PLAYWRIGHT_IGNORE_DEFAULT_ARGS = [
+  '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+]
 
 export type ManagedTabKey = { sessionId: string; tabId: string }
 
@@ -108,6 +118,9 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   launch?: LaunchContext
   onProjection?: (projection: ManagedBrowserProjection) => void
   onPopup?: (opener: ManagedTabKey, page: unknown) => void
+  now?: () => number
+  maxLivePages?: number
+  idleMs?: number
 }
 
 type RefTarget = { documentId: string; selector: string }
@@ -125,6 +138,8 @@ type PageRecord = {
   refs: Map<string, RefTarget>
   error?: string
   command: Promise<void>
+  lastAccess: number
+  blocked?: boolean
 }
 
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
@@ -143,6 +158,10 @@ export class ManagedBrowserRuntime {
   #captureSeq = 0
   #onProjection: ((projection: ManagedBrowserProjection) => void) | undefined
   #onPopup: ((opener: ManagedTabKey, page: unknown) => void) | undefined
+  #now: () => number
+  #maxLivePages: number
+  #idleMs: number
+  #reaping = false
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
     this.profileDir = resolve(opts.profileDir ?? defaultProfileDir())
@@ -151,6 +170,9 @@ export class ManagedBrowserRuntime {
     this.#launch = opts.launch ?? launchPlaywright
     this.#onProjection = opts.onProjection
     this.#onPopup = opts.onPopup
+    this.#now = opts.now ?? Date.now
+    this.#maxLivePages = opts.maxLivePages ?? MANAGED_BROWSER_MAX_LIVE_PAGES
+    this.#idleMs = opts.idleMs ?? MANAGED_BROWSER_IDLE_MS
   }
 
   keyOf(tab: ManagedTabKey): string {
@@ -167,12 +189,31 @@ export class ManagedBrowserRuntime {
   }
 
   async ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection> {
+    const blocked = harnessSelfBlockReason(url)
+    if (blocked !== undefined) {
+      if (this.#pages.has(this.keyOf(tab))) await this.close(tab)
+      return {
+        key: this.keyOf(tab),
+        sessionId: tab.sessionId,
+        tabId: tab.tabId,
+        url,
+        title: '',
+        documentId: this.keyOf(tab) + ':blocked',
+        status: 'error',
+        error: blocked,
+      }
+    }
     const record = await this.#record(tab)
-    if (record.status === 'ready' && record.page.url() === url) return project(record)
+    if (record.status === 'ready' && record.page.url() === url) {
+      this.#touch(record)
+      await this.reap()
+      return project(record)
+    }
     await this.#enqueue(record, async () => {
       record.status = 'loading'
       record.url = url
       delete record.error
+      delete record.blocked
       this.#publish(record)
       try {
         await record.page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS })
@@ -181,7 +222,37 @@ export class ManagedBrowserRuntime {
         this.#fail(record, error)
       }
     })
+    this.#touch(record)
+    await this.reap()
     return project(record)
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const tabs = [...this.#pages.values()].filter((record) => record.tab.sessionId === sessionId).map((record) => record.tab)
+    await Promise.all(tabs.map((tab) => this.close(tab)))
+  }
+
+  async reap(): Promise<void> {
+    if (this.#reaping) return
+    this.#reaping = true
+    try {
+      const now = this.#now()
+      for (const record of [...this.#pages.values()]) {
+        if (now - record.lastAccess >= this.#idleMs) await this.close(record.tab)
+      }
+      const live = [...this.#pages.values()].sort((left, right) => left.lastAccess - right.lastAccess)
+      while (live.length > this.#maxLivePages) {
+        const oldest = live.shift()
+        if (oldest !== undefined) await this.close(oldest.tab)
+      }
+    } finally {
+      this.#reaping = false
+    }
+  }
+
+  touch(tab: ManagedTabKey): void {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record !== undefined) this.#touch(record)
   }
 
   async back(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined> {
@@ -210,6 +281,7 @@ export class ManagedBrowserRuntime {
   async snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
+    this.#touch(record)
     const nodes = await this.#nodes(record)
     return {
       url: record.url,
@@ -323,15 +395,20 @@ export class ManagedBrowserRuntime {
       documentId: key + ':d0',
       refs: new Map(),
       command: Promise.resolve(),
+      lastAccess: this.#now(),
     }
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return
+      record.url = frame.url()
+      if (record.blocked) {
+        this.#publish(record)
+        return
+      }
       record.documentSeq += 1
       record.status = 'loading'
       delete record.error
       record.documentId = record.key + ':d' + record.documentSeq
       record.refs.clear()
-      record.url = frame.url()
       this.#publish(record)
     })
     page.on('domcontentloaded', () => { void this.#refresh(record).catch((error) => { this.#fail(record, error) }) })
@@ -362,7 +439,7 @@ export class ManagedBrowserRuntime {
         headless: this.headless,
         viewport: DEFAULT_VIEWPORT,
         deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
-        ignoreDefaultArgs: ['--disable-dev-shm-usage'],
+        ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
       })
     })()
     this.#context = pending
@@ -406,9 +483,29 @@ export class ManagedBrowserRuntime {
   async #refresh(record: PageRecord): Promise<void> {
     record.url = record.page.url()
     record.title = await record.page.title().catch(() => record.url)
+    if (record.blocked) {
+      record.status = 'error'
+      this.#publish(record)
+      return
+    }
+    if (isChallengePage(record.url, record.title)) {
+      record.blocked = true
+      record.status = 'error'
+      record.error = CHALLENGE_BLOCK_MESSAGE
+      this.#publish(record)
+      await record.page.goto('about:blank').catch(() => undefined)
+      record.status = 'error'
+      record.error = CHALLENGE_BLOCK_MESSAGE
+      this.#publish(record)
+      return
+    }
     record.status = 'ready'
     delete record.error
     this.#publish(record)
+  }
+
+  #touch(record: PageRecord): void {
+    record.lastAccess = this.#now()
   }
 
   #fail(record: PageRecord, error: unknown): void {
@@ -448,6 +545,7 @@ export class ManagedBrowserRuntime {
   async #act(tab: ManagedTabKey, ref: string, action: (locator: LocatorLike) => Promise<void>): Promise<ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
+    this.#touch(record)
     const target = record.refs.get(ref)
     if (target === undefined) {
       if (/^@d\d+e\d+$/.test(ref)) return { ok: false, code: 'stale-ref', message: '页面已导航，先重新 browser_snapshot' }

@@ -516,12 +516,13 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         if (tab.kind === 'Files' && tab.target) {
           files = { ...files, path: tab.target, pendingMark: null, pendingRect: null, pendingSelection: null, notePos: null, noteDraft: '', editingId: null }
         }
-        if (tab.kind === 'Browser' && pages[tab.id] === undefined && tab.target.length > 0) {
-          const loaded = reduceBrowser(emptyBrowser(), { type: 'open-url', url: tab.target } as BrowserIntent, opts.browser)
-          if (loaded !== undefined) {
-            putBrowser(tab.id, loaded.state)
-            opts.browser?.manage?.(tab.id, loaded.state.url, 'open')
+        if (tab.kind === 'Browser' && tab.target.length > 0) {
+          if (pages[tab.id] === undefined) {
+            const loaded = reduceBrowser(emptyBrowser(), { type: 'open-url', url: tab.target } as BrowserIntent, opts.browser)
+            if (loaded !== undefined) putBrowser(tab.id, loaded.state)
           }
+          const href = pages[tab.id]?.url || tab.target
+          if (href.length > 0) opts.browser?.manage?.(tab.id, href, 'open')
         }
         const selectedBrowser = pages[tab.id]
         const viewport = tab.kind === 'Browser' && selectedBrowser !== undefined

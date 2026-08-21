@@ -56,7 +56,7 @@ class FakePage {
   }
 }
 
-function harness(): {
+function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = {}): {
   runtime: ManagedBrowserRuntime
   pages: FakePage[]
   closed: { context: boolean; sessions: number }
@@ -83,6 +83,7 @@ function harness(): {
       on() {},
       async close() { closed.context = true },
     }),
+    ...opts,
   })
   return { runtime, pages, closed }
 }
@@ -248,8 +249,65 @@ describe('ManagedBrowserRuntime', () => {
     })
     await runtime.ensure({ sessionId: 'shm', tabId: 'tab' }, 'https://example.com')
     expect(ignored).toContain('--disable-dev-shm-usage')
+    expect(ignored).toContain('--disable-background-timer-throttling')
+    expect(ignored).toContain('--disable-backgrounding-occluded-windows')
+    expect(ignored).toContain('--disable-renderer-backgrounding')
     expect(scale).toBe(2)
     await runtime.dispose()
+  })
+
+  it('does not spawn a Page for the DSH web GUI itself', async () => {
+    const box = harness()
+    await expect(box.runtime.ensure({ sessionId: 'nest', tabId: 'b' }, 'http://127.0.0.1:3080/')).resolves.toMatchObject({
+      status: 'error',
+      url: 'http://127.0.0.1:3080/',
+    })
+    expect(box.pages).toHaveLength(0)
+    await box.runtime.dispose()
+  })
+
+  it('stops a Cloudflare challenge page instead of leaving PoW running', async () => {
+    class ChallengePage extends FakePage {
+      override async goto(url: string): Promise<void> {
+        this.history.push(this.currentUrl)
+        this.currentUrl = url
+        this.currentTitle = url.includes('chatgpt.com') ? 'Just a moment...' : ''
+        this.emit('framenavigated', this.frame)
+      }
+    }
+    const page = new ChallengePage()
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-cf-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    await expect(runtime.ensure({ sessionId: 'cf', tabId: 'b' }, 'https://chatgpt.com/codex/settings/usage')).resolves.toMatchObject({
+      status: 'error',
+    })
+    expect(page.currentUrl).toBe('about:blank')
+    await runtime.dispose()
+  })
+
+  it('closes every Page for one session and evicts idle overflow Pages', async () => {
+    let now = 1_000
+    const box = harness({ now: () => now, maxLivePages: 2, idleMs: 50 })
+    await box.runtime.ensure({ sessionId: 's1', tabId: 'a' }, 'https://one.example')
+    await box.runtime.ensure({ sessionId: 's2', tabId: 'a' }, 'https://two.example')
+    await box.runtime.closeSession('s1')
+    expect(box.pages[0]?.closed).toBe(true)
+    expect(box.pages[1]?.closed).toBe(false)
+
+    now = 1_020
+    await box.runtime.ensure({ sessionId: 's3', tabId: 'a' }, 'https://three.example')
+    await box.runtime.ensure({ sessionId: 's4', tabId: 'a' }, 'https://four.example')
+    expect(box.pages.filter((page) => !page.closed)).toHaveLength(2)
+    expect(box.pages[1]?.closed).toBe(true)
+    await box.runtime.dispose()
   })
 
   it('prefers an installed Playwright Chromium over system Chrome', async () => {

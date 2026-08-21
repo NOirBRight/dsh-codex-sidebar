@@ -24,6 +24,7 @@ export const BROWSER_DRIVE_GUIDANCE = [
   '操作它只用 browser_tabs / browser_open / browser_snapshot / browser_click / browser_fill。',
   '不要用 computer-use、Orca、桌面截图、系统 Chrome，也不要用 bash sleep / 提权沙箱来等页面。',
   'browser_open 会静默打开，不必先拉开侧栏；随后 browser_snapshot 获取当前 document-scoped ref。',
+  '不要用托管 Browser 打开 DSH Web 自己（127.0.0.1:3080/3082 或 dsh 前端域名），那会 GUI 套娃空转。',
   '页面导航后旧 ref 会失效，重新 snapshot。Side Chat / Fork 不能用这组工具。',
 ].join('\n')
 

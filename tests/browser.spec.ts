@@ -66,14 +66,17 @@ const OTHER_PAGE: PageDocument = {
 function fakeBrowser(opts?: { busy?: () => boolean; pages?: Record<string, PageDocument> }): BrowserPort & {
   spawned: string[]
   opened: string[]
+  managed: Array<{ tabId: string; url: string; action: 'open' | 'back' | 'forward' | 'refresh' }>
   pages: Record<string, PageDocument>
 } {
   const pages = opts?.pages ?? { [PAGE_URL]: LOGIN_PAGE, [OTHER_URL]: OTHER_PAGE }
   const spawned: string[] = []
   const opened: string[] = []
+  const managed: Array<{ tabId: string; url: string; action: 'open' | 'back' | 'forward' | 'refresh' }> = []
   return {
     spawned,
     opened,
+    managed,
     pages,
     load(url) {
       return pages[url]
@@ -83,6 +86,9 @@ function fakeBrowser(opts?: { busy?: () => boolean; pages?: Record<string, PageD
     },
     isBusy() {
       return opts?.busy?.() ?? false
+    },
+    manage(tabId, url, action) {
+      managed.push({ tabId, url, action })
     },
     spawn(command) {
       spawned.push(command)
@@ -164,6 +170,16 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.history).toEqual([PAGE_URL])
     expect(box.snapshot().browsers[secondId ?? '']?.url).toBe(OTHER_URL)
     expect(box.snapshot().browsers[secondId ?? '']?.history).toEqual([OTHER_URL])
+  })
+
+  it('reopens a managed Browser page when its Tab is selected again', () => {
+    const browser = fakeBrowser()
+    const box = session(browser)
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const tabId = box.snapshot().tabs[0]?.id as string
+    const afterOpen = browser.managed.length
+    box.dispatch({ type: 'select-tab', id: tabId })
+    expect(browser.managed.slice(afterOpen)).toEqual([{ tabId, url: PAGE_URL, action: 'open' }])
   })
 
   it('reuses a Browser Tab when the same address is written with or without a scheme', () => {

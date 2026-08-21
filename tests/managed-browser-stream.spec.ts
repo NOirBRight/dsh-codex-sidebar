@@ -4,6 +4,8 @@ import {
   decodeBrowserStreamFrame,
   encodeBrowserStreamFrame,
   ManagedBrowserStream,
+  MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME,
+  MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS,
   MANAGED_BROWSER_STREAM_PATH,
   MANAGED_BROWSER_STREAM_VERSION,
 } from '../src/managed-browser-stream.ts'
@@ -30,6 +32,11 @@ describe('managed browser stream protocol', () => {
 
   it('rejects frames shorter than the versioned header', () => {
     expect(() => decodeBrowserStreamFrame(new Uint8Array(16))).toThrow('shorter than its header')
+  })
+
+  it('caps screencast below a full 20fps capture loop', () => {
+    expect(MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS).toBeGreaterThanOrEqual(100)
+    expect(MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME).toBeGreaterThanOrEqual(2)
   })
 
   it('uses a bounded high-density capture scale for visible frames', () => {

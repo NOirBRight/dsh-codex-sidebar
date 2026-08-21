@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-sidebar",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
   "type": "module",
   "main": "lib/index.js",

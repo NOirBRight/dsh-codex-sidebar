@@ -4,6 +4,8 @@ import type { Duplex } from 'node:stream';
 import type { ManagedBrowserRuntime, ManagedTabKey } from './managed-browser-runtime.ts';
 export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
 export declare const MANAGED_BROWSER_STREAM_VERSION = 1;
+export declare const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100;
+export declare const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2;
 export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
 export declare const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560;
 export declare const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048;

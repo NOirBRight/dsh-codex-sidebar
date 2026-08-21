@@ -1,6 +1,7 @@
 /** 主会话 tools that drive Host-managed Chromium Browser Tabs. */
 
 import { liveHref } from './browser.ts'
+import { harnessSelfBlockReason } from './browser-guard.ts'
 import { callerMayDrive, type DriveCaller, type DriveResult, type DriveTab } from './browser-drive.ts'
 import type { ManagedBrowserActionResult, ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { SidebarSession } from './session.ts'
@@ -62,6 +63,8 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
       if (denied !== undefined) return denied
       const href = liveHref(url)
       if (href === undefined) return { ok: false, code: 'navigation-failed', message: '需要 http 或 https 地址' }
+      const blocked = harnessSelfBlockReason(href)
+      if (blocked !== undefined) return { ok: false, code: 'navigation-failed', message: blocked }
       session.dispatch({ type: 'open-url', url: href, reveal: false })
       const tab = listed(session).find((item) => item.url === href) ?? listed(session)[0]
       if (tab === undefined) return { ok: false, code: 'no-browser', message: '无法打开 Browser Tab' }

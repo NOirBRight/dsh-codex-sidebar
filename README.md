@@ -12,7 +12,7 @@ Open a session, then use the sidebar toggle in the conversation header. The draw
 
 - **Files** — read-only preview (source, Markdown, images) and a workspace tree. Click a path in the transcript to fill it.
 - **Review** — this turn's changes from the session log, then leftover working-tree diffs. Read-only: no stage, revert, or commit.
-- **Browser** — a managed Chromium document in that tab. The session can call `browser_tabs`, `browser_open`, `browser_snapshot`, `browser_click`, and `browser_fill` on loopback HTTP pages whether the sidebar is open or closed.
+- **Browser** — a managed Chromium document in that tab. The session can call `browser_tabs`, `browser_open`, `browser_snapshot`, `browser_click`, and `browser_fill` on loopback HTTP pages whether the sidebar is open or closed. Idle tabs are closed; opening the DSH web GUI inside this browser is rejected.
 - **Terminal** — a human pty (`script` when present), not an agent shell.
 - **Annotations** — click a line or a page to write a note at the mark. Send keeps the official user bubble; numbered chips sit under it. Locators and screenshots go to the model as evidence on that same user message.
 - **Edit +/−** — each edit/write tool row shows the increment for that call, after the filename.

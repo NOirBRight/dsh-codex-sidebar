@@ -11,7 +11,8 @@ export const MANAGED_BROWSER_STREAM_VERSION = 1
 
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
-const FRAME_INTERVAL_MS = 50
+export const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100
+export const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2
 const HIGH_DENSITY_SCALE = 1.5
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
@@ -133,6 +134,7 @@ export class ManagedBrowserStream {
     if (previous !== undefined && previous.readyState === WebSocket.OPEN) previous.close(4001, 'Replaced by a newer stream')
     this.#tabSockets.set(tabKey, socket)
     this.#sockets.add(socket)
+    this.#runtime.touch(tab)
     let sequence = 0
     let lastFrameAt = 0
     let lastProjection = ''
@@ -184,7 +186,7 @@ export class ManagedBrowserStream {
     const requestFrame = (request: CaptureRequest): void => {
       if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
       const now = this.#now()
-      if (now - lastFrameAt < FRAME_INTERVAL_MS) return
+      if (now - lastFrameAt < MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS) return
       if (captureInFlight) {
         pendingCapture = request
         return
@@ -231,7 +233,7 @@ export class ManagedBrowserStream {
         quality: MANAGED_BROWSER_STREAM_QUALITY,
         maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
         maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
-        everyNthFrame: 1,
+        everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME,
       })
       socket.send(JSON.stringify({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION }))
       sendProjection()

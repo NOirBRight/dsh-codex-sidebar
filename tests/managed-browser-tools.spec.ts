@@ -57,6 +57,16 @@ describe('managed Browser tools', () => {
     })
   })
 
+  it('refuses to nest the DSH web GUI inside the managed Browser', async () => {
+    const box = fixture()
+    await expect(box.service.open({}, box.session, 'http://127.0.0.1:3080/')).resolves.toMatchObject({
+      ok: false,
+      code: 'navigation-failed',
+    })
+    expect(box.ensure).not.toHaveBeenCalled()
+    expect(box.session.snapshot().tabs).toEqual([])
+  })
+
   it('maps document-scoped stale refs and keeps the main-session guard', async () => {
     const box = fixture()
     await box.service.open({}, box.session, 'https://public.example/')
