@@ -218,4 +218,44 @@ describe('annotation effect prompts', () => {
     }
   })
 
+  it('reveals and hides the panel locally before the Host dispatch round-trip completes', async () => {
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: { load: () => undefined, save: () => undefined },
+      isBusy: () => false,
+    })
+    const session = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
+    let releaseDispatch: (() => void) | undefined
+    const dispatchGate = new Promise<void>((resolve) => { releaseDispatch = resolve })
+    const base = controllerContext(session, async (_channel: string, endpoint: string, payload?: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+        await dispatchGate
+        const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+        const effects = box.dispatch(intent)
+        return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      }
+      return { ok: false }
+    })
+    const controller = new SidebarController({ ...base, layout } as never)
+    await controller.refresh('sess-a')
+    expect(controller.snap('sess-a')?.collapsed).toBe(true)
+
+    controller.reveal('sess-a')
+    expect(layout.openDetails).toHaveBeenCalled()
+    expect(controller.snap('sess-a')?.collapsed).toBe(false)
+
+    controller.hide('sess-a')
+    expect(layout.closeDetails).toHaveBeenCalled()
+    expect(controller.snap('sess-a')?.collapsed).toBe(true)
+
+    releaseDispatch?.()
+    await Promise.resolve()
+  })
+
 })

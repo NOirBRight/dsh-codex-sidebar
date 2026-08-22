@@ -46,10 +46,7 @@ export function NarrowDrawer(props: DrawerProps): ReactElement {
           onClick={() => {
             if (sessionId === undefined) return
             if (collapsed !== false) props.controller.reveal(String(sessionId))
-            else {
-              props.controller.syncTrack(true)
-              void props.controller.dispatch(String(sessionId), { type: 'toggle-collapsed' })
-            }
+            else props.controller.hide(String(sessionId))
           }}
         />
       )}

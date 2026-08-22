@@ -25,6 +25,7 @@ import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
+import { pinHostDetailsTrack } from './host-frame.ts'
 
 export type SidebarStore = {
   bySession: Record<string, SidebarSnapshot>
@@ -57,6 +58,8 @@ export class SidebarController {
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
   #pathTakeover = false
+  #pendingCollapsed = new Map<string, boolean>()
+  #refreshEpoch = new Map<string, number>()
 
   constructor(ctx: ClientContext) {
     this.#ctx = ctx
@@ -109,6 +112,7 @@ export class SidebarController {
 
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
+      const epoch = this.#refreshEpoch.get(sessionId) ?? 0
       for (const delay of REFRESH_RETRY_MS) {
         if (signal?.aborted === true) return undefined
         if (delay > 0) {
@@ -120,6 +124,7 @@ export class SidebarController {
         try {
           const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, { ...gate, logs: {} })
           if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
+          if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
           this.#put(snapshot)
           this.#syncLayout(snapshot)
@@ -134,14 +139,16 @@ export class SidebarController {
   }
 
   async dispatch(sessionId: string, intent: Intent, applyEffects = true): Promise<SidebarSnapshot | undefined> {
-    return this.#enqueue(sessionId, async () => {
-      const gate = this.#gate(sessionId, true)
+    const toggle = intent.type === 'toggle-collapsed'
+    const work = async (): Promise<SidebarSnapshot | undefined> => {
+      const gate = this.#gate(sessionId, !toggle && applyEffects)
       if (gate === undefined) return undefined
       const prepared = await this.#withBrowserEvidence(sessionId, intent, gate)
       if (prepared === undefined) return undefined
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent: prepared })
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
+      if (toggle) this.#pendingCollapsed.delete(sessionId)
       this.#put(reply.snapshot)
       this.#syncLayout(reply.snapshot)
       if (applyEffects) {
@@ -155,7 +162,9 @@ export class SidebarController {
       }
       this.#wrapPrompt(sessionId)
       return reply.snapshot
-    })
+    }
+    if (toggle) return work()
+    return this.#enqueue(sessionId, work)
   }
 
 
@@ -301,8 +310,10 @@ export class SidebarController {
   }
 
   #put(snapshot: SidebarSnapshot): void {
+    const pending = this.#pendingCollapsed.get(snapshot.sessionId)
+    const next = pending === undefined ? snapshot : { ...snapshot, collapsed: pending }
     this.#store = {
-      bySession: { ...this.#store.bySession, [snapshot.sessionId]: snapshot },
+      bySession: { ...this.#store.bySession, [next.sessionId]: next },
     }
     for (const listener of this.#listeners) listener()
   }
@@ -317,13 +328,39 @@ export class SidebarController {
 
   /** Open the AppFrame details track immediately, then persist the expanded flag. */
   reveal(sessionId: string): void {
+    const snapshot = this.snap(sessionId)
+    if (snapshot?.collapsed === false) {
+      this.#applyTrack(false)
+      return
+    }
+    this.#noteCollapsed(sessionId, false)
     this.#applyTrack(false)
-    if (this.snap(sessionId)?.collapsed === false) return
+    if (snapshot !== undefined) this.#put({ ...snapshot, collapsed: false })
+    void this.dispatch(sessionId, { type: 'toggle-collapsed' })
+  }
+
+  /** Close the track and optimistically retain the collapsed state locally. */
+  hide(sessionId: string): void {
+    const snapshot = this.snap(sessionId)
+    if (snapshot === undefined || snapshot.collapsed !== false) {
+      this.#applyTrack(true)
+      return
+    }
+    this.#noteCollapsed(sessionId, true)
+    this.#applyTrack(true)
+    this.#put({ ...snapshot, collapsed: true })
     void this.dispatch(sessionId, { type: 'toggle-collapsed' })
   }
 
   syncTrack(collapsed: boolean | undefined): void {
     this.#applyTrack(collapsed === false ? false : true)
+  }
+
+  #noteCollapsed(sessionId: string, collapsed: boolean): void {
+    this.#pendingCollapsed.set(sessionId, collapsed)
+    if (this.snap(sessionId) !== undefined) {
+      this.#refreshEpoch.set(sessionId, (this.#refreshEpoch.get(sessionId) ?? 0) + 1)
+    }
   }
 
   #layoutFace(): ILayout {
@@ -336,6 +373,7 @@ export class SidebarController {
     } catch {
       // layout face is missing until AppFrame mounts
     }
+    pinHostDetailsTrack(collapsed)
   }
 
   #syncLayout(snapshot: { collapsed: boolean }): void {

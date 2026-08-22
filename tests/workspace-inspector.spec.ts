@@ -102,10 +102,10 @@ describe('async workspace inspector', () => {
 
     const dispatched = await handleSidebarRpcAsync(registry, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent: { type: 'toggle-collapsed' } }, { workspace: inspector })
     expect(dispatched.ok).toBe(true)
-    expect(project).toHaveBeenCalledTimes(2)
+    expect(project).toHaveBeenCalledTimes(1)
     const again = await handleSidebarRpcAsync(registry, SIDEBAR_SNAPSHOT_ENDPOINT, gate, { workspace: inspector })
     expect(again.ok).toBe(true)
-    expect(project).toHaveBeenCalledTimes(3)
+    expect(project).toHaveBeenCalledTimes(2)
   })
 
   it('returns projected Files data while persistence stays lightweight', async () => {

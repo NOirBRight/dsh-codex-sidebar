@@ -47,8 +47,8 @@ export function SidebarPanel({
       retryLabel={t('occupantRetry')}
       onRetry={() => { void controller.refresh(String(sessionId)) }}
     >
-      {snapshot !== undefined && !snapshot.collapsed && (
-        <div className="dcs-col">
+      {snapshot !== undefined && (
+        <div className="dcs-col" data-collapsed={snapshot.collapsed || undefined}>
           <SidebarChrome
             snapshot={snapshot}
             workspaceName={workspaceName}

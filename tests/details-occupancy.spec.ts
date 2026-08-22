@@ -103,7 +103,7 @@ describe('details occupancy', () => {
     })
     const source = readFileSync(new URL('../src/client/Sidebar.tsx', import.meta.url), 'utf8')
     expect(source).toContain('OccupantBoundary')
-    expect(source).toContain('!snapshot.collapsed')
+    expect(source).toContain('data-collapsed={snapshot.collapsed || undefined}')
   })
 
   it('apply still occupies details when path takeover throws', () => {

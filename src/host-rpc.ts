@@ -192,6 +192,9 @@ async function handleWorkspaceRpc(
     const box = registry.forSession(request.sessionId, request)
     const effects = box.dispatch(request.intent)
     invalidateSnapshot(request.sessionId)
+    if (request.intent.type === 'toggle-collapsed') {
+      return { ok: true, value: { snapshot: box.snapshot(), effects } }
+    }
     const snapshot = await projectOrBase(workspace, box.snapshot(false), request)
     return { ok: true, value: { snapshot, effects } }
   }

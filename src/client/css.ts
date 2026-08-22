@@ -61,6 +61,13 @@ export const SIDEBAR_CSS = `
   min-width: 0;
   min-height: 0;
 }
+/* Keep the React tree warm across a manual hide/show. The Host layout track
+   is already closed, so this only prevents a full Files/Browser/Terminal
+   remount on the next reveal. */
+.dcs-col[data-collapsed] {
+  visibility: hidden;
+  pointer-events: none;
+}
 .dcs-col > .dcs-root {
   flex: 1;
   min-height: 0;
