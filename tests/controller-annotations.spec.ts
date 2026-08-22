@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { createSidebarSession, type Annotation, type FilesPort } from '../src/session.ts'
 import { SidebarController } from '../src/client/controller.ts'
@@ -6,6 +7,7 @@ import {
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_SNAPSHOT_ENDPOINT,
   SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
+  SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT,
 } from '../src/contract.ts'
 
 const files: FilesPort = {
@@ -65,13 +67,17 @@ describe('annotation effect prompts', () => {
         return 'accepted'
       },
     }
-    let rpcCalls = 0
+    const staged: unknown[] = []
     const ctx = {
       get: () => ({
         rpc: {
-          call: async () => {
-            rpcCalls += 1
-            if (rpcCalls === 1) return { ok: true, value: { snapshot } }
+          call: async (_channel: string, endpoint: string) => {
+            if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+            if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+              staged.push('stage')
+              return { ok: true, value: { staged: true } }
+            }
+            if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
             return {
               ok: true,
               value: {
@@ -101,30 +107,38 @@ describe('annotation effect prompts', () => {
     await controller.dispatch('sess-a', { type: 'note-send' })
 
     expect(prompts).toHaveLength(1)
-    expect(prompts[0]).toContain('send only this')
+    expect(prompts[0]).toBe('send only this')
     expect(prompts[0]).not.toContain('keep stacked')
     expect(controller.snap('sess-a')?.attachments.map((item) => item.text)).toEqual(['keep stacked'])
+    expect(staged.length).toBeGreaterThan(0)
   })
 
-  it('lets the resident empty composer submit stacked annotations without leaking its sentinel', async () => {
+  it('stages stacked chips immediately and clears them after an official user turn', async () => {
     const snapshot = stackedSnapshot()
     const cleared = { ...snapshot, attachments: [] }
-    const prompts: string[] = []
+    const staged: unknown[][] = []
+    let messages: Array<{ role: string }> = []
+    const listeners = new Set<() => void>()
     const session = {
-      getSnapshot: () => ({ running: false, messages: [] }),
-      prompt: async (content: Array<{ type: string; text?: string }>) => {
-        prompts.push(content.map((part) => part.text ?? '').join('\n'))
-        return 'accepted'
+      getSnapshot: () => ({ running: false, messages }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
       },
+      prompt: async () => 'accepted',
     }
-    let rpcCalls = 0
     const ctx = {
       get: () => ({
         rpc: {
-          call: async () => {
-            rpcCalls += 1
-            if (rpcCalls === 1) return { ok: true, value: { snapshot } }
-            return { ok: true, value: { snapshot: cleared, effects: [] } }
+          call: async (_channel: string, endpoint: string, payload: unknown) => {
+            if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+            if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+              staged.push((payload as { attachments: unknown[] }).attachments)
+              return { ok: true, value: { staged: true } }
+            }
+            if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
+            if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) return { ok: true, value: { snapshot: cleared, effects: [] } }
+            return { ok: false, error: { message: 'unknown' } }
           },
         },
       }),
@@ -144,12 +158,13 @@ describe('annotation effect prompts', () => {
 
     const controller = new SidebarController(ctx as never)
     await controller.refresh('sess-a')
-    await session.prompt([{ type: 'text', text: '\u200b' }])
+    expect(staged.at(-1)).toEqual(snapshot.attachments)
 
-    expect(prompts).toHaveLength(1)
-    expect(prompts[0]).toContain('keep stacked')
-    expect(prompts[0]).not.toContain('\u200b')
-    expect(controller.snap('sess-a')?.attachments).toEqual([])
+    messages = [{ role: 'user' }]
+    for (const listener of listeners) listener()
+    await vi.waitFor(() => {
+      expect(controller.snap('sess-a')?.attachments).toEqual([])
+    })
   })
 
   it('commits Browser evidence and sends text followed by one image', async () => {
@@ -256,6 +271,12 @@ describe('annotation effect prompts', () => {
 
     releaseDispatch?.()
     await Promise.resolve()
+  })
+
+  it('does not wrap the official session.prompt', () => {
+    const source = readFileSync(new URL('../src/client/controller.ts', import.meta.url), 'utf8')
+    expect(source).not.toContain('#wrapPrompt')
+    expect(source).not.toContain('formatHumanSend')
   })
 
 })

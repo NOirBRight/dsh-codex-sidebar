@@ -114,7 +114,7 @@ body:has(.dcs-col-handle[data-dragging]) { user-select: none; cursor: col-resize
   transition: opacity var(--ds-transition-duration-slow, 0.2s) var(--ds-ease-in-out, ease),
     background var(--ds-transition-duration-slow, 0.2s) var(--ds-ease-in-out, ease);
 }
-[class*="detailsCol"]:hover ~ [data-shell-overlay] .dcs-col-handle::after,
+[data-dcs-details]:hover ~ [data-shell-overlay] .dcs-col-handle::after,
 .dcs-col-handle:hover::after,
 .dcs-col-handle[data-dragging]::after { opacity: 1; }
 .dcs-col-handle:hover::after,
@@ -754,30 +754,30 @@ button.dcs-toggle {
   box-sizing: border-box;
   align-self: center;
 }
-[class*="centerCol"] [class$="_header"] {
+[data-dcs-header] {
   padding-top: var(--dcs-toggle-pad) !important;
   padding-right: var(--dcs-toggle-pad) !important;
 }
-[class$="_frame"]:not([data-dcs-open]) [class*="centerCol"] [class$="_header"] {
+[data-dcs-pin]:not([data-dcs-open]) [data-dcs-header] {
   padding-right: calc(var(--dcs-toggle-size) + var(--dcs-toggle-pad) * 2) !important;
 }
-[data-dcs-open] [class*="centerCol"] [class$="_header"] {
+[data-dcs-open] [data-dcs-header] {
   padding-right: var(--dcs-toggle-pad) !important;
 }
 .dcs-toggle:hover, .dcs-toggle[data-on] {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
-[class*="detailsCol"] {
+[data-dcs-details] {
   min-width: 0;
 }
-[class$="_frame"]:not([data-details-collapsed]) [class*="detailsCol"] {
+[data-dcs-pin]:not([data-details-collapsed]) [data-dcs-details] {
   overflow: visible !important;
 }
 /* Pin only while a 主会话 is open. :has([data-shell-overlay]) is also true
    for the assistant seat, which would crush the host workspace rail to the
    56px fallback on the empty chooser. */
-[class$="_frame"][data-dcs-pin] {
+[data-dcs-pin] {
   grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
   transition: none !important;
 }

@@ -71,10 +71,14 @@ export class AnnotationSendStore {
   }
 
   unstage(sessionId: string): void {
-    const queue = this.#pending.get(sessionId)
-    if (queue === undefined || queue.length === 0) return
-    queue.pop()
-    if (queue.length === 0) this.#pending.delete(sessionId)
+    this.#pending.delete(sessionId)
+  }
+
+  /** Replace the unbound queue with one batch (or clear it). Immediate-stage uses this. */
+  replacePending(sessionId: string, batch: Omit<StagedAnnotationBatch, 'expiresAt'> | null): StagedAnnotationBatch | undefined {
+    this.#pending.delete(sessionId)
+    if (batch === null) return undefined
+    return this.stage(batch)
   }
 
   bindInserted(sessionId: string, message: { id: string; source: unknown }): void {

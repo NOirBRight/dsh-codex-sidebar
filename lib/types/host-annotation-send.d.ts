@@ -60,6 +60,8 @@ export declare class AnnotationSendStore {
     });
     stage(batch: Omit<StagedAnnotationBatch, 'expiresAt'>): StagedAnnotationBatch;
     unstage(sessionId: string): void;
+    /** Replace the unbound queue with one batch (or clear it). Immediate-stage uses this. */
+    replacePending(sessionId: string, batch: Omit<StagedAnnotationBatch, 'expiresAt'> | null): StagedAnnotationBatch | undefined;
     bindInserted(sessionId: string, message: {
         id: string;
         source: unknown;

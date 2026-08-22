@@ -26,11 +26,32 @@ export function clearDetailsTrackStyle(frame: {
   frame.removeAttribute('data-dcs-pin')
 }
 
+/** Stamp plugin-owned markers on the host frame so CSS never matches CSS-module hashes. */
+export function markHostFrame(frame: HTMLElement): void {
+  const overlay = frame.querySelector('[data-shell-overlay]')
+  const details = overlay?.previousElementSibling
+  if (details instanceof HTMLElement) details.setAttribute('data-dcs-details', '')
+  const center = details instanceof HTMLElement ? details.previousElementSibling : null
+  const header = center instanceof HTMLElement ? center.querySelector('header') : null
+  if (header instanceof HTMLElement) header.setAttribute('data-dcs-header', '')
+}
+
+/** Locate the details column via the plugin marker, then the overlay's previous sibling. */
+export function detailsColumnOf(frame: ParentNode | null | undefined): HTMLElement | undefined {
+  if (frame === null || frame === undefined) return undefined
+  const marked = frame.querySelector('[data-dcs-details]')
+  if (marked instanceof HTMLElement) return marked
+  const overlay = frame.querySelector('[data-shell-overlay]')
+  const sibling = overlay?.previousElementSibling
+  return sibling instanceof HTMLElement ? sibling : undefined
+}
+
 /** Pin the details track immediately so ResizeObserver cannot restore a stale open width. */
 export function pinHostDetailsTrack(collapsed: boolean | undefined): void {
   if (typeof document === 'undefined') return
   const frame = document.querySelector('[data-shell-overlay]')?.parentElement
   if (!(frame instanceof HTMLElement)) return
+  markHostFrame(frame)
   const viewport = frame.getBoundingClientRect().width || window.innerWidth
   const details = detailsTrackPx(collapsed, peekDrawerWidth(viewport))
   if (frame.style.getPropertyValue('--dcs-details-track') !== details) {

@@ -117,11 +117,10 @@ describe('annotation send enrichment', () => {
     expect(store.takeForMessage('m2')).toBeUndefined()
   })
 
-  it('binds staged batches FIFO and unstage drops only the latest unbound batch', () => {
+  it('replacePending keeps only the latest unbound batch', () => {
     const store = new AnnotationSendStore()
     store.stage({ sessionId: 'sess-a', attachments: [fileMark], marks: [], images: [], evidenceText: 'first' })
-    store.stage({ sessionId: 'sess-a', attachments: [fileMark], marks: [], images: [], evidenceText: 'second' })
-    store.unstage('sess-a')
+    store.replacePending('sess-a', { sessionId: 'sess-a', attachments: [fileMark], marks: [], images: [], evidenceText: 'second' })
     store.bindInserted('sess-a', { id: 'm1', source: { kind: 'user' } })
     store.bindInserted('sess-a', { id: 'm2', source: { kind: 'user' } })
     const first = applyAnnotationEnrichment([
@@ -130,7 +129,7 @@ describe('annotation send enrichment', () => {
     const second = applyAnnotationEnrichment([
       { id: 'm2', role: 'user', content: [{ type: 'text', text: 'h' }], source: { kind: 'user' } },
     ], store)
-    expect(first[0]?.content[1]).toEqual({ type: 'text', text: 'first' })
+    expect(first[0]?.content[1]).toEqual({ type: 'text', text: 'second' })
     expect(second[0]?.content).toEqual([{ type: 'text', text: 'h' }])
   })
 

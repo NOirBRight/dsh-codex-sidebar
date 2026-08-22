@@ -15,8 +15,7 @@ import {
   SIDEBAR_TERMINAL_PULL_ENDPOINT,
   isRecord,
 } from '../contract.ts'
-import { formatDelivery, formatHumanSend } from '../send-text.ts'
-import { stripAnnotationDraftSentinel } from './annotation-draft.ts'
+import { formatDelivery } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
@@ -33,9 +32,6 @@ export type SidebarStore = {
 
 const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
 
-type PromptPart =
-  | { type: 'text'; text: string }
-  | { type: 'image'; mediaType: 'image/jpeg'; data: string; name?: string }
 export type BrowserCaptureReply = {
   captureId: string
   documentId: string
@@ -49,8 +45,9 @@ export type BrowserCaptureReply = {
 export class SidebarController {
   #store: SidebarStore = { bySession: {} }
   #listeners = new Set<() => void>()
-  #wrapped = new Set<string>()
   #effectPrompt = new Set<string>()
+  #stagedKey = new Map<string, string>()
+  #userWatch = new Set<string>()
   #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
@@ -128,7 +125,8 @@ export class SidebarController {
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
           this.#put(snapshot)
           this.#syncLayout(snapshot)
-          this.#wrapPrompt(sessionId)
+          this.#watchUserTurns(sessionId)
+          void this.#syncStaged(snapshot)
           return snapshot
         } catch {
           // The web host can restart while this mounted client reconnects.
@@ -151,6 +149,7 @@ export class SidebarController {
       if (toggle) this.#pendingCollapsed.delete(sessionId)
       this.#put(reply.snapshot)
       this.#syncLayout(reply.snapshot)
+      this.#watchUserTurns(sessionId)
       if (applyEffects) {
         try {
           await this.#applyEffects(sessionId, reply.effects)
@@ -160,7 +159,8 @@ export class SidebarController {
           throw error
         }
       }
-      this.#wrapPrompt(sessionId)
+      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
+      if (!sending) void this.#syncStaged(reply.snapshot)
       return reply.snapshot
     }
     if (toggle) return work()
@@ -407,7 +407,7 @@ export class SidebarController {
       if (effect.type === 'side-ask') continue
       const binding = this.#ctx.sessions.binding(sessionId as never)
       if (binding === undefined) continue
-      const text = formatHumanSend(effect.text, effect.attachments)
+      const text = effect.text
       if (text.length === 0) continue
       await this.#stageAnnotations(sessionId, effect.attachments)
       this.#effectPrompt.add(sessionId)
@@ -420,37 +420,67 @@ export class SidebarController {
         this.#effectPrompt.delete(sessionId)
       }
     }
+    const leftover = this.snap(sessionId)
+    if (leftover !== undefined) void this.#syncStaged(leftover)
   }
 
-  #wrapPrompt(sessionId: string): void {
-    if (this.#wrapped.has(sessionId)) return
-    const binding = this.#ctx.sessions.binding(sessionId as never)
-    if (binding === undefined) return
-    const original = binding.session.prompt.bind(binding.session)
-    binding.session.prompt = async (content, mode) => {
-      if (this.#effectPrompt.has(sessionId)) return original(content, mode)
-      const snapshot = this.snap(sessionId)
-      if (snapshot === undefined || snapshot.attachments.length === 0) {
-        return original(content, mode)
+  async #syncStaged(snapshot: SidebarSnapshot): Promise<void> {
+    const key = snapshot.attachments.map((item) => item.id).join(',')
+    if (this.#stagedKey.get(snapshot.sessionId) === key) return
+    this.#stagedKey.set(snapshot.sessionId, key)
+    try {
+      if (snapshot.attachments.length === 0) {
+        await this.#unstageAnnotations(snapshot.sessionId)
+        return
       }
-      const parts = content as PromptPart[]
-      const text = stripAnnotationDraftSentinel(parts.filter((part): part is Extract<PromptPart, { type: 'text' }> => part.type === 'text').map((part) => part.text).join('\n'))
-      const existingImages = parts.filter((part): part is Extract<PromptPart, { type: 'image' }> => part.type === 'image')
-      const human = formatHumanSend(text, snapshot.attachments)
-      await this.#stageAnnotations(sessionId, snapshot.attachments)
-      try {
-        const result = await original([{ type: 'text', text: human }, ...existingImages], mode)
-        await this.dispatch(sessionId, { type: 'composer-send', text }, false)
-        return result
-      } catch (error) {
-        await this.#unstageAnnotations(sessionId)
-        throw error
-      }
+      await this.#stageAnnotations(snapshot.sessionId, snapshot.attachments)
+    } catch {
+      this.#stagedKey.delete(snapshot.sessionId)
     }
-    this.#wrapped.add(sessionId)
+  }
+
+  #watchUserTurns(sessionId: string): void {
+    if (this.#userWatch.has(sessionId)) return
+    const binding = this.#ctx.sessions.binding(sessionId as never)
+    const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
+    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') return
+    this.#userWatch.add(sessionId)
+    let last = userTurnCount(session.getSnapshot())
+    session.subscribe(() => {
+      if (this.#effectPrompt.has(sessionId)) {
+        last = userTurnCount(session.getSnapshot())
+        return
+      }
+      const next = userTurnCount(session.getSnapshot())
+      if (next > last && (this.snap(sessionId)?.attachments.length ?? 0) > 0) {
+        void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
+      }
+      last = next
+    })
   }
 }
 
+
+function userTurnCount(snapshot: unknown): number {
+  if (!isRecord(snapshot)) return 0
+  if (Array.isArray(snapshot.messages)) {
+    return snapshot.messages.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
+  }
+  const chat = isRecord(snapshot.chat) ? snapshot.chat : snapshot
+  const legacy = isRecord(chat.legacy) ? chat.legacy : chat
+  const nodes = isRecord(legacy) ? legacy.nodes : undefined
+  if (nodes instanceof Map) {
+    let count = 0
+    for (const node of nodes.values()) {
+      if (isRecord(node) && (node.role === 'user' || node.kind === 'user')) count += 1
+    }
+    return count
+  }
+  if (Array.isArray(nodes)) {
+    return nodes.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
+  }
+  return 0
+}
 
 function captureReply(value: unknown): value is BrowserCaptureReply {
   return isRecord(value)

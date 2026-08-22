@@ -13,7 +13,7 @@ import {
   publishDrawerWidth,
   subscribeDrawerWidth,
 } from './drawer-width.ts'
-import { clearDetailsTrackStyle, detailsTrackPx, sidebarTrackFromGrid } from './host-frame.ts'
+import { clearDetailsTrackStyle, detailsColumnOf, detailsTrackPx, markHostFrame, sidebarTrackFromGrid } from './host-frame.ts'
 import { NS } from './locales.ts'
 import type { SidebarFace } from './Sidebar.tsx'
 import { SidebarToggleButton } from './Toggle.tsx'
@@ -65,6 +65,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
     }
     const apply = (): void => {
       if (frame === null || frame === undefined) return
+      if (frame instanceof HTMLElement) markHostFrame(frame)
       const viewport = frame.getBoundingClientRect().width || window.innerWidth
       const fromInline = sidebarTrackFromGrid(frame.style.gridTemplateColumns)
       const fromComputed = sidebarTrackFromGrid(getComputedStyle(frame).gridTemplateColumns)
@@ -101,7 +102,7 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
 function pinHandleToSeam(handle: HTMLElement): void {
   const layer = handle.closest('[data-shell-overlay]')
   const frame = layer?.parentElement
-  const details = frame?.querySelector('[class*="detailsCol"]')
+  const details = detailsColumnOf(frame)
   if (!(details instanceof HTMLElement)) return
   const origin = handle.offsetParent instanceof HTMLElement ? handle.offsetParent : handle.parentElement
   if (origin === null) return
@@ -118,7 +119,7 @@ function SidebarResizeHandle({ label }: { label: string }): ReactElement {
     const handle = handleRef.current
     if (handle === null) return
     const frame = document.querySelector('[data-shell-overlay]')?.parentElement
-    const details = frame?.querySelector('[class*="detailsCol"]')
+    const details = detailsColumnOf(frame)
     const read = (): void => {
       const next = (frame ?? document.body).getBoundingClientRect().width
       if (next > 0) viewportRef.current = next

@@ -103,8 +103,12 @@ export async function handleSidebarRpcAsync(
       if (attachments === undefined) return fail('invalid 批注 list')
       if (services.annotationSend === undefined) return fail('annotation send is unavailable')
       const ports = services.annotationPortsFor?.(payload.sessionId) ?? {}
+      if (attachments.length === 0) {
+        services.annotationSend.replacePending(payload.sessionId, null)
+        return { ok: true, value: { staged: true } }
+      }
       const batch = await buildStagedBatch(payload.sessionId, attachments, ports)
-      services.annotationSend.stage(batch)
+      services.annotationSend.replacePending(payload.sessionId, batch)
       return { ok: true, value: { staged: true } }
     }
     if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) {
