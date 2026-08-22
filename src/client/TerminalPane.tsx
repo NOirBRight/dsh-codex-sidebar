@@ -7,6 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { Intent, SidebarSnapshot } from '../session.ts'
 import { watchTerminalTheme } from './terminal-theme.ts'
 import { terminalFontFamily, terminalOptions } from './terminal-options.ts'
+import { startSerialPull } from './serial-pull.ts'
 
 export function TerminalPane({
   snapshot,
@@ -22,6 +23,10 @@ export function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const seqRef = useRef(0)
+  const onPullRef = useRef(onPull)
+  const onIntentRef = useRef(onIntent)
+  onPullRef.current = onPull
+  onIntentRef.current = onIntent
   const pty = snapshot.terminal.byTab[tabId]
 
   useEffect(() => {
@@ -62,19 +67,21 @@ export function TerminalPane({
   }, [tabId]) // eslint-disable-line react-hooks/exhaustive-deps -- one emulator per Tab; onIntent is unstable
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (onPull !== undefined) {
-        void onPull(tabId, seqRef.current).then((pulled) => {
-          if (pulled === undefined || pulled.seq <= seqRef.current || pulled.chunk.length === 0) return
-          termRef.current?.write(pulled.chunk)
-          seqRef.current = pulled.seq
-        })
-        return
-      }
-      onIntent({ type: 'terminal-refresh', tabId, since: seqRef.current })
-    }, 80)
-    return () => { window.clearInterval(timer) }
-  }, [tabId, onPull]) // eslint-disable-line react-hooks/exhaustive-deps -- poll this Tab's pty
+    return startSerialPull({
+      intervalMs: 80,
+      pull: () => {
+        const pull = onPullRef.current
+        if (pull !== undefined) return pull(tabId, seqRef.current)
+        onIntentRef.current({ type: 'terminal-refresh', tabId, since: seqRef.current })
+        return Promise.resolve(undefined)
+      },
+      onResult: (pulled) => {
+        if (pulled.seq <= seqRef.current || pulled.chunk.length === 0) return
+        termRef.current?.write(pulled.chunk)
+        seqRef.current = pulled.seq
+      },
+    })
+  }, [tabId])
 
   useEffect(() => {
     const live = new Set(

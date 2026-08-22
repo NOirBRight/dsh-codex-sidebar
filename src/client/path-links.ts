@@ -3,7 +3,6 @@
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 
 const MARK = 'dcs-path-link'
-const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
 const FILE_EXT = /\.(tsx?|jsx?|mjs|cjs|md|json|css|html?|vue|svelte|py|rs|go|toml|ya?ml|svg|png|jpe?g|gif|webp|txt|map|lock|sh|bash)$/i
 
 export function transcriptPath(text: string): string | undefined {
@@ -19,44 +18,46 @@ export function transcriptPath(text: string): string | undefined {
   return undefined
 }
 
-export function installPathLinks(openPath: (path: string) => void): { stop: () => void; paint: () => void } {
-  if (typeof document === 'undefined') return { stop() {}, paint() {} }
-  let observer: MutationObserver
-  const paint = (): void => {
-    observer.disconnect()
-    try { decorate(openPath) } finally { observer.observe(document.documentElement, OBSERVE) }
-  }
-  observer = new MutationObserver(paint)
-  observer.observe(document.documentElement, OBSERVE)
-  paint()
-  return { stop() { observer.disconnect() }, paint }
-}
-
-export function decorate(openPath: (path: string) => void, root: ParentNode = document): void {
+export function decorate(root: ParentNode = document): void {
   const nodes = root.querySelectorAll('code')
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) continue
-    if (node.closest('.dcs-root, .dcs-col, [data-shell-overlay]')) continue
-    if (node.closest('a, button, [data-tool]')) continue
-    const closest = (selector: string) => node.closest(selector)
-    if (!allowTranscriptTakeover(closest)) continue
-    const path = transcriptPath(node.textContent ?? '')
-    if (path === undefined) {
-      if (node.dataset.dcsPath !== undefined) {
-        delete node.dataset.dcsPath
-        node.classList.remove(MARK)
-        node.removeAttribute('title')
-      }
+    if (node.closest('.dcs-root, .dcs-col, [data-shell-overlay]')) {
+      clearMark(node)
       continue
     }
-    if (node.dataset.dcsPath === path) continue
+    if (node.closest('a, button, [data-tool]')) {
+      clearMark(node)
+      continue
+    }
+    const closest = (selector: string) => node.closest(selector)
+    if (!allowTranscriptTakeover(closest)) {
+      clearMark(node)
+      continue
+    }
+    const path = transcriptPath(node.textContent ?? '')
+    if (path === undefined) {
+      clearMark(node)
+      continue
+    }
     node.dataset.dcsPath = path
     node.classList.add(MARK)
     node.title = path
-    node.addEventListener('click', (event) => {
-      event.preventDefault()
-      event.stopPropagation()
-      openPath(path)
-    })
   }
+}
+
+export function pathFromClick(event: Event): string | undefined {
+  const target = event.target
+  if (!(target instanceof Element)) return undefined
+  const code = target.closest('code.' + MARK)
+  if (!(code instanceof HTMLElement)) return undefined
+  const path = code.dataset.dcsPath
+  return path === undefined || path.length === 0 ? undefined : path
+}
+
+function clearMark(node: HTMLElement): void {
+  if (node.dataset.dcsPath === undefined) return
+  delete node.dataset.dcsPath
+  node.classList.remove(MARK)
+  node.removeAttribute('title')
 }

@@ -4,32 +4,14 @@ import { annotationMarksFromSource, hydrateAnnotation, type AnnotationMarkView }
 import type { Annotation } from '../session.ts'
 
 const MARK = 'dcs-msg-chips-row'
-const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
+const painted = new WeakMap<HTMLElement, string>()
+const latest = new WeakMap<HTMLButtonElement, { sessionId: string; mark: Annotation }>()
 
 export type AnnotationChipPorts = {
   sessionId: () => string | undefined
   nodeSource: (key: string) => unknown
   reveal: (sessionId: string, mark: Annotation) => void
   label: (n: number, from: string) => string
-}
-
-export function installAnnotationChips(ports: AnnotationChipPorts): { stop: () => void; paint: () => void } {
-  if (typeof document === 'undefined') {
-    return { stop() {}, paint() {} }
-  }
-  let observer: MutationObserver
-  const paint = (): void => {
-    observer.disconnect()
-    try {
-      decorate(ports)
-    } finally {
-      observer.observe(document.documentElement, OBSERVE)
-    }
-  }
-  observer = new MutationObserver(paint)
-  observer.observe(document.documentElement, OBSERVE)
-  paint()
-  return { stop() { observer.disconnect() }, paint }
 }
 
 export function sourceForFlowKey(snapshot: unknown, key: string): unknown {
@@ -42,9 +24,9 @@ export function sourceForFlowKey(snapshot: unknown, key: string): unknown {
   return node?.data?.source
 }
 
-function decorate(ports: AnnotationChipPorts): void {
+export function decorate(ports: AnnotationChipPorts, root: ParentNode = document): void {
   const sessionId = ports.sessionId()
-  const rows = document.querySelectorAll('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')
+  const rows = root.querySelectorAll('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')
   for (const row of rows) {
     if (!(row instanceof HTMLElement)) continue
     const key = row.getAttribute('data-chat-flow-key') ?? ''
@@ -54,12 +36,40 @@ function decorate(ports: AnnotationChipPorts): void {
     const existing = row.querySelector(':scope > .' + MARK)
     if (marks === undefined || marks.length === 0) {
       existing?.remove()
+      painted.delete(row)
       continue
     }
+    const signature = marksSignature(sessionId, marks)
     const host = existing instanceof HTMLElement ? existing : document.createElement('div')
     host.className = MARK
+    if (existing instanceof HTMLElement && painted.get(row) === signature) {
+      bindExisting(host, marks, sessionId)
+      continue
+    }
     host.replaceChildren(...marks.map((mark, index) => chipButton(mark, index, sessionId, ports)))
+    painted.set(row, signature)
     if (existing === null) row.append(host)
+  }
+}
+
+function marksSignature(sessionId: string, marks: readonly AnnotationMarkView[]): string {
+  return sessionId + '\0' + marks.map((mark) => [
+    mark.id,
+    mark.from,
+    mark.source,
+    mark.selector ?? '',
+    mark.path ?? '',
+    mark.line === undefined ? '' : String(mark.line),
+    mark.url ?? '',
+  ].join('\x1f')).join('\x1e')
+}
+
+function bindExisting(host: HTMLElement, marks: readonly AnnotationMarkView[], sessionId: string): void {
+  for (let i = 0; i < host.children.length; i++) {
+    const button = host.children[i]
+    const mark = marks[i]
+    if (!(button instanceof HTMLButtonElement) || mark === undefined) continue
+    latest.set(button, { sessionId, mark: markToAnnotation(mark) })
   }
 }
 
@@ -75,8 +85,11 @@ function chipButton(mark: AnnotationMarkView, index: number, sessionId: string, 
   from.className = 'dcs-chip-from'
   from.textContent = mark.from
   button.append(n, from)
+  latest.set(button, { sessionId, mark: markToAnnotation(mark) })
   button.addEventListener('click', () => {
-    ports.reveal(sessionId, markToAnnotation(mark))
+    const current = latest.get(button)
+    if (current === undefined) return
+    ports.reveal(current.sessionId, current.mark)
   })
   return button
 }

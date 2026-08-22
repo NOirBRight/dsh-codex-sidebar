@@ -13,10 +13,12 @@ import { en, NS, zh, type SidebarKey } from './locales.ts'
 import { SidebarPanel, type SidebarFace } from './Sidebar.tsx'
 import { AttachmentChips } from './AttachmentChips.tsx'
 import { NarrowDrawer } from './NarrowDrawer.tsx'
-import { installAnnotationChips, sourceForFlowKey } from './annotation-chips.ts'
-import { installToolStats } from './tool-stats.ts'
-import { installPathLinks } from './path-links.ts'
+import { decorate as decorateChips, sourceForFlowKey, type AnnotationChipPorts } from './annotation-chips.ts'
+import { decorate as decorateStats } from './tool-stats.ts'
+import { decorate as decoratePaths } from './path-links.ts'
+import { createPendingThrottle, installTranscriptDecorators, shouldRebindSession } from './transcript-decorators.ts'
 import { rowHunksFromSnapshot } from '../tool-open.ts'
+import type { Annotation } from '../session.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -56,58 +58,60 @@ export function apply(ctx: ClientContext): void {
       lastStats = rowHunksFromSnapshot(source)
       return lastStats
     }
-    const hook = installToolStats(readStats)
-    const pathLinks = installPathLinks((path) => {
-      const open = ctx.workspaces?.openPath
-      if (open !== undefined) void open(path)
-    })
-    const chips = installAnnotationChips({
+    const chipPorts: AnnotationChipPorts = {
       sessionId: () => {
         const current = ctx.sessions.list.getSnapshot().current
         return current === undefined ? undefined : String(current)
       },
-      nodeSource: (key) => {
+      nodeSource: (key: string) => {
         const current = ctx.sessions.list.getSnapshot().current
         if (current === undefined) return undefined
         const binding = ctx.sessions.binding(current as never)
         if (binding === undefined) return undefined
         return sourceForFlowKey(binding.session.getSnapshot(), key)
       },
-      reveal: (sessionId, mark) => {
+      reveal: (sessionId: string, mark: Annotation) => {
         void controller.dispatch(sessionId, { type: 'reveal-mark', mark })
       },
-      label: (n, from) => en.openMark.replace('{n}', String(n)).replace('{from}', from),
-    })
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let unsubSession: (() => void) | undefined
-    const paint = (): void => {
-      hook.paint()
-      chips.paint()
+      label: (n: number, from: string) => en.openMark.replace('{n}', String(n)).replace('{from}', from),
     }
+    const decorators = installTranscriptDecorators({
+      paintStats: () => { decorateStats(readStats()) },
+      paintChips: () => { decorateChips(chipPorts) },
+      paintPaths: () => { decoratePaths() },
+      openPath: (path) => {
+        const open = ctx.workspaces?.openPath
+        if (open !== undefined) void open(path)
+      },
+    })
+    const throttle = createPendingThrottle(decorators.paintData, 200)
+    let unsubSession: (() => void) | undefined
+    let boundId: string | undefined
+    let boundStore: unknown
     const bindSession = (): void => {
+      const current = ctx.sessions.list.getSnapshot().current
+      const id = current === undefined ? undefined : String(current)
+      const binding = current === undefined ? undefined : ctx.sessions.binding(current as never)
+      const store = binding?.session
+      if (!shouldRebindSession(boundId, boundStore, id, store)) return
       unsubSession?.()
       unsubSession = undefined
-      const current = ctx.sessions.list.getSnapshot().current
-      if (current === undefined) return
-      const binding = ctx.sessions.binding(current as never)
-      if (binding === undefined) return
-      unsubSession = binding.session.subscribe(() => {
-        if (timer !== undefined) clearTimeout(timer)
-        timer = setTimeout(paint, 200)
-      })
-      paint()
+      throttle.cancel()
+      lastSource = undefined
+      lastStats = []
+      boundId = id
+      boundStore = store
+      if (id === undefined || store === undefined) return
+      unsubSession = store.subscribe(() => { throttle.schedule() })
+      decorators.paintData()
     }
     bindSession()
     const stopList = ctx.sessions.list.subscribe(bindSession)
-    const stopStore = controller.subscribe(paint)
     return () => {
-      hook.stop()
-      pathLinks.stop()
-      chips.stop()
+      decorators.stop()
       stopList()
-      stopStore()
       unsubSession?.()
-      if (timer !== undefined) clearTimeout(timer)
+      throttle.cancel()
     }
   }, 'dsh-codex-sidebar: edit +/− and 批注 chips')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({

@@ -3,7 +3,6 @@
 import { queueRowStats, takeRowHunk, WRITE_TOOL, type OpenHunk, type RowStat } from '../tool-open.ts'
 
 const MARK = 'dcs-tool-stat'
-const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
 
 export type ToolRowHunk = Pick<OpenHunk, 'before' | 'after'>
 
@@ -12,25 +11,6 @@ const rowHunks = new WeakMap<HTMLElement, ToolRowHunk>()
 /** Return the exact transcript hunk bound to one rendered host tool row. */
 export function hunkForToolRow(row: HTMLElement): ToolRowHunk | undefined {
   return rowHunks.get(row)
-}
-
-export function installToolStats(getStats: () => readonly RowStat[]): { stop: () => void; paint: () => void } {
-  if (typeof document === 'undefined') {
-    return { stop() {}, paint() { decorate(getStats()) } }
-  }
-  let observer: MutationObserver
-  const paint = (): void => {
-    observer.disconnect()
-    try {
-      decorate(getStats())
-    } finally {
-      observer.observe(document.documentElement, OBSERVE)
-    }
-  }
-  observer = new MutationObserver(paint)
-  observer.observe(document.documentElement, OBSERVE)
-  paint()
-  return { stop() { observer.disconnect() }, paint }
 }
 
 export function decorate(stats: readonly RowStat[], root: ParentNode = document): void {
