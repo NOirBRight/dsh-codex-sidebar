@@ -12,6 +12,7 @@ const GIT_TIMEOUT_MS = 3_000
 const MAX_GIT_BUFFER = 4 * 1024 * 1024
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp|svg)$/i
 const MAX_DIFF_CELLS = 250_000
 const MAX_DIFF_LINES = 4_000
 const MAX_CACHE_ENTRIES = 100
@@ -126,8 +127,9 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
         if (path.length > 0 && !nodes.some((node) => node.path === path)) {
           nodes.push({ path, name: path.split('/').pop() || path })
         }
-        const preview = await readPreview(gate.cwd, path, signal)
-        const hunk = snapshot.files.hunk ?? (path.length === 0 ? undefined : await readChange(gate.cwd, path, preview, run, signal))
+        const image = IMAGE_PATH.test(path)
+        const preview = image ? undefined : await readPreview(gate.cwd, path, signal)
+        const hunk = image ? undefined : snapshot.files.hunk ?? (path.length === 0 ? undefined : await readChange(gate.cwd, path, preview, run, signal))
         const diff = hunk === undefined || hunk.before === hunk.after ? null : boundedFileDiff(hunk.before, hunk.after)
         const tabs = path.length === 0 || path === snapshot.files.path
           ? snapshot.tabs
@@ -374,7 +376,7 @@ async function readChange(cwd: string, path: string, after: string | undefined, 
   return { before, after: next }
 }
 
-async function readPreview(cwd: string, path: string, signal?: AbortSignal): Promise<string | undefined> {
+export async function readPreview(cwd: string, path: string, signal?: AbortSignal): Promise<string | undefined> {
   if (path.length === 0 || (cwd.length === 0 && !isAbsolute(path))) return undefined
   const full = safePath(cwd, path)
   if (full === undefined) return undefined
@@ -382,7 +384,7 @@ async function readPreview(cwd: string, path: string, signal?: AbortSignal): Pro
     signal?.throwIfAborted()
     const info = await stat(full)
     if (!info.isFile()) return undefined
-    const image = /\.(png|jpe?g|gif|webp|svg)$/i.test(path)
+    const image = IMAGE_PATH.test(path)
     const limit = image ? MAX_IMAGE_BYTES : MAX_PREVIEW_BYTES
     if (info.size > limit) return '[File too large to preview: ' + info.size + ' bytes]'
     const handle = await open(full, 'r')
@@ -390,7 +392,7 @@ async function readPreview(cwd: string, path: string, signal?: AbortSignal): Pro
       const buffer = Buffer.alloc(Number(info.size))
       await handle.read(buffer, 0, buffer.length, 0)
       signal?.throwIfAborted()
-      if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) return 'data:' + imageMime(path) + ';base64,' + buffer.toString('base64')
+      if (image) return 'data:' + imageMime(path) + ';base64,' + buffer.toString('base64')
       return buffer.toString('utf8')
     } finally {
       await handle.close()

@@ -57,6 +57,7 @@ export function SidebarPanel({
             onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
             onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
             onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
+            onFilePreview={(path) => controller.readFilePreview(String(sessionId), path)}
           />
         </div>
       )}
@@ -90,6 +91,7 @@ function SidebarChrome({
   onPullTerminal,
   onBrowserTicket,
   onBrowserCapture,
+  onFilePreview,
 }: {
   snapshot: SidebarSnapshot
   workspaceName: string
@@ -98,6 +100,7 @@ function SidebarChrome({
   onPullTerminal: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
   onBrowserTicket: (tabId: string) => Promise<{ path: string; expiresAt: number } | undefined>
   onBrowserCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
+  onFilePreview: (path: string) => Promise<string | undefined>
 }): ReactElement {
   const active = snapshot.tabs.find((tab) => tab.id === snapshot.active)
   const fill = active?.kind === 'Files' || active?.kind === 'Review' || active?.kind === 'Terminal'
@@ -274,6 +277,7 @@ function SidebarChrome({
             snapshot={snapshot}
             workspaceName={workspaceName}
             onIntent={onIntent}
+            onFilePreview={onFilePreview}
             annotateLabel={t('annotate')}
             openTreeLabel={t('openTree')}
             closeTreeLabel={t('closeTree')}

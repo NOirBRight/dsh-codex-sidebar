@@ -5,6 +5,7 @@ import type { LogEvent, RosterEntry } from './side-chat.ts';
 export declare const SIDEBAR_RPC_CHANNEL = "/codex-sidebar";
 export declare const SIDEBAR_SNAPSHOT_ENDPOINT = "sidebar/snapshot";
 export declare const SIDEBAR_DISPATCH_ENDPOINT = "sidebar/dispatch";
+export declare const SIDEBAR_FILE_READ_ENDPOINT = "sidebar/file-read";
 export declare const SIDEBAR_TERMINAL_PULL_ENDPOINT = "sidebar/terminal-pull";
 export declare const SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT = "sidebar/browser-stream-ticket";
 export declare const SIDEBAR_BROWSER_CAPTURE_ENDPOINT = "sidebar/browser-capture";
@@ -19,6 +20,7 @@ export type SnapshotRequest = {
     turnWrites: ReviewChange[];
     roster: RosterEntry[];
     logs: Record<string, LogEvent[]>;
+    light?: boolean;
 };
 export type DispatchRequest = SnapshotRequest & {
     intent: Intent;

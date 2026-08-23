@@ -3,7 +3,7 @@ import type { createRegistry } from './registry.ts';
 import type { ManagedBrowserStream } from './managed-browser-stream.ts';
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts';
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts';
-import type { WorkspaceInspector } from './workspace-inspector.ts';
+import { type WorkspaceInspector } from './workspace-inspector.ts';
 import { AnnotationSendStore, type AnnotationSendPorts } from './host-annotation-send.ts';
 type Registry = ReturnType<typeof createRegistry>;
 export type RpcResult<T> = {

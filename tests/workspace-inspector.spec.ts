@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createFsFiles } from '../src/host-files.ts'
 import { createRegistry } from '../src/registry.ts'
@@ -222,5 +222,58 @@ describe('async workspace inspector', () => {
       { kind: 'del', text: 'old', oldNo: 4, newNo: null },
       { kind: 'add', text: 'new', oldNo: null, newNo: 4 },
     ])
+  })
+
+  it('returns chrome without workspace I/O when the snapshot request is light', async () => {
+    const fixture = gitFixture()
+    const inspector = createWorkspaceInspector({ gitExec: fixture.exec })
+    const saved = snapshot('Review', { mode: 'uncommitted' })
+    const registry = createRegistry({ persist: memoryPersist(saved), filesFor: () => files })
+    const project = vi.spyOn(inspector, 'project')
+    const result = await handleSidebarRpcAsync(registry, SIDEBAR_SNAPSHOT_ENDPOINT, {
+      sessionId: saved.sessionId, cwd: '/work', busy: false, light: true,
+    }, { workspace: inspector })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const reply = result.value as { snapshot: SidebarSnapshot }
+      expect(reply.snapshot.files.tree).toEqual([])
+      expect(reply.snapshot.review.files).toEqual([])
+    }
+    expect(project).not.toHaveBeenCalled()
+    expect(fixture.calls).toEqual([])
+  })
+
+  it('omits image bytes from Files snapshots and serves them through file-read', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dcs-rpc-image-'))
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    writeFileSync(join(root, 'logo.png'), png)
+    writeFileSync(join(root, 'note.ts'), 'const n = 1\n')
+    const inspector = createWorkspaceInspector({ gitExec: async () => '' })
+    const imageBase = snapshot('Files')
+    const projected = await inspector.project({
+      ...imageBase,
+      files: { ...imageBase.files, path: 'logo.png', hunk: null },
+    }, { cwd: root })
+    expect(projected.files.preview).toBeUndefined()
+    expect(projected.files.tree.some((node) => node.path === 'logo.png')).toBe(true)
+
+    const text = await inspector.project({
+      ...imageBase,
+      files: { ...imageBase.files, path: 'note.ts', hunk: null },
+    }, { cwd: root })
+    expect(text.files.preview).toBe('const n = 1\n')
+
+    const registry = createRegistry({ persist: memoryPersist(imageBase), filesFor: () => files })
+    const read = await handleSidebarRpcAsync(registry, SIDEBAR_FILE_READ_ENDPOINT, {
+      sessionId: imageBase.sessionId, cwd: root, path: 'logo.png',
+    }, { workspace: inspector })
+    expect(read.ok).toBe(true)
+    if (read.ok) {
+      expect((read.value as { preview: string }).preview).toBe(`data:image/png;base64,${png.toString('base64')}`)
+    }
+    rmSync(root, { recursive: true, force: true })
   })
 })

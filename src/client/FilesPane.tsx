@@ -13,6 +13,7 @@ export function FilesPane({
   snapshot,
   workspaceName,
   onIntent,
+  onFilePreview,
   annotateLabel,
   openTreeLabel,
   closeTreeLabel,
@@ -26,6 +27,7 @@ export function FilesPane({
   snapshot: SidebarSnapshot
   workspaceName: string
   onIntent: (intent: Intent) => void
+  onFilePreview?: (path: string) => Promise<string | undefined>
   annotateLabel: string
   openTreeLabel: string
   closeTreeLabel: string
@@ -39,10 +41,32 @@ export function FilesPane({
   const files = snapshot.files
   const slash = files.path.lastIndexOf('/')
   const name = slash === -1 ? files.path : files.path.slice(slash + 1)
-  const image = imageSrc(files.path, files.preview)
+  const [fetchedPreview, setFetchedPreview] = useState<string | undefined>()
+  const [fetchFailed, setFetchFailed] = useState(false)
+  const onFilePreviewRef = useRef(onFilePreview)
+  onFilePreviewRef.current = onFilePreview
+  useEffect(() => {
+    setFetchedPreview(undefined)
+    setFetchFailed(false)
+    const load = onFilePreviewRef.current
+    if (files.preview !== undefined || !isImagePath(files.path) || load === undefined) return
+    let cancelled = false
+    void load(files.path).then(
+      (value) => {
+        if (cancelled) return
+        if (value === undefined) setFetchFailed(true)
+        else setFetchedPreview(value)
+      },
+      () => { if (!cancelled) setFetchFailed(true) },
+    )
+    return () => { cancelled = true }
+  }, [files.path, files.preview])
+  const preview = files.preview ?? fetchedPreview
+  const image = imageSrc(files.path, preview)
   const markdown = image === undefined && isMarkdown(files.path)
-  const missing = files.path.length > 0 && files.preview === undefined
-  const tooLarge = image === undefined && isImagePath(files.path) && (files.preview?.startsWith('[File too large') ?? false)
+  const loadingImage = isImagePath(files.path) && preview === undefined && !fetchFailed && onFilePreview !== undefined
+  const missing = files.path.length > 0 && preview === undefined && !loadingImage
+  const tooLarge = image === undefined && isImagePath(files.path) && (preview?.startsWith('[File too large') ?? false)
   const empty = files.path.length === 0
   const showDiff = files.view === 'diff' && files.diff !== null
   const lines = !empty && image === undefined && !markdown && !missing && !showDiff ? (files.preview ?? '').split('\n') : []
@@ -295,7 +319,9 @@ export function FilesPane({
             data-annotated={!markdown && image === undefined && surfaceMarks.length > 0 || undefined}
             data-media={image !== undefined || markdown || undefined}
           >
-            {missing ? (
+            {loadingImage ? (
+              <div className="dcs-missing">正在读取…</div>
+            ) : missing ? (
               <div className="dcs-missing">无法读取 {files.path}</div>
             ) : tooLarge ? (
               <div className="dcs-missing">{files.preview}</div>
@@ -325,7 +351,7 @@ export function FilesPane({
                 className="dcs-md"
                 onMouseUp={markSurface}
               >
-                {renderMarkdown(files.preview ?? '')}
+                {renderMarkdown(preview ?? '')}
                 <FileSurfaceBadges marks={surfaceMarks} pendingRect={files.pendingRect} onEdit={editMark} />
               </div>
             ) : (

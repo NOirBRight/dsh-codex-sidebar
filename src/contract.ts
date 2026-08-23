@@ -7,6 +7,7 @@ import type { LogEvent, RosterEntry } from './side-chat.ts'
 export const SIDEBAR_RPC_CHANNEL = '/codex-sidebar'
 export const SIDEBAR_SNAPSHOT_ENDPOINT = 'sidebar/snapshot'
 export const SIDEBAR_DISPATCH_ENDPOINT = 'sidebar/dispatch'
+export const SIDEBAR_FILE_READ_ENDPOINT = 'sidebar/file-read'
 export const SIDEBAR_TERMINAL_PULL_ENDPOINT = 'sidebar/terminal-pull'
 export const SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT = 'sidebar/browser-stream-ticket'
 export const SIDEBAR_BROWSER_CAPTURE_ENDPOINT = 'sidebar/browser-capture'
@@ -22,6 +23,7 @@ export type SnapshotRequest = {
   turnWrites: ReviewChange[]
   roster: RosterEntry[]
   logs: Record<string, LogEvent[]>
+  light?: boolean
 }
 
 export type DispatchRequest = SnapshotRequest & {
@@ -53,6 +55,7 @@ export function decodeSnapshotRequest(payload: unknown): SnapshotRequest | undef
     turnWrites: decodeTurnWrites(payload.turnWrites),
     roster: decodeRoster(payload.roster),
     logs: decodeLogs(payload.logs),
+    ...payload.light === true ? { light: true } : {},
   }
 }
 

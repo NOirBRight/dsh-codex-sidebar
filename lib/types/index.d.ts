@@ -2,7 +2,7 @@
 export { createSidebarSession, PALETTE } from './session.ts';
 export type { Annotation, AnnotationSource, Effect, FilesPort, Intent, PersistPort, SidebarSession, SidebarSnapshot, ToolKind, } from './session.ts';
 export { createRegistry } from './registry.ts';
-export { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, } from './contract.ts';
+export { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, } from './contract.ts';
 export { formatDelivery, formatEvidenceSend, formatHumanSend, formatSend } from './send-text.ts';
 export declare const name = "dsh-codex-sidebar";
 export declare const inject: string[];

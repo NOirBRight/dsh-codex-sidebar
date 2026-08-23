@@ -8,6 +8,7 @@ import {
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
   SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
+  SIDEBAR_FILE_READ_ENDPOINT,
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
   SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
@@ -56,7 +57,11 @@ export class SidebarController {
   #depth = new Map<string, number>()
   #pathTakeover = false
   #pendingCollapsed = new Map<string, boolean>()
+  /** This client's details-track chrome. Host `collapsed` is not applied here. */
+  #chromeCollapsed = new Map<string, boolean>()
+  #hostCollapsed = new Map<string, boolean>()
   #refreshEpoch = new Map<string, number>()
+  #filePreview = new Map<string, string>()
 
   constructor(ctx: ClientContext) {
     this.#ctx = ctx
@@ -110,6 +115,29 @@ export class SidebarController {
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const epoch = this.#refreshEpoch.get(sessionId) ?? 0
+      if (this.snap(sessionId) === undefined && signal?.aborted !== true) {
+        const lightGate = this.#gate(sessionId)
+        if (lightGate !== undefined) {
+          try {
+            const light = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_SNAPSHOT_ENDPOINT, {
+              ...lightGate,
+              logs: {},
+              light: true,
+            })
+            if (light.ok && isRecord(light.value) && isRecord(light.value.snapshot)) {
+              if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
+              const snapshot = light.value.snapshot as unknown as SidebarSnapshot
+              this.#hostCollapsed.set(sessionId, snapshot.collapsed)
+              const applied = this.#put(snapshot)
+              this.#syncLayout(applied)
+              this.#watchUserTurns(sessionId)
+              void this.#syncStaged(applied)
+            }
+          } catch {
+            // Paint chrome from the full snapshot if the light request fails.
+          }
+        }
+      }
       for (const delay of REFRESH_RETRY_MS) {
         if (signal?.aborted === true) return undefined
         if (delay > 0) {
@@ -123,21 +151,43 @@ export class SidebarController {
           if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
           if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
-          this.#put(snapshot)
-          this.#syncLayout(snapshot)
+          this.#hostCollapsed.set(sessionId, snapshot.collapsed)
+          const applied = this.#put(snapshot)
+          this.#syncLayout(applied)
           this.#watchUserTurns(sessionId)
-          void this.#syncStaged(snapshot)
-          return snapshot
+          void this.#syncStaged(applied)
+          return applied
         } catch {
           // The web host can restart while this mounted client reconnects.
         }
       }
-      return undefined
+      return this.snap(sessionId)
     })
+  }
+
+  async readFilePreview(sessionId: string, path: string): Promise<string | undefined> {
+    const key = sessionId + '\0' + path
+    const hit = this.#filePreview.get(key)
+    if (hit !== undefined) return hit
+    const gate = this.#gate(sessionId)
+    if (gate === undefined) return undefined
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_FILE_READ_ENDPOINT, {
+      sessionId,
+      cwd: gate.cwd,
+      path,
+    })
+    if (!result.ok || !isRecord(result.value) || typeof result.value.preview !== 'string') return undefined
+    if (this.#filePreview.size >= 4) {
+      const first = this.#filePreview.keys().next().value
+      if (first !== undefined) this.#filePreview.delete(first)
+    }
+    this.#filePreview.set(key, result.value.preview)
+    return result.value.preview
   }
 
   async dispatch(sessionId: string, intent: Intent, applyEffects = true): Promise<SidebarSnapshot | undefined> {
     const toggle = intent.type === 'toggle-collapsed'
+    const epoch = this.#refreshEpoch.get(sessionId) ?? 0
     const work = async (): Promise<SidebarSnapshot | undefined> => {
       const gate = this.#gate(sessionId, !toggle && applyEffects)
       if (gate === undefined) return undefined
@@ -146,9 +196,12 @@ export class SidebarController {
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_DISPATCH_ENDPOINT, { ...gate, intent: prepared })
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
+      if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
       if (toggle) this.#pendingCollapsed.delete(sessionId)
-      this.#put(reply.snapshot)
-      this.#syncLayout(reply.snapshot)
+      else this.#writeChrome(sessionId, reply.snapshot.collapsed)
+      this.#hostCollapsed.set(sessionId, reply.snapshot.collapsed)
+      const applied = this.#put(reply.snapshot)
+      this.#syncLayout(applied)
       this.#watchUserTurns(sessionId)
       if (applyEffects) {
         try {
@@ -160,10 +213,9 @@ export class SidebarController {
         }
       }
       const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
-      if (!sending) void this.#syncStaged(reply.snapshot)
-      return reply.snapshot
+      if (!sending) void this.#syncStaged(applied)
+      return applied
     }
-    if (toggle) return work()
     return this.#enqueue(sessionId, work)
   }
 
@@ -309,13 +361,15 @@ export class SidebarController {
     return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
   }
 
-  #put(snapshot: SidebarSnapshot): void {
+  #put(snapshot: SidebarSnapshot): SidebarSnapshot {
     const pending = this.#pendingCollapsed.get(snapshot.sessionId)
-    const next = pending === undefined ? snapshot : { ...snapshot, collapsed: pending }
+    const chrome = this.#chromeCollapsed.get(snapshot.sessionId)
+    const next = { ...snapshot, collapsed: pending ?? chrome ?? true }
     this.#store = {
       bySession: { ...this.#store.bySession, [next.sessionId]: next },
     }
     for (const listener of this.#listeners) listener()
+    return next
   }
 
   /**
@@ -326,34 +380,41 @@ export class SidebarController {
     this.#applyTrack(true)
   }
 
-  /** Open the AppFrame details track immediately, then persist the expanded flag. */
+  /** Open this client's details track. Other surfaces keep their own chrome. */
   reveal(sessionId: string): void {
     const snapshot = this.snap(sessionId)
     if (snapshot?.collapsed === false) {
       this.#applyTrack(false)
       return
     }
+    this.#writeChrome(sessionId, false)
     this.#noteCollapsed(sessionId, false)
     this.#applyTrack(false)
     if (snapshot !== undefined) this.#put({ ...snapshot, collapsed: false })
-    void this.dispatch(sessionId, { type: 'toggle-collapsed' })
+    if (this.#hostCollapsed.get(sessionId) !== false) {
+      void this.dispatch(sessionId, { type: 'toggle-collapsed' })
+    }
   }
 
-  /** Close the track and optimistically retain the collapsed state locally. */
+  /** Close this client's details track without collapsing other surfaces. */
   hide(sessionId: string): void {
     const snapshot = this.snap(sessionId)
     if (snapshot === undefined || snapshot.collapsed !== false) {
       this.#applyTrack(true)
       return
     }
+    this.#writeChrome(sessionId, true)
     this.#noteCollapsed(sessionId, true)
     this.#applyTrack(true)
     this.#put({ ...snapshot, collapsed: true })
-    void this.dispatch(sessionId, { type: 'toggle-collapsed' })
   }
 
   syncTrack(collapsed: boolean | undefined): void {
     this.#applyTrack(collapsed === false ? false : true)
+  }
+
+  #writeChrome(sessionId: string, collapsed: boolean): void {
+    this.#chromeCollapsed.set(sessionId, collapsed)
   }
 
   #noteCollapsed(sessionId: string, collapsed: boolean): void {

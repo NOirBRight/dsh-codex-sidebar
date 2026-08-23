@@ -6,6 +6,7 @@ import {
   SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT,
   SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
+  SIDEBAR_FILE_READ_ENDPOINT,
   SIDEBAR_SNAPSHOT_ENDPOINT,
   SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT,
   SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT,
@@ -20,7 +21,7 @@ import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
 import { browserDeviceViewport } from './browser.ts'
 import type { BrowserEvidence, SidebarSnapshot } from './session.ts'
-import type { WorkspaceInspector } from './workspace-inspector.ts'
+import { readPreview, type WorkspaceInspector } from './workspace-inspector.ts'
 import {
   AnnotationSendStore,
   buildStagedBatch,
@@ -116,6 +117,13 @@ export async function handleSidebarRpcAsync(
       services.annotationSend?.unstage(payload.sessionId)
       return { ok: true, value: { unstaged: true } }
     }
+    if (endpoint === SIDEBAR_FILE_READ_ENDPOINT) {
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.path !== 'string') {
+        return fail('invalid sidebar file-read request')
+      }
+      const cwd = typeof payload.cwd === 'string' ? payload.cwd : ''
+      return { ok: true, value: { preview: await readPreview(cwd, payload.path) } }
+    }
     synchronizeManagedState(registry, payload, services)
     if (services.workspace !== undefined) {
       const projected = await handleWorkspaceRpc(registry, endpoint, payload, services.workspace)
@@ -184,6 +192,9 @@ async function handleWorkspaceRpc(
     const request = decodeSnapshotRequest(payload)
     if (request === undefined) return fail('invalid sidebar snapshot request')
     const box = registry.forSession(request.sessionId, request)
+    if (request.light === true) {
+      return { ok: true, value: { snapshot: box.snapshot(false) } }
+    }
     const base = box.snapshot(false)
     const revision = box.revision()
     const gateKey = projectionGateKey(request)

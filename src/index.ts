@@ -24,6 +24,7 @@ export type {
 export { createRegistry } from './registry.ts'
 export {
   SIDEBAR_DISPATCH_ENDPOINT,
+  SIDEBAR_FILE_READ_ENDPOINT,
   SIDEBAR_RPC_CHANNEL,
   SIDEBAR_SNAPSHOT_ENDPOINT,
 } from './contract.ts'
