@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT, SIDEBAR_TERMINAL_PULL_ENDPOINT } from '../src/contract.ts'
-import { handleSidebarRpc } from '../src/host-rpc.ts'
+import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createRegistry } from '../src/registry.ts'
 import { createSidebarSession } from '../src/session.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
@@ -148,5 +148,26 @@ describe('idle-cost seams', () => {
     expect(trees).toBe(0)
     box.snapshot()
     expect(trees).toBeGreaterThan(0)
+  })
+
+  it('does not enumerate managed browsers on terminal-pull', async () => {
+    const list = vi.fn(() => [])
+    const registry = createRegistry({
+      persist: memoryPersist(),
+      filesFor: () => ({ read() { return '' }, tree() { return [] } }),
+      terminalFor: () => fakePty(),
+    })
+    await handleSidebarRpcAsync(registry, SIDEBAR_TERMINAL_PULL_ENDPOINT, {
+      sessionId: 'sess-a',
+      tabId: 't1',
+      since: 0,
+    }, { managedBrowser: { list } as never })
+    expect(list).not.toHaveBeenCalled()
+    await handleSidebarRpcAsync(registry, SIDEBAR_SNAPSHOT_ENDPOINT, {
+      sessionId: 'sess-a',
+      cwd: '/w',
+      busy: false,
+    }, { managedBrowser: { list } as never })
+    expect(list).toHaveBeenCalled()
   })
 })

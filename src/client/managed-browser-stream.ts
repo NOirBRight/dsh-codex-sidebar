@@ -1,3 +1,7 @@
+export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
+  return pageVisible && intersecting
+}
+
 export const BROWSER_STREAM_HEADER_BYTES = 17
 
 export type DecodedBrowserFrame = {

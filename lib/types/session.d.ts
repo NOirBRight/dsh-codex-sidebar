@@ -74,6 +74,7 @@ export type FilesPort = {
 export type PersistPort = {
     load(sessionId: string): SidebarSnapshot | undefined;
     save(sessionId: string, snapshot: SidebarSnapshot): void;
+    flush?(): void | Promise<void>;
 };
 export type Effect = {
     type: 'send';

@@ -288,4 +288,30 @@ describe('tool-open', () => {
     expect(takeRowStat(pending, 'src-python/route_plan.py')).toEqual({ added: 1, removed: 0 })
     expect(takeRowStat(pending, 'src-python/route_plan.py')).toBeUndefined()
   })
+
+  it('reuses hunks from an unchanged settled node across snapshot objects', () => {
+    let reads = 0
+    const diffs = [{ path: 'src/cached.ts', oldText: 'old\n', newText: 'new\n' }]
+    const resultView = {
+      card: 'diff',
+      get diffs() {
+        reads += 1
+        return diffs
+      },
+    }
+    const node = settled({ callId: 'cached-settled', resultView })
+    expect(statsFromSnapshot({ nodes: [node], runningCalls: [] })).toEqual({
+      'src/cached.ts': { added: 1, removed: 1 },
+    })
+    const afterFirst = reads
+    expect(afterFirst).toBeGreaterThan(0)
+    expect(statsFromSnapshot({
+      nodes: [node],
+      runningCalls: [running({ callView: diffView({ path: 'src/live.ts', oldText: null, newText: 'x\n' }) })],
+    })).toEqual({
+      'src/cached.ts': { added: 1, removed: 1 },
+      'src/live.ts': { added: 1, removed: 0 },
+    })
+    expect(reads).toBe(afterFirst)
+  })
 })

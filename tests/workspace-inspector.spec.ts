@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createFsFiles } from '../src/host-files.ts'
@@ -150,6 +150,7 @@ describe('async workspace inspector', () => {
       project: vi.fn(async () => { throw new Error('git unavailable') }),
       execCount: () => 0,
       clear() {},
+      invalidate() {},
     }
     const result = await handleSidebarRpcAsync(registry, SIDEBAR_DISPATCH_ENDPOINT, {
       sessionId: saved.sessionId,
@@ -275,5 +276,23 @@ describe('async workspace inspector', () => {
       expect((read.value as { preview: string }).preview).toBe(`data:image/png;base64,${png.toString('base64')}`)
     }
     rmSync(root, { recursive: true, force: true })
+  })
+
+  it('keeps git results for 5s and refreshes after invalidate', async () => {
+    const fixture = gitFixture()
+    let now = 0
+    const inspector = createWorkspaceInspector({ gitExec: fixture.exec, ttlMs: 5_000, now: () => now })
+    const base = snapshot('Review', { mode: 'uncommitted' })
+    await inspector.project(base, { cwd: '/work' })
+    expect(fixture.calls).toHaveLength(5)
+    now = 4_999
+    await inspector.project(base, { cwd: '/work' })
+    expect(fixture.calls).toHaveLength(5)
+    inspector.invalidate('/work')
+    await inspector.project(base, { cwd: '/work' })
+    expect(fixture.calls).toHaveLength(10)
+    now = 10_000
+    await inspector.project(base, { cwd: '/work' })
+    expect(fixture.calls).toHaveLength(15)
   })
 })

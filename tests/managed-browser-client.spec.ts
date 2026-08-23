@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamShouldRun, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
+  it('pauses the live stream when the page is hidden or the canvas is offscreen', () => {
+    expect(browserStreamShouldRun(true, true)).toBe(true)
+    expect(browserStreamShouldRun(false, true)).toBe(false)
+    expect(browserStreamShouldRun(true, false)).toBe(false)
+  })
   it('decodes the host binary frame and derives same-origin ws URLs', () => {
     const encoded = encodeBrowserStreamFrame({
       version: 1,

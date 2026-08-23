@@ -10,6 +10,7 @@ export type WorkspaceInspector = {
     project(snapshot: SidebarSnapshot, gate: WorkspaceGate, signal?: AbortSignal): Promise<SidebarSnapshot>;
     execCount(): number;
     clear(): void;
+    invalidate(cwd?: string): void;
 };
 type Stat = {
     added: number;

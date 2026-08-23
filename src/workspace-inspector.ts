@@ -5,9 +5,9 @@ import { open, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { FileChange, SidebarSnapshot, TreeNode } from './session.ts'
 import { fileDiff, type DiffLine, type FileDiff, type ReviewChange, type ReviewFile, type ReviewMode, type ReviewScopeStats, type ReviewState } from './review.ts'
-import { collectTree } from './workspace-tree.ts'
+import { collectTreeAsync } from './workspace-tree.ts'
 
-const CACHE_TTL_MS = 1_500
+const CACHE_TTL_MS = 5_000
 const GIT_TIMEOUT_MS = 3_000
 const MAX_GIT_BUFFER = 4 * 1024 * 1024
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024
@@ -28,6 +28,7 @@ export type WorkspaceInspector = {
   project(snapshot: SidebarSnapshot, gate: WorkspaceGate, signal?: AbortSignal): Promise<SidebarSnapshot>
   execCount(): number
   clear(): void
+  invalidate(cwd?: string): void
 }
 
 type Stat = { added: number; removed: number; binary?: boolean }
@@ -104,7 +105,7 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
   async function tree(cwd: string, signal?: AbortSignal): Promise<TreeNode[]> {
     if (cwd.length === 0) return []
     signal?.throwIfAborted()
-    return collectTree(cwd, signal)
+    return collectTreeAsync(cwd, signal)
   }
 
   return {
@@ -112,6 +113,20 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
     clear() {
       gitCache.clear(); gitPending.clear(); refCache.clear(); refPending.clear()
       detailCache.clear(); detailPending.clear(); execs = 0
+    },
+    invalidate(cwd) {
+      if (cwd === undefined || cwd.length === 0) {
+        gitCache.clear(); gitPending.clear(); refCache.clear(); refPending.clear()
+        detailCache.clear(); detailPending.clear()
+        return
+      }
+      gitCache.delete(cwd)
+      gitPending.delete(cwd)
+      const prefix = cwd + '\0'
+      for (const key of [...refCache.keys()]) if (key.startsWith(prefix)) refCache.delete(key)
+      for (const key of [...refPending.keys()]) if (key.startsWith(prefix)) refPending.delete(key)
+      for (const key of [...detailCache.keys()]) if (key.startsWith(prefix)) detailCache.delete(key)
+      for (const key of [...detailPending.keys()]) if (key.startsWith(prefix)) detailPending.delete(key)
     },
     async project(snapshot, gate, signal) {
       if (snapshot.collapsed) return snapshot

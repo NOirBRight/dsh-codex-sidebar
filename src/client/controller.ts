@@ -18,6 +18,7 @@ import {
 } from '../contract.ts'
 import { formatDelivery } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
+import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
@@ -189,7 +190,7 @@ export class SidebarController {
     const toggle = intent.type === 'toggle-collapsed'
     const epoch = this.#refreshEpoch.get(sessionId) ?? 0
     const work = async (): Promise<SidebarSnapshot | undefined> => {
-      const gate = this.#gate(sessionId, !toggle && applyEffects)
+      const gate = this.#gate(sessionId, { includeLogs: !toggle && applyEffects, intent })
       if (gate === undefined) return undefined
       const prepared = await this.#withBrowserEvidence(sessionId, intent, gate)
       if (prepared === undefined) return undefined
@@ -337,7 +338,7 @@ export class SidebarController {
     }, true)
   }
 
-  #gate(sessionId: string, includeLogs = false): {
+  #gate(sessionId: string, opts: { includeLogs?: boolean; intent?: Intent } = {}): {
     sessionId: string
     cwd: string
     busy: boolean
@@ -352,13 +353,21 @@ export class SidebarController {
     const busy = sessionState?.running === true
     const archived = archivedIds(this.#ctx)
     const roster = rosterFromList(list, archived)
-    const logs = includeLogs ? logsFromList(this.#ctx, list.ids as string[]) : {}
+    const logs = opts.includeLogs === true ? logsFromList(this.#ctx, list.ids as string[]) : {}
+    const snapshot = this.snap(sessionId)
+    const turnWrites = needsTurnWrites(snapshot, opts.intent)
+      ? this.#turnWritesFor(sessionId, sessionState)
+      : []
+    return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
+  }
+
+  #turnWritesFor(sessionId: string, sessionState: unknown): ReturnType<typeof turnWritesFromSession> {
     const cached = this.#turnWritesCache.get(sessionId)
     const turnWrites = cached?.source === sessionState
       ? cached.turnWrites
       : turnWritesFromSession(sessionState)
     if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
-    return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
+    return turnWrites
   }
 
   #put(snapshot: SidebarSnapshot): SidebarSnapshot {

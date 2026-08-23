@@ -3,6 +3,7 @@ import {
   createPendingThrottle,
   ignoredTranscriptTarget,
   installTranscriptDecorators,
+  mutationPaintTarget,
   shouldRebindSession,
   transcriptMutationIsIgnored,
 } from '../src/client/transcript-decorators.ts'
@@ -141,11 +142,14 @@ describe('ignored transcript mutations', () => {
   it('paints transcript mutations', () => {
     vi.stubGlobal('Element', FakeElement)
     expect(transcriptMutationIsIgnored(record(new FakeElement('', { 'data-side': 'center' })))).toBe(false)
+    expect(mutationPaintTarget(new FakeElement('dcs-root') as unknown as Node)).toBeNull()
+    expect(mutationPaintTarget(new FakeElement() as unknown as Node)).toBeInstanceOf(FakeElement)
   })
 })
 
 describe('installTranscriptDecorators', () => {
   it('installs one observer and coalesces a burst to one pass', () => {
+    vi.useFakeTimers()
     stubDom()
     const stats = vi.fn()
     const chips = vi.fn()
@@ -165,10 +169,30 @@ describe('installTranscriptDecorators', () => {
     const transcript = new FakeElement()
     for (let i = 0; i < 100; i++) observer.deliver([record(transcript)])
     expect(stats).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(200)
     flushFrame()
     expect(stats).toHaveBeenCalledTimes(2)
     expect(chips).toHaveBeenCalledTimes(2)
     expect(paths).toHaveBeenCalledTimes(2)
+    expect(stats).toHaveBeenLastCalledWith(transcript)
+    installed.stop()
+  })
+
+  it('falls back to a full document scan past the incremental root cap', () => {
+    vi.useFakeTimers()
+    stubDom()
+    const stats = vi.fn()
+    const installed = installTranscriptDecorators({
+      paintStats: stats,
+      paintChips() {},
+      paintPaths() {},
+      openPath() {},
+    })
+    const observer = FakeObserver.instances[0]!
+    observer.deliver(Array.from({ length: 21 }, () => record(new FakeElement())))
+    vi.advanceTimersByTime(200)
+    flushFrame()
+    expect(stats).toHaveBeenLastCalledWith(document)
     installed.stop()
   })
 
@@ -226,6 +250,7 @@ describe('installTranscriptDecorators', () => {
   })
 
   it('stop disconnects the observer and cancels a pending frame', () => {
+    vi.useFakeTimers()
     stubDom()
     const stats = vi.fn()
     const installed = installTranscriptDecorators({
@@ -235,9 +260,9 @@ describe('installTranscriptDecorators', () => {
       openPath() {},
     })
     FakeObserver.instances[0]!.deliver([record(new FakeElement())])
-    expect(rafQueue).toHaveLength(1)
     installed.stop()
     expect(FakeObserver.instances[0]?.disconnected).toBe(true)
+    vi.advanceTimersByTime(200)
     flushFrame()
     expect(stats).toHaveBeenCalledTimes(1)
   })

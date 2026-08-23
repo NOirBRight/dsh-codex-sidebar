@@ -5,4 +5,5 @@ export declare const SKIP_WALK: Set<string>;
 export declare const SKIP_SHOW: Set<string>;
 export declare const SHOW_COLLAPSED: Set<string>;
 export declare function collectTree(root: string, signal?: AbortSignal): TreeNode[];
+export declare function collectTreeAsync(root: string, signal?: AbortSignal): Promise<TreeNode[]>;
 //# sourceMappingURL=workspace-tree.d.ts.map

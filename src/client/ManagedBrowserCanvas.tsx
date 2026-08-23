@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamShouldRun, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -95,7 +95,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     let intersecting = true
     const update = (): void => {
       const pageVisible = typeof document === 'undefined' || document.visibilityState === 'visible'
-      setVisible(pageVisible && intersecting)
+      setVisible(browserStreamShouldRun(pageVisible, intersecting))
     }
     const onVisibility = (): void => { update() }
     document.addEventListener('visibilitychange', onVisibility)

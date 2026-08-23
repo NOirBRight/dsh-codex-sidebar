@@ -124,7 +124,9 @@ export async function handleSidebarRpcAsync(
       const cwd = typeof payload.cwd === 'string' ? payload.cwd : ''
       return { ok: true, value: { preview: await readPreview(cwd, payload.path) } }
     }
-    synchronizeManagedState(registry, payload, services)
+    if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT || endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+      synchronizeManagedState(registry, payload, services)
+    }
     if (services.workspace !== undefined) {
       const projected = await handleWorkspaceRpc(registry, endpoint, payload, services.workspace)
       if (projected !== undefined) return projected
@@ -207,8 +209,9 @@ async function handleWorkspaceRpc(
     const box = registry.forSession(request.sessionId, request)
     const effects = box.dispatch(request.intent)
     invalidateSnapshot(request.sessionId)
+    if (reviewWorkspaceIntent(request.intent)) workspace.invalidate(request.cwd)
     if (request.intent.type === 'toggle-collapsed') {
-      return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      return { ok: true, value: { snapshot: box.snapshot(false), effects } }
     }
     const snapshot = await projectOrBase(workspace, box.snapshot(false), request)
     return { ok: true, value: { snapshot, effects } }
@@ -327,6 +330,12 @@ function projectionGateKey(request: { cwd: string; busy: boolean; turnWrites: Ar
     add(write.path); add(write.before); add(write.after)
   }
   return String(hash >>> 0)
+}
+
+function reviewWorkspaceIntent(intent: { type: string; kind?: unknown }): boolean {
+  return intent.type === 'review-set-branch'
+    || intent.type === 'select-tab'
+    || (intent.type === 'pick-tool' && intent.kind === 'Review')
 }
 
 function fail(message: string): RpcResult<unknown> {

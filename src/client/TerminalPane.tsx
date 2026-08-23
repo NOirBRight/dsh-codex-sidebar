@@ -68,7 +68,7 @@ export function TerminalPane({
 
   useEffect(() => {
     return startSerialPull({
-      intervalMs: 80,
+      intervalMs: 100,
       pull: () => {
         const pull = onPullRef.current
         if (pull !== undefined) return pull(tabId, seqRef.current)

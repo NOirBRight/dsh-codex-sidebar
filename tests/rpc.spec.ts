@@ -35,7 +35,7 @@ function memoryPersist(): PersistPort {
 }
 
 describe('sidebar RPC', () => {
-  it('opens a Files Tab through dispatch and reloads it for the same 主会话', () => {
+  it('opens a Files Tab through dispatch and reloads it for the same 主会话', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dcs-'))
     const persist = createFilePersist(root)
     const files = memoryFiles({ 'src/Login.tsx': 'export function Login() {}' })
@@ -52,6 +52,7 @@ describe('sidebar RPC', () => {
     expect(first.snapshot.collapsed).toBe(false)
     expect(first.snapshot.tabs[0]?.target).toBe('src/Login.tsx')
 
+    await persist.flush()
     const registry2 = createRegistry({ persist, filesFor: () => files })
     const loaded = handleSidebarRpc(registry2, SIDEBAR_SNAPSHOT_ENDPOINT, gate)
     expect(loaded.ok).toBe(true)

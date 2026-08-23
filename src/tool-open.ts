@@ -9,6 +9,7 @@ export type OpenHunk = { before: string; after: string; op: 'write' | 'edit' }
 
 let collecting: Array<OpenHunk & { path: string }> | undefined
 const collectedCache = new WeakMap<object, { stats: Stats; hunks: Array<OpenHunk & { path: string }> }>()
+const settledNodeCache = new WeakMap<object, Array<OpenHunk & { path: string }>>()
 
 export function viewForTool(toolName: string | undefined): 'preview' | 'diff' {
   if (toolName !== undefined && WRITE_TOOL.test(toolName)) return 'diff'
@@ -183,21 +184,36 @@ function absorbRoots(value: unknown, state: CallState, out: Stats, seen: Set<obj
 function absorbCall(call: Record<string, unknown>, state: CallState, out: Stats, seen: Set<object>): void {
   if (seen.has(call)) return
   seen.add(call)
-  const start = collecting?.length ?? 0
-  if (state === 'settled') {
-    if (!absorbView(call.resultView, out)) absorbView(call.callView, out)
+  const cached = state === 'settled' ? settledNodeCache.get(call) : undefined
+  if (cached !== undefined) {
+    replayHunks(cached, out)
   } else {
-    absorbView(call.callView, out)
+    const start = collecting?.length ?? 0
+    if (state === 'settled') {
+      if (!absorbView(call.resultView, out)) absorbView(call.callView, out)
+    } else {
+      absorbView(call.callView, out)
+    }
+    absorbArgs(call, out)
+    absorbPair(call, out)
+    absorbResultText(call, out)
+    collapseCallHunks(start)
+    if (state === 'settled' && collecting !== undefined) {
+      settledNodeCache.set(call, collecting.slice(start))
+    }
   }
-  absorbArgs(call, out)
-  absorbPair(call, out)
-  absorbResultText(call, out)
-  collapseCallHunks(start)
   if (!Array.isArray(call.subCalls)) return
   for (const child of call.subCalls) {
     if (!isRecord(child) || typeof child.callId !== 'string') continue
     if (child.kind === 'tool-result') absorbCall(child, 'settled', out, seen)
     else if (child.kind === undefined) absorbCall(child, 'running', out, seen)
+  }
+}
+
+function replayHunks(hunks: Array<OpenHunk & { path: string }>, out: Stats): void {
+  for (const hunk of hunks) {
+    noteHunk(hunk.path, hunk.before, hunk.after, hunk.op)
+    mergeStat(out, hunk.path, lineStats(hunk.before, hunk.after))
   }
 }
 

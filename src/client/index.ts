@@ -76,15 +76,18 @@ export function apply(ctx: ClientContext): void {
       label: (n: number, from: string) => en.openMark.replace('{n}', String(n)).replace('{from}', from),
     }
     const decorators = installTranscriptDecorators({
-      paintStats: () => { decorateStats(readStats()) },
-      paintChips: () => { decorateChips(chipPorts) },
-      paintPaths: () => { decoratePaths() },
+      paintStats: (root) => { decorateStats(lastStats, root) },
+      paintChips: (root) => { decorateChips(chipPorts, root) },
+      paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
         const open = ctx.workspaces?.openPath
         if (open !== undefined) void open(path)
       },
     })
-    const throttle = createPendingThrottle(decorators.paintData, 200)
+    const throttle = createPendingThrottle(() => {
+      readStats()
+      decorators.paintData()
+    }, 200)
     let unsubSession: (() => void) | undefined
     let boundId: string | undefined
     let boundStore: unknown
@@ -103,6 +106,7 @@ export function apply(ctx: ClientContext): void {
       boundStore = store
       if (id === undefined || store === undefined) return
       unsubSession = store.subscribe(() => { throttle.schedule() })
+      readStats()
       decorators.paintData()
     }
     bindSession()

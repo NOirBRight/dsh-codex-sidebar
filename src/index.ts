@@ -80,17 +80,19 @@ export function apply(ctx: HostContext): void {
   const managedBrowser = new ManagedBrowserRuntime()
   const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
+  const persist = createFilePersist()
   const workspace = createWorkspaceInspector()
   ctx.effect(() => {
     const timer = setInterval(() => { void managedBrowser.reap() }, 15_000)
     timer.unref()
     return () => {
       clearInterval(timer)
+      void persist.flush()
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }
   }, 'dsh-codex-sidebar: managed browser lifecycle')
   const registry = createRegistry({
-    persist: createFilePersist(),
+    persist,
     filesFor: (sessionId, io) => {
       const files = createFsFiles(io.cwdOf)
       filesBySession.set(sessionId, files)

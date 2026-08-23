@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { createFilePersist, sidebarPersistRoot } from '../src/host-persist.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createFilePersist, PERSIST_DEBOUNCE_MS, sidebarPersistRoot } from '../src/host-persist.ts'
 import type { SidebarSnapshot } from '../src/session.ts'
 
 function legacySnapshot(sessionId: string): SidebarSnapshot {
@@ -72,6 +72,23 @@ describe('sidebar host persistence', () => {
     expect(JSON.parse(readFileSync(join(target, sessionId + '.json'), 'utf8')).sessionId).toBe(sessionId)
     expect(persist.load('session-other')).toBeUndefined()
 
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('debounces disk writes and flushes the latest snapshot', async () => {
+    vi.useFakeTimers()
+    const root = mkdtempSync(join(tmpdir(), 'dcs-persist-debounce-'))
+    const persist = createFilePersist(root)
+    const first = legacySnapshot('sess-a')
+    const second = { ...first, collapsed: false }
+    persist.save('sess-a', first)
+    persist.save('sess-a', second)
+    expect(existsSync(join(root, 'sess-a.json'))).toBe(false)
+    expect(persist.load('sess-a')?.collapsed).toBe(false)
+    await vi.advanceTimersByTimeAsync(PERSIST_DEBOUNCE_MS)
+    await persist.flush()
+    expect(JSON.parse(readFileSync(join(root, 'sess-a.json'), 'utf8')).collapsed).toBe(false)
+    vi.useRealTimers()
     rmSync(root, { recursive: true, force: true })
   })
 })
