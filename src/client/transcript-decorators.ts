@@ -4,6 +4,8 @@ import { pathFromClick } from './path-links.ts'
 
 const OBSERVE: MutationObserverInit = { childList: true, subtree: true }
 const IGNORE = '.dcs-root, .dcs-col, [data-shell-overlay], [data-side="details"], [data-side="sidebar"]'
+export const TRANSCRIPT_ROW = '[data-chat-flow-kind], [data-tool]'
+export const TRANSCRIPT_HOST = '[data-chat-flow], [data-side="center"]'
 export const TRANSCRIPT_PAINT_MIN_MS = 200
 export const MAX_INCREMENTAL_ROOTS = 20
 
@@ -14,8 +16,13 @@ export type TranscriptDecoratorPaints = {
   openPath: (path: string) => void
 }
 
+export type TranscriptPaintData = {
+  stats?: boolean
+  chips?: boolean
+}
+
 export type TranscriptDecorators = {
-  paintData: () => void
+  paintData: (opts?: TranscriptPaintData) => void
   stop: () => void
 }
 
@@ -29,14 +36,50 @@ export function transcriptMutationIsIgnored(record: MutationRecord): boolean {
   return ignoredTranscriptTarget(record.target)
 }
 
-export function mutationPaintTarget(node: Node | null): Element | 'full' | null {
+export function transcriptRowOf(node: Node | null): Element | null {
   if (ignoredTranscriptTarget(node)) return null
   const el = node instanceof Element ? node : node?.parentElement ?? null
-  if (!(el instanceof Element)) return 'full'
-  if (typeof document !== 'undefined' && (el === el.ownerDocument?.documentElement || el === document.documentElement)) {
-    return 'full'
+  if (!(el instanceof Element) || typeof el.closest !== 'function') return null
+  const row = el.closest(TRANSCRIPT_ROW)
+  return row instanceof Element && !ignoredTranscriptTarget(row) ? row : null
+}
+
+export function mutationPaintTarget(node: Node | null): Element | null {
+  return transcriptRowOf(node)
+}
+
+export function collectAddedTranscriptRoots(record: MutationRecord): Element[] {
+  if (transcriptMutationIsIgnored(record)) return []
+  const roots: Element[] = []
+  const seen = new Set<Element>()
+  const add = (el: Element | null): void => {
+    if (el === null || seen.has(el)) return
+    seen.add(el)
+    roots.push(el)
   }
-  return el
+  for (const node of record.addedNodes) {
+    if (!(node instanceof Element)) {
+      add(transcriptRowOf(node))
+      continue
+    }
+    const row = transcriptRowOf(node)
+    if (row !== null) {
+      add(row)
+      continue
+    }
+    if (typeof node.querySelectorAll !== 'function') continue
+    for (const hit of node.querySelectorAll(TRANSCRIPT_ROW)) {
+      if (hit instanceof Element) add(transcriptRowOf(hit) ?? hit)
+    }
+  }
+  if (record.addedNodes.length === 0) add(transcriptRowOf(record.target))
+  return roots
+}
+
+export function transcriptPaintHosts(doc: Document = document): ParentNode[] {
+  if (typeof doc.querySelectorAll !== 'function') return [doc]
+  const hosts = doc.querySelectorAll(TRANSCRIPT_HOST)
+  return hosts.length > 0 ? [...hosts] : [doc]
 }
 
 export function createPendingThrottle(paint: () => void, ms: number): { schedule: () => void; cancel: () => void } {
@@ -99,11 +142,11 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     if (fullScan || pendingRoots.size > MAX_INCREMENTAL_ROOTS) {
       pendingRoots.clear()
       fullScan = false
-      return [document]
+      return transcriptPaintHosts()
     }
     const roots = [...pendingRoots]
     pendingRoots.clear()
-    return roots.length === 0 ? [document] : roots
+    return roots.length === 0 ? transcriptPaintHosts() : roots
   }
 
   const paintDom = (): void => {
@@ -118,13 +161,18 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     })
   }
 
-  const paintData = (): void => {
+  const paintData = (opts?: TranscriptPaintData): void => {
+    const stats = opts?.stats !== false
+    const chips = opts?.chips !== false
+    if (!stats && !chips) return
     pendingRoots.clear()
     fullScan = false
     lastPaint = Date.now()
     run(() => {
-      isolate(() => { paints.paintStats() })
-      isolate(() => { paints.paintChips() })
+      for (const host of transcriptPaintHosts()) {
+        if (stats) isolate(() => { paints.paintStats(host) })
+        if (chips) isolate(() => { paints.paintChips(host) })
+      }
     })
   }
 
@@ -160,11 +208,10 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
   observer = new MutationObserver((records) => {
     let dirty = false
     for (const record of records) {
-      const target = mutationPaintTarget(record.target)
-      if (target === null) continue
+      const roots = collectAddedTranscriptRoots(record)
+      if (roots.length === 0) continue
       dirty = true
-      if (target === 'full') fullScan = true
-      else pendingRoots.add(target)
+      for (const root of roots) pendingRoots.add(root)
     }
     if (dirty) scheduleDom()
   })

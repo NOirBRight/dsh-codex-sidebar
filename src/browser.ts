@@ -137,23 +137,24 @@ export function syncManagedBrowser(state: BrowserState, projection: {
   error?: string
 }): BrowserState {
   const current = hydrate(state)
+  const publicUrl = isChromiumErrorUrl(projection.url) ? current.url : projection.url
   const changedDocument = current.documentId !== null && current.documentId !== projection.documentId
   const ready = projection.status === 'ready'
   const failed = projection.status === 'error' || projection.status === 'crashed'
-  const changedUrl = projection.url.length > 0 && projection.url !== current.url
+  const changedUrl = publicUrl.length > 0 && liveHref(publicUrl) !== undefined && publicUrl !== current.url
   const history = changedUrl
-    ? [...current.history.slice(0, current.index + 1), projection.url]
+    ? [...current.history.slice(0, current.index + 1), publicUrl]
     : current.history
   const index = changedUrl ? history.length - 1 : current.index
   return flags({
     ...current,
-    url: projection.url || current.url,
-    draft: projection.url || current.draft,
+    url: publicUrl || current.url,
+    draft: publicUrl || current.draft,
     status: ready ? 'loaded' : failed ? 'unreachable' : current.status,
     runtimeStatus: projection.status,
     documentId: projection.documentId,
     runtimeError: projection.error ?? null,
-    page: ready ? { url: projection.url, title: projection.title || projection.url, elements: [] } : failed ? null : current.page,
+    page: ready ? { url: publicUrl, title: projection.title || publicUrl, elements: [] } : failed ? null : current.page,
     history,
     index,
     ...changedDocument ? {
@@ -376,6 +377,11 @@ export function normalizeUrl(raw: string): string {
 export function liveHref(url: string): string | undefined {
   const href = normalizeUrl(url)
   return /^https?:\/\//i.test(href) ? href : undefined
+}
+
+/** Chromium's failed-navigation page. Never treat this as the address the human asked for. */
+export function isChromiumErrorUrl(url: string): boolean {
+  return /^chrome-error:/i.test(url.trim())
 }
 
 /** 主会话 path takeover: http(s), loopback, and `example.com` — never `README.md`. */

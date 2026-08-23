@@ -17,7 +17,7 @@ import { decorate as decorateChips, sourceForFlowKey, type AnnotationChipPorts }
 import { decorate as decorateStats } from './tool-stats.ts'
 import { decorate as decoratePaths } from './path-links.ts'
 import { createPendingThrottle, installTranscriptDecorators, shouldRebindSession } from './transcript-decorators.ts'
-import { rowHunksFromSnapshot } from '../tool-open.ts'
+import { rowHunksFromSnapshot, sameRowHunks } from '../tool-open.ts'
 import type { Annotation } from '../session.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
 
@@ -55,7 +55,9 @@ export function apply(ctx: ClientContext): void {
       const source = binding.session.getSnapshot()
       if (source === lastSource) return lastStats
       lastSource = source
-      lastStats = rowHunksFromSnapshot(source)
+      const next = rowHunksFromSnapshot(source)
+      if (sameRowHunks(next, lastStats)) return lastStats
+      lastStats = next
       return lastStats
     }
     const chipPorts: AnnotationChipPorts = {
@@ -85,8 +87,9 @@ export function apply(ctx: ClientContext): void {
       },
     })
     const throttle = createPendingThrottle(() => {
+      const prev = lastStats
       readStats()
-      decorators.paintData()
+      decorators.paintData({ stats: lastStats !== prev, chips: true })
     }, 200)
     let unsubSession: (() => void) | undefined
     let boundId: string | undefined

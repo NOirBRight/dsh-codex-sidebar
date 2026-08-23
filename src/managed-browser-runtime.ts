@@ -6,6 +6,7 @@ import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
 import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
+import { isChromiumErrorUrl, liveHref } from './browser.ts'
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
 
 export const MANAGED_BROWSER_MAX_LIVE_PAGES = 3
@@ -264,6 +265,11 @@ export class ManagedBrowserRuntime {
   }
 
   async reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record !== undefined && isChromiumErrorUrl(record.page.url())) {
+      const target = liveHref(record.url)
+      if (target !== undefined) return this.ensure(tab, target)
+    }
     return this.#navigate(tab, (page) => page.reload({ waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS }))
   }
 
@@ -399,6 +405,12 @@ export class ManagedBrowserRuntime {
     }
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return
+      if (isChromiumErrorUrl(frame.url())) {
+        record.status = 'error'
+        record.error ??= '页面加载失败'
+        this.#publish(record)
+        return
+      }
       record.url = frame.url()
       if (record.blocked) {
         this.#publish(record)
@@ -481,7 +493,14 @@ export class ManagedBrowserRuntime {
   }
 
   async #refresh(record: PageRecord): Promise<void> {
-    record.url = record.page.url()
+    const pageUrl = record.page.url()
+    if (isChromiumErrorUrl(pageUrl)) {
+      record.status = 'error'
+      record.error ??= '页面加载失败'
+      this.#publish(record)
+      return
+    }
+    record.url = pageUrl
     record.title = await record.page.title().catch(() => record.url)
     if (record.blocked) {
       record.status = 'error'

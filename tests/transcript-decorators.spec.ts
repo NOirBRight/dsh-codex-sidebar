@@ -1,22 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  collectAddedTranscriptRoots,
   createPendingThrottle,
   ignoredTranscriptTarget,
   installTranscriptDecorators,
   mutationPaintTarget,
   shouldRebindSession,
   transcriptMutationIsIgnored,
+  transcriptPaintHosts,
+  transcriptRowOf,
 } from '../src/client/transcript-decorators.ts'
 
 class FakeElement {
   className: string
   attrs: Record<string, string>
   parentElement: FakeElement | null
+  children: FakeElement[] = []
 
   constructor(className = '', attrs: Record<string, string> = {}, parent: FakeElement | null = null) {
     this.className = className
     this.attrs = attrs
     this.parentElement = parent
+    parent?.children.push(this)
   }
 
   closest(selector: string): FakeElement | null {
@@ -26,6 +31,22 @@ class FakeElement {
       cur = cur.parentElement
     }
     return null
+  }
+
+  matches(selector: string): boolean {
+    return matches(this, selector)
+  }
+
+  querySelectorAll(selector: string): FakeElement[] {
+    const out: FakeElement[] = []
+    const walk = (el: FakeElement): void => {
+      for (const child of el.children) {
+        if (matches(child, selector)) out.push(child)
+        walk(child)
+      }
+    }
+    walk(this)
+    return out
   }
 }
 
@@ -70,11 +91,11 @@ class FakeObserver implements MutationObserver {
   }
 }
 
-function record(target: FakeElement): MutationRecord {
+function record(target: FakeElement, added: FakeElement[] = []): MutationRecord {
   return {
     type: 'childList',
     target: target as unknown as Node,
-    addedNodes: [] as unknown as NodeList,
+    addedNodes: added as unknown as NodeList,
     removedNodes: [] as unknown as NodeList,
     previousSibling: null,
     nextSibling: null,
@@ -111,6 +132,9 @@ function stubDom(): { root: { id: string } } {
   })
   vi.stubGlobal('document', {
     documentElement: root,
+    querySelectorAll() {
+      return []
+    },
     addEventListener(_type: string, fn: (event: Event) => void) {
       listeners.push(fn)
     },
@@ -127,6 +151,10 @@ function flushFrame(): void {
   for (const cb of queued) cb(0)
 }
 
+function toolRow(): FakeElement {
+  return new FakeElement('', { 'data-tool': 'edit' })
+}
+
 describe('ignored transcript mutations', () => {
   it('ignores sidebar, details, overlay, and dcs chrome', () => {
     vi.stubGlobal('Element', FakeElement)
@@ -139,11 +167,29 @@ describe('ignored transcript mutations', () => {
     expect(transcriptMutationIsIgnored(record(new FakeElement('', { 'data-shell-overlay': '' })))).toBe(true)
   })
 
-  it('paints transcript mutations', () => {
+  it('paints transcript rows and ignores composer chrome', () => {
     vi.stubGlobal('Element', FakeElement)
     expect(transcriptMutationIsIgnored(record(new FakeElement('', { 'data-side': 'center' })))).toBe(false)
     expect(mutationPaintTarget(new FakeElement('dcs-root') as unknown as Node)).toBeNull()
-    expect(mutationPaintTarget(new FakeElement() as unknown as Node)).toBeInstanceOf(FakeElement)
+    expect(transcriptRowOf(new FakeElement() as unknown as Node)).toBeNull()
+    expect(transcriptRowOf(toolRow() as unknown as Node)).toBeInstanceOf(FakeElement)
+    const composer = new FakeElement('', { 'data-composer-seat': '' })
+    const trigger = new FakeElement('', {}, composer)
+    expect(collectAddedTranscriptRoots(record(composer, [trigger]))).toEqual([])
+  })
+
+  it('collects tool rows nested in a replaced wrapper, not the wrapper itself', () => {
+    vi.stubGlobal('Element', FakeElement)
+    const center = new FakeElement('', { 'data-side': 'center' })
+    const row = new FakeElement('', { 'data-tool': 'write' }, center)
+    expect(collectAddedTranscriptRoots(record(center, [center]))).toEqual([row])
+  })
+})
+
+describe('transcriptPaintHosts', () => {
+  it('falls back to the document when no chat flow host exists', () => {
+    const doc = { querySelectorAll: () => [] } as unknown as Document
+    expect(transcriptPaintHosts(doc)).toEqual([doc])
   })
 })
 
@@ -166,8 +212,8 @@ describe('installTranscriptDecorators', () => {
     expect(paths).toHaveBeenCalledTimes(1)
 
     const observer = FakeObserver.instances[0]!
-    const transcript = new FakeElement()
-    for (let i = 0; i < 100; i++) observer.deliver([record(transcript)])
+    const transcript = toolRow()
+    for (let i = 0; i < 100; i++) observer.deliver([record(transcript, [transcript])])
     expect(stats).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(200)
     flushFrame()
@@ -178,7 +224,28 @@ describe('installTranscriptDecorators', () => {
     installed.stop()
   })
 
-  it('falls back to a full document scan past the incremental root cap', () => {
+  it('does not paint when the model picker mutates composer chrome', () => {
+    vi.useFakeTimers()
+    stubDom()
+    const stats = vi.fn()
+    const paths = vi.fn()
+    const installed = installTranscriptDecorators({
+      paintStats: stats,
+      paintChips() {},
+      paintPaths: paths,
+      openPath() {},
+    })
+    const composer = new FakeElement('', { 'data-composer-seat': '' })
+    const menu = new FakeElement('', {}, composer)
+    FakeObserver.instances[0]!.deliver([record(composer, [menu])])
+    vi.advanceTimersByTime(200)
+    flushFrame()
+    expect(stats).toHaveBeenCalledTimes(1)
+    expect(paths).toHaveBeenCalledTimes(1)
+    installed.stop()
+  })
+
+  it('falls back to transcript hosts past the incremental root cap', () => {
     vi.useFakeTimers()
     stubDom()
     const stats = vi.fn()
@@ -189,7 +256,10 @@ describe('installTranscriptDecorators', () => {
       openPath() {},
     })
     const observer = FakeObserver.instances[0]!
-    observer.deliver(Array.from({ length: 21 }, () => record(new FakeElement())))
+    observer.deliver(Array.from({ length: 21 }, () => {
+      const row = toolRow()
+      return record(row, [row])
+    }))
     vi.advanceTimersByTime(200)
     flushFrame()
     expect(stats).toHaveBeenLastCalledWith(document)
@@ -249,6 +319,22 @@ describe('installTranscriptDecorators', () => {
     installed.stop()
   })
 
+  it('paintData can skip stats when only chips changed', () => {
+    stubDom()
+    const stats = vi.fn()
+    const chips = vi.fn()
+    const installed = installTranscriptDecorators({
+      paintStats: stats,
+      paintChips: chips,
+      paintPaths() {},
+      openPath() {},
+    })
+    installed.paintData({ stats: false, chips: true })
+    expect(stats).toHaveBeenCalledTimes(1)
+    expect(chips).toHaveBeenCalledTimes(2)
+    installed.stop()
+  })
+
   it('stop disconnects the observer and cancels a pending frame', () => {
     vi.useFakeTimers()
     stubDom()
@@ -259,7 +345,8 @@ describe('installTranscriptDecorators', () => {
       paintPaths() {},
       openPath() {},
     })
-    FakeObserver.instances[0]!.deliver([record(new FakeElement())])
+    const row = toolRow()
+    FakeObserver.instances[0]!.deliver([record(row, [row])])
     installed.stop()
     expect(FakeObserver.instances[0]?.disconnected).toBe(true)
     vi.advanceTimersByTime(200)

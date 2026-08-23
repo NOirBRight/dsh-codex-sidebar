@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hunkForOpen, queueRowStats, rowHunksFromSnapshot, rowStatsFromSnapshot, statForLabel, statsFromSnapshot, takeRowHunk, takeRowStat, viewForTool } from '../src/tool-open.ts'
+import { hunkForOpen, queueRowStats, rowHunksFromSnapshot, rowStatsFromSnapshot, sameRowHunks, statForLabel, statsFromSnapshot, takeRowHunk, takeRowStat, viewForTool } from '../src/tool-open.ts'
 
 type DiffHunk = { path: string; oldText: string | null; newText: string }
 
@@ -313,5 +313,19 @@ describe('tool-open', () => {
       'src/live.ts': { added: 1, removed: 0 },
     })
     expect(reads).toBe(afterFirst)
+  })
+
+  it('treats identical row hunks as unchanged across snapshot objects', () => {
+    const snap = {
+      nodes: [
+        settled({ callId: 'same', resultView: diffView({ path: 'src/a.ts', oldText: 'a\n', newText: 'b\n' }) }),
+      ],
+      runningCalls: [],
+    }
+    const left = rowHunksFromSnapshot(snap)
+    const right = rowHunksFromSnapshot({ ...snap })
+    expect(left).not.toBe(right)
+    expect(sameRowHunks(left, right)).toBe(true)
+    expect(sameRowHunks(left, [])).toBe(false)
   })
 })

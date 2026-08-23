@@ -67,6 +67,19 @@ export function rowHunksFromSnapshot(snapshot: unknown): RowHunkStat[] {
   })
 }
 
+/** True when two row-hunk lists are the same paint input (ignore snapshot object identity). */
+export function sameRowHunks(left: readonly RowHunkStat[], right: readonly RowHunkStat[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let i = 0; i < left.length; i++) {
+    const a = left[i]
+    const b = right[i]
+    if (a === undefined || b === undefined) return false
+    if (a.hunkId !== b.hunkId || a.path !== b.path || a.added !== b.added || a.removed !== b.removed) return false
+  }
+  return true
+}
+
 type QueuedRow = { added: number; removed: number; hunkId?: string; before?: string; after?: string }
 
 export function queueRowStats(rows: readonly (RowStat & { hunkId?: string; before?: string; after?: string })[]): Map<string, QueuedRow[]> {

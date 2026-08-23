@@ -31,6 +31,8 @@ export type RowHunkStat = RowStat & {
 export declare function rowStatsFromSnapshot(snapshot: unknown): RowStat[];
 /** Same row stats with a snapshot-local identity for exact path opening. */
 export declare function rowHunksFromSnapshot(snapshot: unknown): RowHunkStat[];
+/** True when two row-hunk lists are the same paint input (ignore snapshot object identity). */
+export declare function sameRowHunks(left: readonly RowHunkStat[], right: readonly RowHunkStat[]): boolean;
 type QueuedRow = {
     added: number;
     removed: number;

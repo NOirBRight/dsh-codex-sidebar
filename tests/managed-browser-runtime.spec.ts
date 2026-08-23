@@ -356,5 +356,49 @@ describe('ManagedBrowserRuntime', () => {
     await rm(profileDir, { recursive: true, force: true })
   })
 
+  it('keeps the requested http URL when Chromium lands on chrome-error://', async () => {
+    class DeadPage extends FakePage {
+      override async goto(url: string): Promise<void> {
+        this.history.push(this.currentUrl)
+        this.currentUrl = 'chrome-error://chromewebdata/'
+        this.currentTitle = ''
+        this.emit('framenavigated', this.frame)
+        throw new Error(`page.goto: net::ERR_CONNECTION_REFUSED at ${url}`)
+      }
+
+      override async reload(): Promise<void> {
+        throw new Error('reload should not retry chrome-error://')
+      }
+    }
+    const page = new DeadPage()
+    let ensured = 0
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-chrome-error-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'dead', tabId: 'browser' }
+    const url = 'http://127.0.0.1:4187/index.html'
+    await expect(runtime.ensure(tab, url)).resolves.toMatchObject({
+      url,
+      status: 'error',
+    })
+    expect(page.currentUrl).toBe('chrome-error://chromewebdata/')
+    page.goto = async (next: string) => {
+      ensured += 1
+      page.currentUrl = next
+      page.currentTitle = 'ok'
+      page.emit('framenavigated', page.frame)
+    }
+    await expect(runtime.reload(tab)).resolves.toMatchObject({ url, status: 'ready' })
+    expect(ensured).toBe(1)
+    await runtime.dispose()
+  })
+
 
 })

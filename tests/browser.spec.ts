@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserDeviceViewport, isTakeoverUrl, liveHref, type BrowserPort, type PageDocument } from '../src/browser.ts'
+import { browserDeviceViewport, isChromiumErrorUrl, isTakeoverUrl, liveHref, type BrowserPort, type PageDocument } from '../src/browser.ts'
 import { createHostBrowser } from '../src/host-browser.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
@@ -547,5 +547,28 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'browser-set-device', device: 'fit' })
     expect(box.snapshot().browser.device).toBe('fit')
     expect(browserDeviceViewport('fit')).toBeNull()
+  })
+
+  it('keeps the last http URL when Chromium reports chrome-error://', () => {
+    expect(isChromiumErrorUrl('chrome-error://chromewebdata/')).toBe(true)
+    expect(liveHref('chrome-error://chromewebdata/')).toBeUndefined()
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const tabId = box.snapshot().active as string
+    box.dispatch({
+      type: 'browser-runtime-sync',
+      tabId,
+      url: 'chrome-error://chromewebdata/',
+      title: '',
+      documentId: 'd2',
+      status: 'error',
+      error: 'net::ERR_CONNECTION_REFUSED',
+    })
+    const browser = box.snapshot().browser
+    expect(browser.url).toBe(PAGE_URL)
+    expect(browser.draft).toBe(PAGE_URL)
+    expect(browser.status).toBe('unreachable')
+    expect(browser.runtimeError).toContain('REFUSED')
+    expect(liveHref(browser.url)).toBe(PAGE_URL)
   })
 })

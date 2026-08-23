@@ -151,7 +151,9 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
         )}
       </div>
       {browser.status === 'empty' && <Empty title="打开网页" detail="输入 URL，在侧栏里查看页面" />}
-      {browser.status !== 'empty' && href === undefined && <Empty title="无法打开" detail="需要 http 或 https 地址" />}
+      {browser.status !== 'empty' && href === undefined && (
+        <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http 或 https 地址'} />
+      )}
       {browser.status !== 'empty' && href !== undefined && tabId !== undefined && (
         <div className="dcs-b-page" ref={pageRef}>
           <ManagedBrowserCanvas
