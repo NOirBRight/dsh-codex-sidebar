@@ -391,6 +391,73 @@ describe('annotation effect prompts', () => {
     expect(layout.openDetails).toHaveBeenCalled()
   })
 
+  it('does not project all-session context for ordinary Tab open and close intents', async () => {
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: { load: () => undefined, save: () => undefined },
+      isBusy: () => false,
+    })
+    const currentSession = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    let otherSessionReads = 0
+    const dispatchPayloads: Array<{ logs?: unknown }> = []
+    const call = async (_channel: string, endpoint: string, payload?: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+        dispatchPayloads.push(payload as { logs?: unknown })
+        const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+        const effects = box.dispatch(intent)
+        return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      }
+      return { ok: false }
+    }
+    const base = controllerContext(currentSession, call)
+    const controller = new SidebarController({
+      ...base,
+      sessions: {
+        list: {
+          getSnapshot: () => ({
+            current: 'sess-a',
+            ids: ['sess-a', 'sess-b'],
+            byId: {
+              'sess-a': { id: 'sess-a', cwd: '/tmp/work' },
+              'sess-b': { id: 'sess-b', cwd: '/tmp/other' },
+            },
+          }),
+        },
+        binding: (sessionId: string) => ({
+          session: sessionId === 'sess-a'
+            ? currentSession
+            : {
+                getSnapshot: () => {
+                  otherSessionReads += 1
+                  return { running: false, messages: [{ role: 'assistant', content: 'large history' }] }
+                },
+              },
+        }),
+      },
+    } as never)
+
+    await controller.refresh('sess-a')
+    await controller.dispatch('sess-a', { type: 'open-path', path: 'src/Login.tsx' })
+    const tabId = controller.snap('sess-a')?.active
+    expect(tabId).toBeTruthy()
+    await controller.dispatch('sess-a', { type: 'close-tab', id: tabId as string })
+
+    expect(otherSessionReads).toBe(0)
+    expect(dispatchPayloads).toHaveLength(2)
+    expect(dispatchPayloads.every(payload => JSON.stringify(payload.logs) === '{}')).toBe(true)
+    expect(dispatchPayloads.every(payload => JSON.stringify((payload as { roster?: unknown }).roster) === '[]')).toBe(true)
+
+    await controller.dispatch('sess-a', { type: 'side-inspect', tabId: 'side-1', sessionId: 'sess-b' })
+    expect(otherSessionReads).toBe(1)
+    expect((dispatchPayloads[2]?.logs as Record<string, unknown[]>)['sess-b']).toHaveLength(1)
+    expect((dispatchPayloads[2] as { roster: unknown[] }).roster).toHaveLength(2)
+  })
+
   it('does not wrap the official session.prompt', () => {
     const source = readFileSync(new URL('../src/client/controller.ts', import.meta.url), 'utf8')
     expect(source).not.toContain('#wrapPrompt')

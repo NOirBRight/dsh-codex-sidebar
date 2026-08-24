@@ -191,7 +191,11 @@ export class SidebarController {
     if (intentRevealsSidebar(intent)) this.#revealLocal(sessionId)
     const epoch = this.#refreshEpoch.get(sessionId) ?? 0
     const work = async (): Promise<SidebarSnapshot | undefined> => {
-      const gate = this.#gate(sessionId, { includeLogs: !toggle && applyEffects, intent })
+      const gate = this.#gate(sessionId, {
+        includeLogs: applyEffects && intent.type === 'side-inspect',
+        includeRoster: applyEffects && intentNeedsRoster(intent),
+        intent,
+      })
       if (gate === undefined) return undefined
       const prepared = await this.#withBrowserEvidence(sessionId, intent, gate)
       if (prepared === undefined) return undefined
@@ -339,7 +343,7 @@ export class SidebarController {
     }, true)
   }
 
-  #gate(sessionId: string, opts: { includeLogs?: boolean; intent?: Intent } = {}): {
+  #gate(sessionId: string, opts: { includeLogs?: boolean; includeRoster?: boolean; intent?: Intent } = {}): {
     sessionId: string
     cwd: string
     busy: boolean
@@ -352,8 +356,7 @@ export class SidebarController {
     const binding = this.#ctx.sessions.binding(sessionId as never)
     const sessionState = binding?.session.getSnapshot()
     const busy = sessionState?.running === true
-    const archived = archivedIds(this.#ctx)
-    const roster = rosterFromList(list, archived)
+    const roster = opts.includeRoster === true ? rosterFromList(list, archivedIds(this.#ctx)) : []
     const logs = opts.includeLogs === true ? logsFromList(this.#ctx, list.ids as string[]) : {}
     const snapshot = this.snap(sessionId)
     const turnWrites = needsTurnWrites(snapshot, opts.intent)
@@ -533,6 +536,10 @@ export class SidebarController {
       last = next
     })
   }
+}
+
+function intentNeedsRoster(intent: Intent): boolean {
+  return intent.type === 'side-list' || intent.type === 'side-inspect' || intent.type === 'side-deliver'
 }
 
 function intentRevealsSidebar(intent: Intent): boolean {
