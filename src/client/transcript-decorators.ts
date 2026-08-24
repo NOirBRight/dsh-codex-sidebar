@@ -168,8 +168,9 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     pendingRoots.clear()
     fullScan = false
     lastPaint = Date.now()
+    const hosts = transcriptPaintHosts()
     run(() => {
-      for (const host of transcriptPaintHosts()) {
+      for (const host of hosts) {
         if (stats) isolate(() => { paints.paintStats(host) })
         if (chips) isolate(() => { paints.paintChips(host) })
       }

@@ -188,6 +188,7 @@ export class SidebarController {
 
   async dispatch(sessionId: string, intent: Intent, applyEffects = true): Promise<SidebarSnapshot | undefined> {
     const toggle = intent.type === 'toggle-collapsed'
+    if (intentRevealsSidebar(intent)) this.#revealLocal(sessionId)
     const epoch = this.#refreshEpoch.get(sessionId) ?? 0
     const work = async (): Promise<SidebarSnapshot | undefined> => {
       const gate = this.#gate(sessionId, { includeLogs: !toggle && applyEffects, intent })
@@ -391,6 +392,13 @@ export class SidebarController {
 
   /** Open this client's details track. Other surfaces keep their own chrome. */
   reveal(sessionId: string): void {
+    this.#revealLocal(sessionId)
+    if (this.#hostCollapsed.get(sessionId) !== false) {
+      void this.dispatch(sessionId, { type: 'toggle-collapsed' })
+    }
+  }
+
+  #revealLocal(sessionId: string): void {
     const snapshot = this.snap(sessionId)
     if (snapshot?.collapsed === false) {
       this.#applyTrack(false)
@@ -400,9 +408,6 @@ export class SidebarController {
     this.#noteCollapsed(sessionId, false)
     this.#applyTrack(false)
     if (snapshot !== undefined) this.#put({ ...snapshot, collapsed: false })
-    if (this.#hostCollapsed.get(sessionId) !== false) {
-      void this.dispatch(sessionId, { type: 'toggle-collapsed' })
-    }
   }
 
   /** Close this client's details track without collapsing other surfaces. */
@@ -530,6 +535,15 @@ export class SidebarController {
   }
 }
 
+function intentRevealsSidebar(intent: Intent): boolean {
+  if (intent.type === 'open-url') return intent.reveal !== false
+  return intent.type === 'pick-tool'
+    || intent.type === 'open-empty-tab'
+    || intent.type === 'open-terminal'
+    || intent.type === 'open-path'
+    || intent.type === 'reveal-mark'
+    || intent.type === 'edit-attachment'
+}
 
 function userTurnCount(snapshot: unknown): number {
   if (!isRecord(snapshot)) return 0

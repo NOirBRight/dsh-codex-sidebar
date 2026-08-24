@@ -316,6 +316,50 @@ describe('annotation effect prompts', () => {
     expect(phoneLayout.openDetails).not.toHaveBeenCalled()
   })
 
+  it('reveals this client immediately when a hidden client opens a path', async () => {
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: { load: () => undefined, save: () => undefined },
+      isBusy: () => false,
+    })
+    box.dispatch({ type: 'open-path', path: 'src/Login.tsx' })
+    const session = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
+    let releaseDispatch: (() => void) | undefined
+    const dispatchGate = new Promise<void>((resolve) => { releaseDispatch = resolve })
+    const controller = new SidebarController({
+      ...controllerContext(session, async (_channel: string, endpoint: string, payload?: unknown) => {
+        if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+        if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+          await dispatchGate
+          const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+          const effects = box.dispatch(intent)
+          return { ok: true, value: { snapshot: box.snapshot(), effects } }
+        }
+        return { ok: false }
+      }),
+      layout,
+    } as never)
+
+    await controller.refresh('sess-a')
+    controller.reveal('sess-a')
+    controller.hide('sess-a')
+    expect(controller.snap('sess-a')?.collapsed).toBe(true)
+
+    const opening = controller.dispatch('sess-a', { type: 'open-path', path: 'src/Login.tsx' })
+    expect(controller.snap('sess-a')?.collapsed).toBe(false)
+    expect(layout.openDetails).toHaveBeenCalledTimes(2)
+
+    releaseDispatch?.()
+    await opening
+    expect(controller.snap('sess-a')?.files.path).toBe('src/Login.tsx')
+    expect(controller.snap('sess-a')?.collapsed).toBe(false)
+  })
+
   it('still opens this client when it opens a path itself', async () => {
     const box = createSidebarSession({
       sessionId: 'sess-a',
