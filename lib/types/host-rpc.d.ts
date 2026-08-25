@@ -21,6 +21,7 @@ export type SidebarRpcServices = {
     browserEvidence?: ManagedBrowserEvidenceStore;
     annotationSend?: AnnotationSendStore;
     annotationPortsFor?: (sessionId: string) => AnnotationSendPorts;
+    cwdForSession?: (sessionId: string) => string | undefined;
     workspace?: WorkspaceInspector;
 };
 export declare function handleSidebarRpcAsync(registry: Registry, endpoint: string, payload: unknown, services?: SidebarRpcServices): Promise<RpcResult<unknown>>;

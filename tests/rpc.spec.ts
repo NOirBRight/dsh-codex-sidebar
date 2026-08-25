@@ -1,13 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
-import { handleSidebarRpc } from '../src/host-rpc.ts'
+import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
 import { createRegistry } from '../src/registry.ts'
 import type { FilesPort, PersistPort } from '../src/session.ts'
+import { createWorkspaceInspector } from '../src/workspace-inspector.ts'
 
 function memoryFiles(files: Record<string, string>): FilesPort {
   return {
@@ -59,6 +60,31 @@ describe('sidebar RPC', () => {
     if (!loaded.ok) return
     const again = loaded.value as { snapshot: { tabs: Array<{ target: string }> } }
     expect(again.snapshot.tabs[0]?.target).toBe('src/Login.tsx')
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('opens a relative transcript path when a remote client omits the session cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dcs-remote-files-'))
+    const path = 'docs/superpowers/plans/2026-08-25-zsxq-market-analysis.md'
+    mkdirSync(join(root, 'docs/superpowers/plans'), { recursive: true })
+    writeFileSync(join(root, path), '# ZSXQ market analysis\n')
+    const registry = createRegistry({ persist: memoryPersist() })
+
+    const opened = await handleSidebarRpcAsync(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-remote',
+      cwd: '',
+      busy: false,
+      intent: { type: 'open-path', path },
+    }, {
+      workspace: createWorkspaceInspector(),
+      cwdForSession: (sessionId: string) => sessionId === 'sess-remote' ? root : undefined,
+    })
+
+    expect(opened.ok).toBe(true)
+    if (!opened.ok) return
+    const snapshot = (opened.value as { snapshot: { files: { path: string; preview?: string } } }).snapshot
+    expect(snapshot.files.path).toBe(path)
+    expect(snapshot.files.preview).toBe('# ZSXQ market analysis\n')
     rmSync(root, { recursive: true, force: true })
   })
 

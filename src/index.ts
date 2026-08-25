@@ -72,10 +72,21 @@ type HostContext = EffectContext & {
   }) => void) => void
 }
 
+function agentCwd(agent: unknown): string | undefined {
+  if (typeof agent !== 'object' || agent === null) return undefined
+  const session = (agent as { session?: unknown }).session
+  if (typeof session !== 'object' || session === null) return undefined
+  const header = (session as { header?: unknown }).header
+  if (typeof header !== 'object' || header === null) return undefined
+  const cwd = (header as { cwd?: unknown }).cwd
+  return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined
+}
+
 export function apply(ctx: HostContext): void {
   const filesBySession = new Map<string, FilesPort>()
   const annotationSend = new AnnotationSendStore()
   let agentLive = (_id: string): boolean => false
+  let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
   const managedBrowser = new ManagedBrowserRuntime()
   const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
@@ -126,6 +137,7 @@ export function apply(ctx: HostContext): void {
           managedBrowser,
           browserEvidence: managedEvidence,
           annotationSend,
+          cwdForSession,
           workspace,
           annotationPortsFor: (sessionId) => ({
             readFile: (path) => filesBySession.get(sessionId)?.read(path),
@@ -158,6 +170,7 @@ export function apply(ctx: HostContext): void {
   ctx.inject(['agents'], (wired) => {
     if (wired.agents === undefined) return
     agentLive = (id) => wired.agents?.get(id) !== undefined
+    cwdForSession = (id) => agentCwd(wired.agents?.get(id))
     wired.effect(() => installAnnotationSend(wired as unknown as AnnotationSendHost, annotationSend), 'dsh-codex-sidebar: annotation send')
   })
   ctx.inject(['systemPrompt'], (wired) => {

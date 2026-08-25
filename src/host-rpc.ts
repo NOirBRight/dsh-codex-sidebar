@@ -43,6 +43,7 @@ export type SidebarRpcServices = {
   browserEvidence?: ManagedBrowserEvidenceStore
   annotationSend?: AnnotationSendStore
   annotationPortsFor?: (sessionId: string) => AnnotationSendPorts
+  cwdForSession?: (sessionId: string) => string | undefined
   workspace?: WorkspaceInspector
 }
 
@@ -57,20 +58,22 @@ export async function handleSidebarRpcAsync(
   services: SidebarRpcServices = {},
 ): Promise<RpcResult<unknown>> {
   try {
+    payload = withHostSessionCwd(payload, services.cwdForSession)
     if (endpoint === SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT && services.managedBrowser !== undefined) {
       if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.tabId !== 'string') {
         return fail('invalid sidebar browser-stream-ticket request')
       }
       if (services.browserStream === undefined) return fail('managed browser stream is unavailable')
+      const tabId = payload.tabId
       const box = registry.forSession(payload.sessionId, { cwd: typeof payload.cwd === 'string' ? payload.cwd : '', busy: payload.busy === true })
       const snapshot = box.snapshot(false)
-      const tab = snapshot.tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
-      const url = snapshot.browsers[payload.tabId]?.url || tab?.target
+      const tab = snapshot.tabs.find((item) => item.id === tabId && item.kind === 'Browser')
+      const url = snapshot.browsers[tabId]?.url || tab?.target
       if (tab === undefined || url === undefined || url.length === 0) return fail('unknown Browser Tab')
-      const tabKey = { sessionId: payload.sessionId, tabId: payload.tabId }
+      const tabKey = { sessionId: payload.sessionId, tabId }
       const projection = await services.managedBrowser.ensure(tabKey, url)
       if (projection.status !== 'ready') return fail(projection.error ?? 'Browser page is not ready')
-      const viewport = browserDeviceViewport(snapshot.browsers[payload.tabId]?.device ?? 'fit')
+      const viewport = browserDeviceViewport(snapshot.browsers[tabId]?.device ?? 'fit')
       if (viewport !== null) await services.managedBrowser.resize(tabKey, viewport.width, viewport.height)
       return { ok: true, value: services.browserStream.issue(tabKey) }
     }
@@ -79,10 +82,11 @@ export async function handleSidebarRpcAsync(
         return fail('invalid sidebar browser-capture request')
       }
       if (services.browserEvidence === undefined) return fail('Browser evidence capture is unavailable')
+      const tabId = payload.tabId
       const box = registry.forSession(payload.sessionId, { cwd: typeof payload.cwd === 'string' ? payload.cwd : '', busy: payload.busy === true })
-      const tab = box.snapshot(false).tabs.find((item) => item.id === payload.tabId && item.kind === 'Browser')
+      const tab = box.snapshot(false).tabs.find((item) => item.id === tabId && item.kind === 'Browser')
       if (tab === undefined) return fail('unknown Browser Tab')
-      return { ok: true, value: await services.browserEvidence.capture({ sessionId: payload.sessionId, tabId: payload.tabId }) }
+      return { ok: true, value: await services.browserEvidence.capture({ sessionId: payload.sessionId, tabId }) }
     }
     if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) {
       if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.captureId !== 'string') {
@@ -336,6 +340,12 @@ function reviewWorkspaceIntent(intent: { type: string; kind?: unknown }): boolea
   return intent.type === 'review-set-branch'
     || intent.type === 'select-tab'
     || (intent.type === 'pick-tool' && intent.kind === 'Review')
+}
+
+function withHostSessionCwd(payload: unknown, cwdForSession: SidebarRpcServices['cwdForSession']): unknown {
+  if (!isRecord(payload) || typeof payload.sessionId !== 'string' || cwdForSession === undefined) return payload
+  const cwd = cwdForSession(payload.sessionId)
+  return cwd === undefined || cwd.length === 0 ? payload : { ...payload, cwd }
 }
 
 function fail(message: string): RpcResult<unknown> {
