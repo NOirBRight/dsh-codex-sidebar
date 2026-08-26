@@ -54,7 +54,7 @@ type ScreencastPayload = {
 type CaptureRequest = {
   width: number
   height: number
-  fallback: string
+  fallback?: string
 }
 
 type BrowserInput =
@@ -99,7 +99,7 @@ export class ManagedBrowserStream {
     }
     this.#server.handleUpgrade(req, socket, head, (ws) => {
       this.#server.emit('connection', ws, req)
-      void this.#attach(ws, tab, target.cdp)
+      void this.#attach(ws, tab, target)
     })
   }
 
@@ -128,7 +128,8 @@ export class ManagedBrowserStream {
     return this.consume(ticket)
   }
 
-  async #attach(socket: WebSocket, tab: ManagedTabKey, cdp: ManagedCdpSession): Promise<void> {
+  async #attach(socket: WebSocket, tab: ManagedTabKey, target: { page: { viewportSize(): { width: number; height: number } | null }; cdp: ManagedCdpSession }): Promise<void> {
+    const cdp = target.cdp
     const tabKey = this.#runtime.keyOf(tab)
     const previous = this.#tabSockets.get(tabKey)
     if (previous !== undefined && previous.readyState === WebSocket.OPEN) previous.close(4001, 'Replaced by a newer stream')
@@ -139,7 +140,7 @@ export class ManagedBrowserStream {
     let lastFrameAt = 0
     let lastProjection = ''
     let captureInFlight = false
-    let pendingCapture: CaptureRequest | undefined
+    let pendingCapture: { request: CaptureRequest; force: boolean } | undefined
     const sendProjection = (): void => {
       if (socket.readyState !== WebSocket.OPEN) return
       const projection = this.#runtime.projection(tab)
@@ -180,15 +181,15 @@ export class ManagedBrowserStream {
         if (data === undefined) throw new Error('Browser screenshot returned no data')
         sendFrame(Buffer.from(data, 'base64'), request.width, request.height)
       } catch {
-        sendFrame(Buffer.from(request.fallback, 'base64'), request.width, request.height)
+        if (request.fallback !== undefined) sendFrame(Buffer.from(request.fallback, 'base64'), request.width, request.height)
       }
     }
-    const requestFrame = (request: CaptureRequest): void => {
+    const requestFrame = (request: CaptureRequest, force = false): void => {
       if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
       const now = this.#now()
-      if (now - lastFrameAt < MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS) return
+      if (!force && now - lastFrameAt < MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS) return
       if (captureInFlight) {
-        pendingCapture = request
+        pendingCapture = { request, force }
         return
       }
       lastFrameAt = now
@@ -197,7 +198,7 @@ export class ManagedBrowserStream {
         captureInFlight = false
         const pending = pendingCapture
         pendingCapture = undefined
-        if (pending !== undefined) requestFrame(pending)
+        if (pending !== undefined) requestFrame(pending.request, pending.force)
       })
     }
     const onFrame = (value: unknown): void => {
@@ -223,7 +224,7 @@ export class ManagedBrowserStream {
     cdp.on('Page.screencastFrame', onFrame)
     socket.on('message', (data, isBinary) => {
       if (isBinary) return
-      void this.#onMessage(socket, tab, cdp, data.toString()).catch(() => undefined)
+      void this.#onMessage(socket, tab, cdp, data.toString(), requestFrame).catch(() => undefined)
     })
     socket.once('close', () => { void detach() })
     socket.once('error', () => { void detach() })
@@ -235,6 +236,9 @@ export class ManagedBrowserStream {
         maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
         everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME,
       })
+      // A settled page may not emit a screencast frame until it repaints.
+      const viewport = target.page.viewportSize() ?? { width: 720, height: 860 }
+      requestFrame({ width: viewport.width, height: viewport.height }, true)
       socket.send(JSON.stringify({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION }))
       sendProjection()
     } catch (error) {
@@ -242,7 +246,7 @@ export class ManagedBrowserStream {
     }
   }
 
-  async #onMessage(socket: WebSocket, tab: ManagedTabKey, cdp: ManagedCdpSession, raw: string): Promise<void> {
+  async #onMessage(socket: WebSocket, tab: ManagedTabKey, cdp: ManagedCdpSession, raw: string, requestFrame: (request: CaptureRequest, force?: boolean) => void): Promise<void> {
     const message = JSON.parse(raw) as { type?: unknown; input?: unknown; width?: unknown; height?: unknown }
     if (message.type === 'outline') {
       const outline = await this.#runtime.outline(tab)
@@ -257,6 +261,7 @@ export class ManagedBrowserStream {
     }
     if (message.type === 'resize' && typeof message.width === 'number' && typeof message.height === 'number') {
       await this.#runtime.resize(tab, message.width, message.height)
+      requestFrame({ width: message.width, height: message.height }, true)
       return
     }
     if (message.type !== 'input' || !validInput(message.input)) return
