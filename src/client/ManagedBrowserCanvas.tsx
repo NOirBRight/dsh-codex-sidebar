@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver, type BrowserMediaClientIdentity } from '../managed-browser-webrtc-client.ts'
@@ -48,6 +48,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const receiverRef = useRef<ManagedBrowserWebRtcReceiver | null>(null)
   const videoSurfaceRef = useRef<BrowserVideoSurface | null>(null)
   const readyRef = useRef<BrowserReadyMessage | null>(null)
+  const visibilityGraceRef = useRef<BrowserVisibilityGrace | null>(null)
   ticketRef.current = requestTicket
   stateRef.current = onState
   deviceRef.current = device
@@ -122,9 +123,13 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   useEffect(() => {
     const root = rootRef.current
     let intersecting = true
+    const initialVisible = browserStreamShouldRun(typeof document === 'undefined' || document.visibilityState === 'visible', intersecting)
+    const grace = new BrowserVisibilityGrace(initialVisible, setVisible)
+    setVisible(initialVisible)
+    visibilityGraceRef.current = grace
     const update = (): void => {
       const pageVisible = typeof document === 'undefined' || document.visibilityState === 'visible'
-      setVisible(browserStreamShouldRun(pageVisible, intersecting))
+      grace.setVisible(browserStreamShouldRun(pageVisible, intersecting))
     }
     const onVisibility = (): void => { update() }
     document.addEventListener('visibilitychange', onVisibility)
@@ -140,6 +145,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     return () => {
       document.removeEventListener('visibilitychange', onVisibility)
       observer?.disconnect()
+      grace.dispose()
+      if (visibilityGraceRef.current === grace) visibilityGraceRef.current = null
     }
   }, [tabId])
 
@@ -434,6 +441,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
             if (ready === undefined) socket.close(1002, 'Unsupported Browser stream protocol')
             else {
               readyRef.current = ready
+              visibilityGraceRef.current?.setGraceMs(ready.media.hideGraceMs)
               layoutRef.current = new ManagedBrowserLayoutClient({
                 mode: deviceRef.current,
                 settleMs: ready.layoutPolicy.settleMs,

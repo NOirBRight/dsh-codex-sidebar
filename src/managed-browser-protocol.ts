@@ -1,6 +1,8 @@
 /** Versioned wire messages shared by the managed Browser Host and client. */
 
 export const MANAGED_BROWSER_PROTOCOL_VERSION = 2
+/** Default delay before a hidden managed Browser surface releases its control connection. */
+export const MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS = 15_000
 export const BROWSER_STREAM_V2_HEADER_BYTES = 29
 const MAX_BROWSER_CONTROL_MESSAGE_BYTES = 128 * 1024
 const MAX_RTC_SDP_LENGTH = 64 * 1024
@@ -68,6 +70,7 @@ export type BrowserReadyMessage = {
     frameRate: number
     maxBitrate: number
     idleTimeoutMs: number
+    hideGraceMs: number
   }
   layoutPolicy: { minViewport: BrowserSize; maxViewport: BrowserSize; settleMs: number; hysteresisPx: number }
 }
@@ -147,6 +150,7 @@ export function decodeBrowserHostMessage(raw: string): BrowserHostMessage | unde
       || value.media.stunOnly !== true || !positiveSafeInteger(value.media.negotiationTimeoutMs)
       || !nonNegativeSafeInteger(value.media.retryCooldownMs) || !positiveSafeInteger(value.media.frameRate)
       || !positiveSafeInteger(value.media.maxBitrate) || !positiveSafeInteger(value.media.idleTimeoutMs)
+      || !nonNegativeSafeInteger(value.media.hideGraceMs)
       || !layoutPolicy(value.layoutPolicy)) return undefined
     return {
       type: 'ready', version: 2, frameEncoding: value.frameEncoding, flowControl: 'frame-ack-v2',
@@ -155,7 +159,7 @@ export function decodeBrowserHostMessage(raw: string): BrowserHostMessage | unde
         preferredRoute: value.media.preferredRoute, stunOnly: true,
         negotiationTimeoutMs: value.media.negotiationTimeoutMs, retryCooldownMs: value.media.retryCooldownMs,
         frameRate: value.media.frameRate, maxBitrate: value.media.maxBitrate,
-        idleTimeoutMs: value.media.idleTimeoutMs,
+        idleTimeoutMs: value.media.idleTimeoutMs, hideGraceMs: value.media.hideGraceMs,
       },
       layoutPolicy: value.layoutPolicy,
     }

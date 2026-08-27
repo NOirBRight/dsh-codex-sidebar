@@ -1,7 +1,82 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
+}
+
+/** Delays disconnecting an already-active Browser stream while its surface is hidden. */
+export class BrowserVisibilityGrace {
+  #active: boolean
+  #surfaceVisible: boolean
+  #graceMs = MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS
+  #hiddenAt: number | undefined
+  #timer: ReturnType<typeof setTimeout> | undefined
+  #disposed = false
+  #onActiveChange: (active: boolean) => void
+  #now: () => number
+
+  /**
+   * @param initiallyVisible Whether the stream is active when visibility tracking starts.
+   * @param onActiveChange Publishes connection eligibility after grace transitions.
+   * @param now Monotonic-enough clock used to preserve the original hidden deadline.
+   */
+  constructor(
+    initiallyVisible: boolean,
+    onActiveChange: (active: boolean) => void,
+    now: () => number = () => performance.now(),
+  ) {
+    this.#active = initiallyVisible
+    this.#surfaceVisible = initiallyVisible
+    this.#onActiveChange = onActiveChange
+    this.#now = now
+  }
+
+  /** Update the Host-authoritative hidden-surface grace duration. */
+  setGraceMs(graceMs: number): void {
+    if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new Error('managed Browser mediaHideGraceMs must be a non-negative integer')
+    this.#graceMs = graceMs
+    if (!this.#surfaceVisible && this.#active) this.#arm()
+  }
+
+  /** Report whether both the document and Browser surface are visible. */
+  setVisible(visible: boolean): void {
+    if (this.#disposed) return
+    this.#surfaceVisible = visible
+    if (visible) {
+      this.#hiddenAt = undefined
+      this.#clearTimer()
+      if (!this.#active) {
+        this.#active = true
+        this.#onActiveChange(true)
+      }
+      return
+    }
+    if (!this.#active) return
+    this.#hiddenAt ??= this.#now()
+    this.#arm()
+  }
+
+  /** Stop pending visibility work without changing connection state. */
+  dispose(): void {
+    this.#disposed = true
+    this.#clearTimer()
+  }
+
+  #arm(): void {
+    this.#clearTimer()
+    const remaining = Math.max(0, (this.#hiddenAt ?? this.#now()) + this.#graceMs - this.#now())
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined
+      if (this.#disposed || this.#surfaceVisible || !this.#active) return
+      this.#active = false
+      this.#onActiveChange(false)
+    }, remaining)
+  }
+
+  #clearTimer(): void {
+    if (this.#timer !== undefined) clearTimeout(this.#timer)
+    this.#timer = undefined
+  }
 }
 
 /** Touch taps must not focus the local hidden IME; it steals the remote click on Android. */

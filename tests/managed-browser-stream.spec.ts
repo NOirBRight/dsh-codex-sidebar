@@ -77,6 +77,7 @@ describe('managed browser stream protocol', () => {
         version: MANAGED_BROWSER_STREAM_VERSION,
         frameEncoding: 'json-base64-v2',
         flowControl: 'frame-ack-v2',
+        media: { hideGraceMs: 15_000 },
       })
     } finally {
       client.close()

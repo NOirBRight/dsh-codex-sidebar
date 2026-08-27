@@ -10,6 +10,7 @@ import {
   encodeBrowserStreamFrameV2,
   encodeBrowserStreamJsonFrameV2,
   MANAGED_BROWSER_PROTOCOL_VERSION,
+  MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS,
   type BrowserInput,
   type BrowserLayout,
   type BrowserSize,
@@ -136,6 +137,7 @@ export type ManagedBrowserStreamOptions = {
   directVideoFrameRate?: number
   directVideoMaxBitrate?: number
   mediaIdleTimeoutMs?: number
+  mediaHideGraceMs?: number
   encoderFactory?: ManagedBrowserWebRtcEncoderFactory
 }
 
@@ -199,6 +201,7 @@ export class ManagedBrowserStream {
   #directVideoFrameRate: number
   #directVideoMaxBitrate: number
   #mediaIdleTimeoutMs: number
+  #mediaHideGraceMs: number
   #encoderFactory: ManagedBrowserWebRtcEncoderFactory
   #peerCount = 0
 
@@ -232,6 +235,7 @@ export class ManagedBrowserStream {
     this.#directVideoFrameRate = boundedStreamInteger(opts.directVideoFrameRate, MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE, 1, 60, 'directVideoFrameRate')
     this.#directVideoMaxBitrate = boundedStreamInteger(opts.directVideoMaxBitrate, MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE, 1, 100_000_000, 'directVideoMaxBitrate')
     this.#mediaIdleTimeoutMs = positiveStreamInteger(opts.mediaIdleTimeoutMs, MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS, 'mediaIdleTimeoutMs')
+    this.#mediaHideGraceMs = nonNegativeStreamInteger(opts.mediaHideGraceMs, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, 'mediaHideGraceMs')
     this.#encoderFactory = opts.encoderFactory ?? ((options) => new ManagedBrowserWebRtcEncoder(options))
   }
 
@@ -648,6 +652,7 @@ export class ManagedBrowserStream {
           frameRate: this.#directVideoFrameRate,
           maxBitrate: this.#directVideoMaxBitrate,
           idleTimeoutMs: this.#mediaIdleTimeoutMs,
+          hideGraceMs: this.#mediaHideGraceMs,
         },
         layoutPolicy: this.#runtime.layoutPolicy(),
       }))

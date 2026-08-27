@@ -73,6 +73,8 @@ export type ManagedBrowserConfig = {
   directVideoMaxBitrate?: number
   /** Dispose an inactive direct-video peer after this many milliseconds. */
   mediaIdleTimeoutMs?: number
+  /** Keep the Browser control connection alive this long after its surface becomes hidden. */
+  mediaHideGraceMs?: number
   /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
   maxEncoderPages?: number
 }

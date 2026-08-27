@@ -35,6 +35,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, directVideoFrameRate: 0 })).toThrow('directVideoFrameRate')
     expect(() => new ManagedBrowserStream({ runtime, directVideoMaxBitrate: 0 })).toThrow('directVideoMaxBitrate')
     expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
+    expect(() => new ManagedBrowserStream({ runtime, mediaHideGraceMs: -1 })).toThrow('mediaHideGraceMs')
   })
 
   it('gates signaling by owner/layout and rotates one encoder per media generation', async () => {

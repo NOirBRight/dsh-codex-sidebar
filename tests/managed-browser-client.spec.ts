@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
 describe('managed Browser stream client', () => {
+  afterEach(() => { vi.useRealTimers() })
+
   it('offers both frame carriers and frame ACK flow control in hello', () => {
     expect(browserStreamHello(true)).toEqual({
       type: 'hello',
@@ -12,13 +14,13 @@ describe('managed Browser stream client', () => {
       flowControl: ['frame-ack-v2'],
       media: { webrtcVideo: true },
     })
-    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
       type: 'ready',
       version: 2,
       frameEncoding: 'binary-v2',
       flowControl: 'frame-ack-v2',
       ownerId: 'owner-1',
-      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000 },
+      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 },
       fallback: { maxRawBytes: 1024 },
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })
@@ -150,6 +152,41 @@ describe('managed Browser stream client', () => {
     expect(browserStreamShouldRun(false, true)).toBe(false)
     expect(browserStreamShouldRun(true, false)).toBe(false)
   })
+
+  it('keeps an active stream through the hidden grace and cancels teardown after recovery', () => {
+    vi.useFakeTimers()
+    const transitions: boolean[] = []
+    const visibility = new BrowserVisibilityGrace(true, (active) => { transitions.push(active) })
+    visibility.setGraceMs(15_000)
+
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(14_999)
+    expect(transitions).toEqual([])
+    visibility.setVisible(true)
+    vi.advanceTimersByTime(15_000)
+    expect(transitions).toEqual([])
+
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(15_000)
+    expect(transitions).toEqual([false])
+    visibility.setVisible(true)
+    expect(transitions).toEqual([false, true])
+    visibility.dispose()
+  })
+
+  it('applies a changed Host grace to the original hidden deadline', () => {
+    vi.useFakeTimers()
+    const transitions: boolean[] = []
+    const visibility = new BrowserVisibilityGrace(true, (active) => { transitions.push(active) })
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(500)
+    visibility.setGraceMs(1_000)
+    vi.advanceTimersByTime(499)
+    expect(transitions).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(transitions).toEqual([false])
+    visibility.dispose()
+  })
   it('decodes the host binary frame and derives same-origin ws URLs', () => {
     const encoded = encodeBrowserStreamFrameV2({
       version: 2,
@@ -180,7 +217,7 @@ describe('managed Browser stream client', () => {
 
   it('removes the Connecting overlay when a frame or ready projection arrives', () => {
     expect(browserStreamSignalsReady(new ArrayBuffer(29))).toBe(true)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(false)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)

@@ -76,13 +76,14 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Mana
       mobileScreencastEveryNthFrame: 4
       mobileJpegMaxRawBytes: 98304
       mediaIdleTimeoutMs: 300000
+      mediaHideGraceMs: 15000
 ```
 
 The fixed phone, tablet, and laptop presets remain `390×844`, `768×1024`, and `1280×800`. Fit mode proposes one clamped viewport only after the container settles; fixed presets never consume container resize observations. WebRTC carries video only and does not request camera, microphone, or audio. `stunUrls` accepts only `stun:` URLs; TURN is rejected. An empty list still permits host ICE candidates, while deployments that need NAT discovery must configure approved STUN servers. `jpeg-only` is available as a diagnostic `preferredMediaRoute`.
 
 The Origin-less Mobile tunnel wraps the Browser JSON frame in another Base64 envelope. Its default 96 KiB limit applies to the encoded JPEG bytes and leaves the complete tunnel plaintext below the 200 KiB ceiling. The fallback may lower JPEG quality or encoded resolution, but it never changes the committed CSS viewport. Each connection retains at most one capture, one unacknowledged frame, and one latest dirty request.
 
-The values above are the defaults. `mediaIdleTimeoutMs` releases an inactive direct-video peer while keeping the target Page alive; later interaction may negotiate again after the retry cooldown. Hidden-Tab release remains pending client visibility signaling and has no inactive configuration field.
+The values above are the defaults. `mediaIdleTimeoutMs` releases an inactive direct-video peer while keeping the target Page alive; later interaction may negotiate again after the retry cooldown. When the document or Browser surface becomes hidden, `mediaHideGraceMs` keeps the control connection alive for a short recovery window. Returning before the deadline cancels teardown; expiry closes the control connection and releases its peer and encoder without closing the target Page.
 
 Before launch, the plugin performs a read-only, no-follow size estimate over allowlisted derived-cache directories. Chromium's persistent-context startup owns singleton arbitration; the plugin does not rename, remove, or repair profile paths. After a context starts successfully, an over-budget estimate triggers one temporary blank Page and CDP session that run `Network.enable` and `Network.clearBrowserCache`, then always detach and close. Clear failures warn without discarding the context. Chromium's cache API leaves cookies, Local Storage, and IndexedDB intact, while disk and media cache launch arguments limit future growth.
 

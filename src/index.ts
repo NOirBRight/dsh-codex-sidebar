@@ -113,6 +113,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     ...(config.managedBrowser?.directVideoFrameRate === undefined ? {} : { directVideoFrameRate: config.managedBrowser.directVideoFrameRate }),
     ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
     ...(config.managedBrowser?.mediaIdleTimeoutMs === undefined ? {} : { mediaIdleTimeoutMs: config.managedBrowser.mediaIdleTimeoutMs }),
+    ...(config.managedBrowser?.mediaHideGraceMs === undefined ? {} : { mediaHideGraceMs: config.managedBrowser.mediaHideGraceMs }),
   })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()
