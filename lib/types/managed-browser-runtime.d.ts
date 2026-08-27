@@ -1,5 +1,6 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts';
+import { LocalHtmlGateway, type LocalHtmlResources } from './local-html-gateway.ts';
 import type { BrowserLayout, BrowserLayoutMode, BrowserSize } from './managed-browser-protocol.ts';
 import type { BrowserMediaPage } from './managed-browser-webrtc.ts';
 export declare const MANAGED_BROWSER_MAX_LIVE_PAGES = 3;
@@ -212,6 +213,7 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     maxLivePages?: number;
     idleMs?: number;
     onWarning?: (message: string) => void;
+    localHtmlGateway?: LocalHtmlGateway;
 };
 type LayoutProposal = {
     mode: BrowserLayoutMode;
@@ -259,6 +261,8 @@ export declare class ManagedBrowserRuntime {
     createMediaPage(): Promise<BrowserMediaPage>;
     /** Return the number of owned encoder Pages. */
     mediaPageCount(): number;
+    /** Return path-free local HTML gateway lifecycle counters. */
+    localHtmlResources(): LocalHtmlResources;
     close(tab: ManagedTabKey): Promise<void>;
     dispose(): Promise<void>;
 }

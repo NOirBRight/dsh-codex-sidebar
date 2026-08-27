@@ -39,13 +39,17 @@ describe('LocalHtmlGateway', () => {
     const local = gateway()
     const lease = await local.open('session:tab', target)
     const internal = new URL(lease.navigationUrl)
+    const capability = internal.pathname.split('/')[2] ?? ''
 
     expect(internal.hostname).toBe('127.0.0.1')
     expect(Number(internal.port)).toBeGreaterThan(0)
     expect(lease.publicUrl).toBe(target)
     expect(lease.publicUrl).not.toContain(internal.port)
-    expect(lease.publicUrl).not.toContain(lease.token)
+    expect(capability.length).toBeGreaterThan(24)
+    expect(lease.publicUrl).not.toContain(capability)
     expect(local.project('session:tab', lease.navigationUrl)).toBe(target)
+    expect(local.isPrivate(lease.navigationUrl)).toBe(true)
+    expect(local.redact('session:tab', 'failed at ' + lease.navigationUrl)).not.toMatch(/127\.0\.0\.1|\d{4,}|[A-Za-z0-9_-]{24}/)
 
     const page = await fetch(lease.navigationUrl)
     expect(page.status).toBe(200)
@@ -69,6 +73,7 @@ describe('LocalHtmlGateway', () => {
     const local = gateway()
 
     await expect(local.open('authority', 'file://server/share/index.html')).rejects.toThrow('local HTML')
+    await expect(local.open('localhost-authority', 'file://localhost/tmp/index.html')).rejects.toThrow('local HTML')
     await expect(local.open('extension', pathToFileURL(join(box.root, 'assets', 'app.js')).href)).rejects.toThrow('local HTML')
     await expect(local.open('directory', pathToFileURL(directory).href)).rejects.toThrow('regular')
     await expect(local.open('symlink', pathToFileURL(linked).href)).rejects.toThrow('symbolic link')
@@ -90,7 +95,10 @@ describe('LocalHtmlGateway', () => {
     expect((await rawRequest(origin, prefix + '%2e%2e/secret.js')).status).toBe(404)
     expect((await rawRequest(origin, prefix + 'assets%2fapp.js')).status).toBe(404)
     expect((await rawRequest(origin, prefix + 'assets%5capp.js')).status).toBe(404)
+    expect((await rawRequest(origin, prefix + 'assets/%00app.js')).status).toBe(404)
     expect((await rawRequest(origin, prefix + 'assets/app.js', 'POST')).status).toBe(405)
+    expect(await rawRequest(origin, prefix + 'assets/app.js', 'HEAD')).toEqual({ status: 200, body: '' })
+    expect((await rawRequest(origin, prefix)).status).toBe(404)
 
     local.release('session:tab')
     expect(local.resources()).toMatchObject({ leases: 0 })

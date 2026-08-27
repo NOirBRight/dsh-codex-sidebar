@@ -12,7 +12,7 @@
 
 - **Files（文件）** — 只读预览（源码、Markdown、图片）和工作区树。点对话里的路径会填进来。
 - **Review（审查）** — 先看本轮变更，再看工作区剩余差异。只读：不能暂存、还原或提交。
-- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作本机网页，侧栏开着或关着都行。Host 独占带 revision 的页面 viewport，媒体尺寸不能再改变页面大小或输入坐标。可直连时使用 Browser 自有、仅 STUN 的 WebRTC 视频；受限 Mobile 隧道继续通过已认证控制 WebSocket 使用有界 JPEG fallback。空闲页会回收；禁止在里面再打开 DSH Web 自己。
+- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作 HTTP(S) 页面和明确选择的本地 HTML 文件，侧栏开着或关着都行。Host 独占带 revision 的页面 viewport，媒体尺寸不能再改变页面大小或输入坐标。可直连时使用 Browser 自有、仅 STUN 的 WebRTC 视频；受限 Mobile 隧道继续通过已认证控制 WebSocket 使用有界 JPEG fallback。空闲页会回收；禁止在里面再打开 DSH Web 自己。
 - **Terminal（终端）** — 给人用的伪终端（有 `script` 就用），不是智能体的命令行。
 - **批注** — 点文件行或页面写备注。发送后官方气泡保持原样，编号标签在气泡下方。定位信息和截图作为同一条用户消息的模型证据，不塞进气泡。
 - **编辑行的 +/−** — 每一行 edit/write 显示这一次的增减，跟在文件名后面。
@@ -96,6 +96,10 @@ Browser surface 会按用户实际可呈现的 route 显示 `Direct video`、`Lo
 以上数值均为默认值。`mediaIdleTimeoutMs` 会释放无活动的直连视频 peer，但保留目标 Page；后续交互可在重试冷却期结束后重新协商。当文档或 Browser surface 变为隐藏时，`mediaHideGraceMs` 会在短暂恢复窗口内保留控制连接。切换到其他工具 Tab 时，Browser surface 在这段时间内保持挂载，但处于 hidden、inert 状态，不占布局也不接收输入。到期前恢复可取消回收；到期后会关闭控制连接并释放对应 peer 和 encoder，但不会关闭目标 Page。插件关闭时允许 stream socket 和已启动任务在 `streamShutdownTimeoutMs` 内安全结束；超时后会 terminate 不响应的 socket，并停止保留未结束的任务记账。
 
 Chromium 启动前，插件只会对允许列表中的派生缓存目录执行只读且不跟随符号链接的容量估算。Persistent Context 启动过程由 Chromium 自身仲裁单例；插件不会重命名、删除或修复配置文件路径。Context 成功启动后，超预算估算会触发一次临时空白 Page 和 CDP session，依次执行 `Network.enable` 与 `Network.clearBrowserCache`，并始终 detach、close。清理失败只记录警告，不会丢弃 Context。Chromium 缓存 API 不影响 Cookie、Local Storage 和 IndexedDB；磁盘与媒体缓存启动参数继续限制后续增长。
+
+Browser 地址栏也支持绝对 `file:///.../page.html` 或 `.htm` 地址。Host 要求入口是普通文件且不是符号链接，并通过独立、仅绑定 `127.0.0.1:0` 的服务器，用随机 capability 投影该文件的 canonical parent；相对资源只能留在这个目录内，不提供目录列表，拒绝目录穿越，而且只响应 `GET`／`HEAD`。只有 Chromium 收到私有 HTTP 地址；会话状态、工具、诊断、桌面端和远程 Mobile 端始终只看到公开 `file:` 地址，不会收到回环端口或 capability。关闭 Tab 或会话会撤销该目录，卸载插件会关闭监听；「外部打开」仍只支持 HTTP(S)。
+
+本地 HTML 是主动内容：其中的脚本能读取所选 HTML 目录内提供的资源，也能发起网络请求。只打开可信 HTML；生成的原型应放进专用目录，不要与凭据或无关文件放在一起。
 
 DSH session 被释放时，插件会立即关闭该 session 的 Browser 控制连接和托管 Page；仅隐藏 Browser 时则在配置的宽限期后释放媒体，并保留 Page 供 Agent 工具继续使用。
 

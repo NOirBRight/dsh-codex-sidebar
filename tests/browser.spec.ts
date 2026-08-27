@@ -526,6 +526,8 @@ describe('Browser seam', () => {
     expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')).toBe('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')
     expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/readme.txt')).toBeUndefined()
     expect(managedBrowserHref('file://server/share/index.html')).toBeUndefined()
+    expect(managedBrowserHref('file://localhost/tmp/index.html')).toBeUndefined()
+    expect(managedBrowserHref('file:////server/share/index.html')).toBeUndefined()
     expect(managedBrowserHref('data:text/html,hello')).toBeUndefined()
   })
 

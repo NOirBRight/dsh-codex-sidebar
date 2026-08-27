@@ -1,0 +1,11 @@
+# Local HTML uses a private Host loopback projection
+
+The Browser accepts an explicitly entered absolute `file:` URL only when it names an existing regular `.html` or `.htm` file without a URL authority. Direct Chromium `file:` navigation was rejected: relative script and stylesheet loads can cross above the selected file's directory, and the behavior varies across platforms and Chromium releases. Registering a static prefix on the DSH Web server was also rejected because that server may bind `0.0.0.0` and does not own authentication or origin policy.
+
+One `LocalHtmlGateway` belongs to the managed Browser runtime. On first use it binds a separate HTTP server to the operating system's ephemeral port on `127.0.0.1` only. Each Browser Tab receives a cryptographically random capability whose canonical root is the selected HTML file's canonical parent. The entry itself cannot be a symbolic link. Resource requests are decoded once, reject encoded separators, NUL, backslashes, empty or dot segments, and resolve through `realpath`; the canonical result must remain below the root and be a regular file. The server provides no directory listing, accepts only `GET` and `HEAD`, disables caching and referrers, and sends `nosniff` with an extension-derived media type.
+
+Chromium navigates the private loopback address, but `ManagedBrowserRuntime` maps every current internal address back to the public `file:` address before projection, evidence, tools, or diagnostics can observe it. Errors redact the listener and capability. The client treats local HTML as managed content but never offers it to `window.open`; external-open remains HTTP(S)-only. Desktop and remote Mobile clients therefore operate the same Host Page through the existing media and input protocols without receiving a raw file route.
+
+Closing a Tab revokes its capability. Session disposal closes its Tabs, and plugin disposal revokes all capabilities and closes the listener. A listener with no leases serves nothing and may remain available until runtime disposal to avoid port churn.
+
+This projection intentionally runs active local content. Scripts may read resources inside the selected directory and initiate network requests. The directory is the user's trust grant; untrusted HTML must not be opened, and generated pages should live in a dedicated directory.

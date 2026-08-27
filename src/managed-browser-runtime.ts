@@ -6,8 +6,9 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
 import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
-import { isChromiumErrorUrl, liveHref } from './browser.ts'
+import { isChromiumErrorUrl, managedBrowserHref } from './browser.ts'
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
+import { LocalHtmlGateway, type LocalHtmlResources } from './local-html-gateway.ts'
 import type { BrowserLayout, BrowserLayoutMode, BrowserSize } from './managed-browser-protocol.ts'
 import type { BrowserMediaPage } from './managed-browser-webrtc.ts'
 
@@ -201,6 +202,7 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   maxLivePages?: number
   idleMs?: number
   onWarning?: (message: string) => void
+  localHtmlGateway?: LocalHtmlGateway
 }
 
 type RefTarget = { documentId: string; selector: string }
@@ -267,6 +269,7 @@ export class ManagedBrowserRuntime {
   #mediaPages = new Set<{ page: PageLike; close: () => Promise<void> }>()
   #mediaPageReservations = 0
   #maxEncoderPages: number
+  #localHtml: LocalHtmlGateway
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
     this.profileDir = resolve(opts.profileDir ?? defaultProfileDir())
@@ -282,6 +285,7 @@ export class ManagedBrowserRuntime {
     this.#layoutPolicy = layoutPolicy(opts)
     this.#maxEncoderPages = configuredPositiveInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
+    this.#localHtml = opts.localHtmlGateway ?? new LocalHtmlGateway()
   }
 
   keyOf(tab: ManagedTabKey): string {
@@ -312,34 +316,45 @@ export class ManagedBrowserRuntime {
   }
 
   async ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection> {
-    const blocked = harnessSelfBlockReason(url)
-    if (blocked !== undefined) {
-      if (this.#pages.has(this.keyOf(tab))) await this.close(tab)
-      return {
-        key: this.keyOf(tab),
-        sessionId: tab.sessionId,
-        tabId: tab.tabId,
-        url,
-        title: '',
-        documentId: this.keyOf(tab) + ':blocked',
-        status: 'error',
-        error: blocked,
+    const key = this.keyOf(tab)
+    const publicUrl = managedBrowserHref(url)
+    if (publicUrl === undefined) {
+      const message = /^file:/i.test(url.trim()) ? 'Only an absolute local HTML file can be opened' : '需要 http、https 或绝对本地 HTML 地址'
+      return failedProjection(tab, key, url, message)
+    }
+    let navigationUrl = publicUrl
+    if (publicUrl.startsWith('file:')) {
+      try {
+        navigationUrl = (await this.#localHtml.open(key, publicUrl)).navigationUrl
+      } catch (error) {
+        return failedProjection(tab, key, publicUrl, errorMessage(error))
       }
     }
-    const record = await this.#record(tab)
-    if (record.status === 'ready' && record.page.url() === url) {
+    const blocked = harnessSelfBlockReason(publicUrl)
+    if (blocked !== undefined) {
+      if (this.#pages.has(key)) await this.close(tab)
+      return failedProjection(tab, key, publicUrl, blocked)
+    }
+    let record: PageRecord
+    try {
+      record = await this.#record(tab)
+    } catch (error) {
+      if (publicUrl.startsWith('file:')) this.#localHtml.release(key)
+      throw error
+    }
+    if (record.status === 'ready' && record.url === publicUrl) {
       this.#touch(record)
       await this.reap()
       return project(record)
     }
     await this.#enqueue(record, async () => {
       record.status = 'loading'
-      record.url = url
+      record.url = publicUrl
       delete record.error
       delete record.blocked
       this.#publish(record)
       try {
-        await record.page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS })
+        await record.page.goto(navigationUrl, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS })
         await this.#refresh(record)
       } catch (error) {
         this.#fail(record, error)
@@ -402,7 +417,7 @@ export class ManagedBrowserRuntime {
   async reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record !== undefined && isChromiumErrorUrl(record.page.url())) {
-      const target = liveHref(record.url)
+      const target = managedBrowserHref(record.url)
       if (target !== undefined) return this.ensure(tab, target)
     }
     return this.#navigate(tab, (page) => page.reload({ waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS }))
@@ -562,11 +577,17 @@ export class ManagedBrowserRuntime {
     return this.#mediaPages.size
   }
 
+  /** Return path-free local HTML gateway lifecycle counters. */
+  localHtmlResources(): LocalHtmlResources {
+    return this.#localHtml.resources()
+  }
+
   async close(tab: ManagedTabKey): Promise<void> {
     const key = this.keyOf(tab)
     const record = this.#pages.get(key)
     this.#requestedViewports.delete(key)
     this.#leases.delete(key)
+    this.#localHtml.release(key)
     if (record === undefined) return
     this.#pages.delete(key)
     rejectPendingLayout(record, new Error('Browser page closed'))
@@ -588,6 +609,7 @@ export class ManagedBrowserRuntime {
     const context = this.#context
     this.#context = undefined
     if (context !== undefined) await (await context).close().catch(() => undefined)
+    await this.#localHtml.dispose()
   }
 
   async #record(tab: ManagedTabKey): Promise<PageRecord> {
@@ -628,7 +650,7 @@ export class ManagedBrowserRuntime {
         this.#publish(record)
         return
       }
-      record.url = frame.url()
+      record.url = this.#publicPageUrl(record, frame.url())
       if (record.blocked) {
         this.#publish(record)
         return
@@ -650,6 +672,7 @@ export class ManagedBrowserRuntime {
     page.on('close', () => {
       if (this.#pages.get(key) !== record) return
       this.#pages.delete(key)
+      this.#localHtml.release(key)
     })
     page.on('popup', (popup) => { this.#onPopup?.(tab, popup) })
     this.#pages.set(key, record)
@@ -686,6 +709,7 @@ export class ManagedBrowserRuntime {
         const records = [...this.#pages.values()]
         this.#pages.clear()
         for (const record of records) {
+          this.#localHtml.release(record.key)
           rejectPendingLayout(record, new Error('Chromium context exited'))
           record.status = 'crashed'
           record.error = 'Chromium context exited'
@@ -772,8 +796,8 @@ export class ManagedBrowserRuntime {
       this.#publish(record)
       return
     }
-    record.url = pageUrl
-    record.title = await record.page.title().catch(() => record.url)
+    record.url = this.#publicPageUrl(record, pageUrl)
+    record.title = this.#localHtml.redact(record.key, await record.page.title().catch(() => record.url))
     if (record.blocked) {
       record.status = 'error'
       this.#publish(record)
@@ -805,13 +829,18 @@ export class ManagedBrowserRuntime {
 
   #fail(record: PageRecord, error: unknown): void {
     record.status = 'error'
-    record.error = error instanceof Error ? error.message : String(error)
+    record.error = this.#localHtml.redact(record.key, errorMessage(error))
     record.refs.clear()
     this.#publish(record)
   }
 
   #publish(record: PageRecord): void {
     this.#onProjection?.(project(record))
+  }
+
+  #publicPageUrl(record: PageRecord, navigationUrl: string): string {
+    return this.#localHtml.project(record.key, navigationUrl)
+      ?? (this.#localHtml.isPrivate(navigationUrl) ? record.url : navigationUrl)
   }
 
   async #nodes(record: PageRecord): Promise<DriveNode[]> {
@@ -1100,6 +1129,19 @@ function project(record: PageRecord): ManagedBrowserProjection {
     documentId: record.documentId,
     status: record.status,
     ...record.error === undefined ? {} : { error: record.error },
+  }
+}
+
+function failedProjection(tab: ManagedTabKey, key: string, url: string, error: string): ManagedBrowserProjection {
+  return {
+    key,
+    sessionId: tab.sessionId,
+    tabId: tab.tabId,
+    url,
+    title: '',
+    documentId: key + ':blocked',
+    status: 'error',
+    error,
   }
 }
 

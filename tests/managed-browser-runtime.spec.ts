@@ -228,10 +228,11 @@ describe('ManagedBrowserRuntime', () => {
     expect(JSON.stringify(opened)).not.toContain(new URL(page.currentUrl).port)
 
     page.currentUrl = new URL('next.html', page.currentUrl).href
-    page.currentTitle = 'Next'
+    page.currentTitle = page.currentUrl
     page.emit('framenavigated', page.frame)
     page.emit('domcontentloaded')
     await vi.waitFor(() => { expect(box.runtime.projection(tab)?.url).toBe(next) })
+    expect(box.runtime.projection(tab)?.title).not.toMatch(/127\.0\.0\.1|\.dcs-local-html|[A-Za-z0-9_-]{24}/)
 
     await box.runtime.close(tab)
     expect(box.runtime.localHtmlResources()).toEqual({ listening: true, leases: 0 })
@@ -249,6 +250,17 @@ describe('ManagedBrowserRuntime', () => {
     expect(box.pages).toEqual([])
     expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
     await box.runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('revokes a local HTML capability when Chromium cannot start', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-managed-local-html-launch-'))
+    await writeFile(join(root, 'index.html'), '<!doctype html><title>Local</title>')
+    const box = harness({ launch: async () => { throw new Error('launch failed') } })
+    await expect(box.runtime.ensure({ sessionId: 'local', tabId: 'failed-launch' }, pathToFileURL(join(root, 'index.html')).href)).rejects.toThrow('launch failed')
+    expect(box.runtime.localHtmlResources()).toEqual({ listening: true, leases: 0 })
+    await box.runtime.dispose()
+    expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
     await rm(root, { recursive: true, force: true })
   })
 

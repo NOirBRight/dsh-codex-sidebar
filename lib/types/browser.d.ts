@@ -147,6 +147,10 @@ export declare function reduceBrowser(state: BrowserState, intent: {
 } | undefined;
 export declare function normalizeUrl(raw: string): string;
 export declare function liveHref(url: string): string | undefined;
+/** Address that may be opened outside the Host-managed Browser. */
+export declare function externalBrowserHref(url: string): string | undefined;
+/** HTTP(S) or syntactically valid absolute local HTML address for managed Chromium. */
+export declare function managedBrowserHref(url: string): string | undefined;
 /** Chromium's failed-navigation page. Never treat this as the address the human asked for. */
 export declare function isChromiumErrorUrl(url: string): boolean;
 /** 主会话 path takeover: http(s), loopback, and `example.com` — never `README.md`. */

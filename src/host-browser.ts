@@ -1,6 +1,6 @@
 /** BrowserPort: synchronous chrome projection plus async managed-Page commands. */
 
-import { liveHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
+import { managedBrowserHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 
 /** Optional HTML snapshot for tests. Production load never waits on the network. */
@@ -17,7 +17,7 @@ export function createHostBrowser(opts: {
   return {
     load(url) {
       if (opts.probe !== undefined) return loadFromProbe(url, opts.probe(url))
-      if (liveHref(url) === undefined) return undefined
+      if (managedBrowserHref(url) === undefined) return undefined
       return liveSnapshot(url)
     },
     openExternal(url) {
@@ -50,7 +50,7 @@ export function createHostBrowser(opts: {
 
 function loadFromProbe(url: string, result: PageProbe): PageDocument | undefined {
   if (result.kind === 'html') return pageSnapshot(url, result.html)
-  if (liveHref(url) === undefined) return undefined
+  if (managedBrowserHref(url) === undefined) return undefined
   return liveSnapshot(url)
 }
 

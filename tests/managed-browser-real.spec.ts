@@ -1,7 +1,8 @@
 import { createServer } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import type { Page } from 'playwright-core'
@@ -121,6 +122,33 @@ function nextLayoutCommit(client: WebSocket): Promise<BrowserLayout> {
 }
 
 describe('real managed Chromium', () => {
+  it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('loads local HTML assets without exposing or escaping its private root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-real-local-html-'))
+    const pageRoot = join(root, 'page')
+    const profileDir = join(root, 'profile')
+    await mkdir(join(pageRoot, 'assets'), { recursive: true })
+    await writeFile(join(root, 'outside.js'), 'globalThis.outsideExecuted = true')
+    await writeFile(join(pageRoot, 'assets', 'app.css'), 'body { color: rgb(1, 2, 3) }')
+    await writeFile(join(pageRoot, 'assets', 'app.js'), 'globalThis.localHtmlLoaded = true')
+    await writeFile(join(pageRoot, 'index.html'), '<!doctype html><title>Local gateway</title><link rel="stylesheet" href="assets/app.css"><script src="assets/app.js"></script><script src="../outside.js"></script><h1>Local</h1>')
+    const runtime = new ManagedBrowserRuntime({ profileDir, headless: true })
+    cleanups.push(async () => { await runtime.dispose(); await rm(root, { recursive: true, force: true }) })
+    const tab = { sessionId: 'real-local', tabId: 'page' }
+    const publicUrl = pathToFileURL(join(pageRoot, 'index.html')).href
+
+    await expect(runtime.ensure(tab, publicUrl)).resolves.toMatchObject({ status: 'ready', title: 'Local gateway', url: publicUrl })
+    const target = runtime.target(tab)?.page
+    if (target === undefined) throw new Error('missing local HTML Page')
+    expect(target.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//)
+    expect(runtime.projection(tab)?.url).toBe(publicUrl)
+    expect(JSON.stringify(runtime.projection(tab))).not.toContain(new URL(target.url()).port)
+    await expect(target.evaluate<{ loaded: boolean; outside: boolean; color: string }>(String.raw`(() => ({
+      loaded: globalThis.localHtmlLoaded === true,
+      outside: globalThis.outsideExecuted === true,
+      color: getComputedStyle(document.body).color,
+    }))()`)).resolves.toEqual({ loaded: true, outside: false, color: 'rgb(1, 2, 3)' })
+  }, 30_000)
+
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('opens, drives, and captures a real Page', async () => {
     const server = createServer((_req, res) => {
       res.setHeader('content-type', 'text/html')

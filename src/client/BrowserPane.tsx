@@ -1,7 +1,7 @@
 /** Managed Chromium Browser chrome, Canvas stream, and screenshot-backed 批注. */
 
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactElement } from 'react'
-import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice, type BrowserState } from '../browser.ts'
+import { BROWSER_DEVICE_PRESETS, externalBrowserHref, managedBrowserHref, type BrowserDevice, type BrowserState } from '../browser.ts'
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
@@ -83,7 +83,8 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
   const [capturing, setCapturing] = useState(false)
   const [deviceOverride, setDeviceOverride] = useState<BrowserDevice | null>(null)
   const device = deviceOverride ?? browser.device
-  const href = liveHref(browser.url)
+  const href = managedBrowserHref(browser.url)
+  const externalHref = externalBrowserHref(browser.url)
   const hasPage = href !== undefined
 
   useEffect(() => { setDraft(browser.draft) }, [browser.draft])
@@ -105,9 +106,9 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
   }
 
   const openLive = (): void => {
-    if (href === undefined) return
+    if (externalHref === undefined) return
     onIntent({ type: 'browser-open-external' })
-    window.open(href, '_blank', 'noopener')
+    window.open(externalHref, '_blank', 'noopener')
   }
 
   const pick = async (rect: AnnotationRect, anchor: { x: number; y: number }, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<void> => {
@@ -146,7 +147,7 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
         <NavButton title="刷新" enabled={hasPage} icon="refresh" onClick={() => { onIntent({ type: 'browser-refresh' }) }} />
         <form className="dcs-b-url" onSubmit={submitUrl}>
           <input value={draft} placeholder="Enter a URL" onChange={(event) => { setDraft(event.target.value) }} />
-          <NavButton title="外部打开" enabled={hasPage} icon="external" onClick={openLive} />
+          <NavButton title="外部打开" enabled={externalHref !== undefined} icon="external" onClick={openLive} />
         </form>
         <DevicePicker value={device} onChange={(next) => {
           setDeviceOverride(next)
@@ -160,7 +161,7 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
       </div>
       {browser.status === 'empty' && <Empty title="打开网页" detail="输入 URL，在侧栏里查看页面" />}
       {browser.status !== 'empty' && href === undefined && (
-        <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http 或 https 地址'} />
+        <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http、https 或绝对本地 HTML 地址'} />
       )}
       {browser.status !== 'empty' && href !== undefined && (
         <div className="dcs-b-page" ref={pageRef}>

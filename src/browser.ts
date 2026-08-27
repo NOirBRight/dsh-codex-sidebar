@@ -143,7 +143,7 @@ export function syncManagedBrowser(state: BrowserState, projection: {
   const changedDocument = current.documentId !== null && current.documentId !== projection.documentId
   const ready = projection.status === 'ready'
   const failed = projection.status === 'error' || projection.status === 'crashed'
-  const changedUrl = publicUrl.length > 0 && liveHref(publicUrl) !== undefined && publicUrl !== current.url
+  const changedUrl = publicUrl.length > 0 && managedBrowserHref(publicUrl) !== undefined && publicUrl !== current.url
   const history = changedUrl
     ? [...current.history.slice(0, current.index + 1), publicUrl]
     : current.history
@@ -209,7 +209,8 @@ export function reduceBrowser(
       return { state: flags({ ...current, device }), effects: [] }
     }
     case 'browser-open-external': {
-      if (current.url.length > 0) port?.openExternal(current.url)
+      const external = externalBrowserHref(current.url)
+      if (external !== undefined) port?.openExternal(external)
       return { state: current, effects: [] }
     }
     case 'browser-set-annotate': {
@@ -395,6 +396,25 @@ export function liveHref(url: string): string | undefined {
   return /^https?:\/\//i.test(href) ? href : undefined
 }
 
+/** Address that may be opened outside the Host-managed Browser. */
+export function externalBrowserHref(url: string): string | undefined {
+  return liveHref(url)
+}
+
+/** HTTP(S) or syntactically valid absolute local HTML address for managed Chromium. */
+export function managedBrowserHref(url: string): string | undefined {
+  const href = normalizeUrl(url)
+  const external = liveHref(href)
+  if (external !== undefined) return external
+  if (!/^file:\/\/\/(?!\/)/i.test(href)) return undefined
+  let parsed: URL
+  try { parsed = new URL(href) } catch { return undefined }
+  if (parsed.protocol !== 'file:' || parsed.host.length > 0 || parsed.username.length > 0 || parsed.password.length > 0) return undefined
+  let path: string
+  try { path = decodeURIComponent(parsed.pathname) } catch { return undefined }
+  return path.startsWith('/') && /\.html?$/i.test(path) ? parsed.href : undefined
+}
+
 /** Chromium's failed-navigation page. Never treat this as the address the human asked for. */
 export function isChromiumErrorUrl(url: string): boolean {
   return /^chrome-error:/i.test(url.trim())
@@ -443,7 +463,7 @@ function loadPage(url: string, port?: BrowserPort): Pick<BrowserState, 'url' | '
     return { url: trimmed, draft: trimmed, status: 'loaded', page }
   }
   // http(s) is for the iframe to try. A failed snapshot probe is not "no service".
-  if (port === undefined || liveHref(trimmed) !== undefined) {
+  if (port === undefined || managedBrowserHref(trimmed) !== undefined) {
     return {
       url: trimmed,
       draft: trimmed,

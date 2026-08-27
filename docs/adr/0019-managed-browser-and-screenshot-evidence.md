@@ -1,6 +1,6 @@
 # Browser uses one managed Chromium and every Browser 批注 carries a screenshot
 
-The Browser tool uses one Host-managed persistent Chromium profile for every http(s) page. The client renders the active Page through a bounded versioned frame stream and sends pointer, wheel, keyboard, and IME input back to that Page. Collapsing the 侧栏 stops frames, not the Page, so the 舵主 can still snapshot, click, and fill it.
+The Browser tool uses one Host-managed persistent Chromium profile for every HTTP(S) page and explicitly selected local HTML page. The client renders the active Page through a bounded versioned frame stream and sends pointer, wheel, keyboard, and IME input back to that Page. Collapsing the 侧栏 stops frames, not the Page, so the 舵主 can still snapshot, click, and fill it. Local HTML enters Chromium through the private projection specified by ADR 0023 rather than direct `file:` navigation.
 
 iframe, pick-proxy, and a split embedded/managed policy were rejected. A page that merely permits framing still cannot guarantee DOM access, exact screenshots, or the same automation contract. One managed implementation gives local and external pages the same behavior.
 
