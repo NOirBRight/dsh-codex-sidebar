@@ -723,7 +723,7 @@ export class ManagedBrowserStream {
         return
       }
       if (message === undefined || message.type === 'hello') return
-      if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') {
+      if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry' || message.type === 'media-decline') {
         if (message.type === 'media-retry') {
           const layout = currentLayout()
           const now = this.#now()
@@ -733,6 +733,13 @@ export class ManagedBrowserStream {
             || now - Math.max(lastMediaFailureAt, lastMediaRetryAt) < this.#webrtcRetryCooldownMs) return
           lastMediaRetryAt = now
           replaceMediaAttempt(layout)
+          return
+        }
+        if (message.type === 'media-decline') {
+          const attempt = mediaAttempt
+          if (attempt === undefined || message.ownerId !== ownerId || message.revision !== attempt.layout.revision
+            || message.mediaGeneration !== attempt.layout.mediaGeneration) return
+          this.#track(failMediaAttempt(attempt, 'client-' + message.reason))
           return
         }
         const attempt = mediaAttempt
@@ -781,7 +788,7 @@ export class ManagedBrowserStream {
     noteMediaActivity: () => void,
     proposal: { latest: number },
   ): Promise<void> {
-    if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') return
+    if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry' || message.type === 'media-decline') return
     if (message.type === 'outline') {
       const outline = await this.#runtime.outline(tab)
       if ('nodes' in outline && socket.readyState === WebSocket.OPEN) {

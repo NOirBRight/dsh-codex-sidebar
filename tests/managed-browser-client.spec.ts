@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
@@ -25,6 +25,23 @@ describe('managed Browser stream client', () => {
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })
     expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1 }))).toBeUndefined()
+  })
+
+  it('assembles exact media decline and cooldown-limited fallback retry messages', () => {
+    const identity = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    expect(browserMediaDeclineMessage(identity)).toEqual({
+      type: 'media-decline', ...identity, reason: 'presentation-failed',
+    })
+
+    const first = browserMediaRetryRequest(undefined, identity, 'explicit', 1_000, 5_000)
+    expect(first.message).toEqual({ type: 'media-retry', ...identity, trigger: 'explicit' })
+    expect(browserMediaRetryRequest(first.state, identity, 'explicit', 1_000, 5_999).message).toBeUndefined()
+    expect(browserMediaRetryRequest(first.state, identity, 'explicit', 1_000, 6_000).message).toEqual({
+      type: 'media-retry', ...identity, trigger: 'explicit',
+    })
+    expect(browserMediaRetryRequest(first.state, { ...identity, mediaGeneration: 10 }, 'explicit', 1_000, 5_001).message).toEqual({
+      type: 'media-retry', ...identity, mediaGeneration: 10, trigger: 'explicit',
+    })
   })
 
   it('keeps laptop geometry authoritative while delayed and mismatched JPEG metadata alternates', () => {

@@ -48,6 +48,7 @@ export type BrowserClientMessage =
   | ({ type: 'rtc-answer'; description: BrowserRtcDescription } & BrowserMediaIdentity)
   | ({ type: 'rtc-candidate'; candidate: BrowserRtcCandidate | null } & BrowserMediaIdentity)
   | ({ type: 'media-retry'; trigger: 'explicit' | 'network-change' | 'tab-reactivate' } & BrowserMediaIdentity)
+  | ({ type: 'media-decline'; reason: 'presentation-failed' } & BrowserMediaIdentity)
   | { type: 'outline' }
 
 export type BrowserHostMessage =
@@ -131,6 +132,10 @@ export function decodeBrowserClientMessage(raw: string): BrowserClientMessage | 
   if (value.type === 'media-retry') {
     if (identity === undefined || (value.trigger !== 'explicit' && value.trigger !== 'network-change' && value.trigger !== 'tab-reactivate')) return undefined
     return { type: 'media-retry', ...identity, trigger: value.trigger }
+  }
+  if (value.type === 'media-decline') {
+    if (identity === undefined || value.reason !== 'presentation-failed') return undefined
+    return { type: 'media-decline', ...identity, reason: value.reason }
   }
   return value.type === 'outline' ? { type: 'outline' } : undefined
 }

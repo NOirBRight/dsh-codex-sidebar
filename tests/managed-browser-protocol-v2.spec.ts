@@ -58,6 +58,17 @@ describe('managed Browser protocol v2', () => {
     expect(decodeBrowserClientMessage(JSON.stringify({
       type: 'media-retry', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, trigger: 'network-change',
     }))).toMatchObject({ type: 'media-retry', trigger: 'network-change' })
+    expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'media-decline', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, reason: 'presentation-failed',
+    }))).toEqual({
+      type: 'media-decline', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, reason: 'presentation-failed',
+    })
+    expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'media-decline', ownerId: 'owner-1', revision: 0, mediaGeneration: 2, reason: 'presentation-failed',
+    }))).toBeUndefined()
+    expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'media-decline', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, reason: 'unknown',
+    }))).toBeUndefined()
     expect(decodeBrowserClientMessage('{"type":"hello","version":1,"frameEncodings":[],"flowControl":[],"media":{"webrtcVideo":true}}')).toBeUndefined()
     expect(decodeBrowserClientMessage('{"type":"rtc-answer","ownerId":"owner-1","revision":3,"mediaGeneration":2,"description":{"type":"offer","sdp":"bad"}}')).toBeUndefined()
     expect(decodeBrowserClientMessage(JSON.stringify({

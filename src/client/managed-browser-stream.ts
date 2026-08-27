@@ -1,4 +1,4 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
@@ -125,6 +125,27 @@ export const BROWSER_STREAM_HEADER_BYTES = BROWSER_STREAM_V2_HEADER_BYTES
 export type DecodedBrowserFrame = BrowserStreamFrameV2
 export type BrowserStreamFrameEncoding = 'binary-v2' | 'json-base64-v2'
 export type BrowserFrameIdentity = Pick<BrowserStreamFrameV2, 'sequence' | 'revision' | 'mediaGeneration'>
+export type BrowserMediaRetryState = { identity: BrowserMediaIdentity; nextRetryAt: number }
+
+/** Assemble an exact client decline after direct video cannot present its first frame. */
+export function browserMediaDeclineMessage(identity: BrowserMediaIdentity): Extract<BrowserClientMessage, { type: 'media-decline' }> {
+  return { type: 'media-decline', ...identity, reason: 'presentation-failed' }
+}
+
+/** Rate-limit a receiver-less retry while allowing a new layout/media identity immediately. */
+export function browserMediaRetryRequest(
+  state: BrowserMediaRetryState | undefined,
+  identity: BrowserMediaIdentity,
+  trigger: 'explicit' | 'network-change' | 'tab-reactivate',
+  cooldownMs: number,
+  now: number,
+): { state: BrowserMediaRetryState; message?: Extract<BrowserClientMessage, { type: 'media-retry' }> } {
+  const same = state !== undefined && state.identity.ownerId === identity.ownerId
+    && state.identity.revision === identity.revision && state.identity.mediaGeneration === identity.mediaGeneration
+  if (same && now < state.nextRetryAt) return { state }
+  const next = { identity: { ...identity }, nextRetryAt: now + cooldownMs }
+  return { state: next, message: { type: 'media-retry', ...identity, trigger } }
+}
 
 /** Declare the encodings and flow control understood by the Canvas client. */
 export function browserStreamHello(webrtcVideo = false): {
