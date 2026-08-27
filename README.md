@@ -32,14 +32,14 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 DeepSeek Harness 0.1.0-rc.6 or later. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.23
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.24
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.23
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.24
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
