@@ -303,10 +303,6 @@ function validSize(value: unknown): value is BrowserStreamSize {
     && typeof size.height === 'number' && Number.isFinite(size.height) && size.height > 0
 }
 
-function finiteNonnegative(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-}
-
 function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }

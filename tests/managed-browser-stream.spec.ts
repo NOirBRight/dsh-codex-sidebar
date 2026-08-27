@@ -180,7 +180,7 @@ describe('managed browser stream protocol', () => {
     }
   })
 
-  it('uses binary v1 frames for Desktop Origin connections', async () => {
+  it('uses binary v2 frames for Desktop Origin connections', async () => {
     const jpeg = Buffer.from([0xff, 0xd8, 3, 4, 0xff, 0xd9]).toString('base64')
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
