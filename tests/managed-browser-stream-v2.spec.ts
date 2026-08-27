@@ -145,6 +145,7 @@ describe('managed Browser Host protocol v2', () => {
       await new Promise((resolve) => { setTimeout(resolve, 60) })
       expect(frames).toHaveLength(25)
       expect(captureTimes.slice(1).every((value, index) => value - captureTimes[index]! >= 8)).toBe(true)
+      expect(stream.diagnostics().fallbackBytes).toBeGreaterThan(0)
     } finally {
       if (animation !== undefined) clearInterval(animation)
       client.close()
@@ -272,15 +273,18 @@ describe('managed Browser Host protocol v2', () => {
         return { data: Buffer.from([1, 2, 3]).toString('base64') }
       },
     }
+    const onStaleDrop = vi.fn()
     const capture = captureBrowserJpegForLayout(
       cdp as never,
       current,
       () => current,
       { quality: 80, maxScale: 1, maxRawBytes: 100 },
+      { onStaleDrop },
     )
     await vi.waitFor(() => { expect(release).toBeTypeOf('function') })
     current = { revision: 2, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 2 }
     release?.()
     await expect(capture).resolves.toBeUndefined()
+    expect(onStaleDrop).toHaveBeenCalledOnce()
   })
 })

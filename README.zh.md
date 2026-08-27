@@ -65,6 +65,9 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
       maxEncoderPages: 3
       directVideoFrameRate: 10
       directVideoMaxBitrate: 2000000
+      directVideoCaptureQuality: 80
+      directVideoCaptureMaxScale: 1.5
+      directVideoCaptureMaxRawBytes: 491520
       desktopJpegQuality: 80
       desktopJpegFrameIntervalMs: 100
       desktopJpegMaxScale: 1.5
@@ -84,7 +87,9 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
 
 phone、tablet、laptop 三个固定预设仍为 `390×844`、`768×1024`、`1280×800`。fit 模式只在容器稳定后提交一次受限 viewport；固定预设不读取容器 resize。WebRTC 只传视频，不请求摄像头、麦克风或音频。`stunUrls` 只接受 `stun:` URL，拒绝 TURN；空列表仍可使用 Host ICE candidate，需要 NAT discovery 的部署必须配置获准的 STUN 服务。诊断时可把 `preferredMediaRoute` 设为 `jpeg-only`。
 
-无 Origin 的 Mobile 隧道会在 Browser JSON frame 外再套一层 Base64。默认 96 KiB 上限针对编码后的 JPEG 字节，完整 tunnel plaintext 仍低于 200 KiB 限制。Fallback 可以降低 JPEG quality 或编码分辨率，但绝不改变已提交的 CSS viewport。`desktopJpegFrameIntervalMs` 和 `mobileJpegFrameIntervalMs` 是捕获速率硬上限，交互触发的 frame 也不能绕过。每次交互、导航、刷新或布局提交后，最多再允许 `desktopJpegInteractionBurstFrames` 或 `mobileJpegInteractionBurstFrames` 个被动 screencast 更新；预算耗尽后，纯动画页面停止传帧。新活动会补满预算并保留最新 dirty update。WebRTC 直连视频不使用这项 fallback 预算。每条连接最多保留一个 capture、一个未确认 frame 和一个 latest dirty request。
+无 Origin 的 Mobile 隧道会在 Browser JSON frame 外再套一层 Base64。默认 96 KiB 上限针对编码后的 JPEG 字节，完整 tunnel plaintext 仍低于 200 KiB 限制。Fallback 可以降低 JPEG quality 或编码分辨率，但绝不改变已提交的 CSS viewport。`desktopJpegFrameIntervalMs` 和 `mobileJpegFrameIntervalMs` 是捕获速率硬上限，交互触发的 frame 也不能绕过。每次交互、导航、刷新或布局提交后，最多再允许 `desktopJpegInteractionBurstFrames` 或 `mobileJpegInteractionBurstFrames` 个被动 screencast 更新；预算耗尽后，纯动画页面停止传帧。新活动会补满预算并保留最新 dirty update。WebRTC 直连视频使用独立的 `directVideoCaptureQuality`、`directVideoCaptureMaxScale` 和 `directVideoCaptureMaxRawBytes` profile，从 Host 已提交 viewport 捕获，不受控制 socket 是否带 Origin 影响；这些仅供 encoder 使用的 JPEG 字节不会进入 Mobile 隧道。每条连接最多保留一个 capture、一个未确认 frame 和一个 latest dirty request。
+
+`ManagedBrowserStream.diagnostics()` 提供累计 layout proposal/commit、stale input/capture、fallback byte/recapture、media attempt/failure 计数以及最近一次 route reason。`resources()` 仍只返回当前 socket、timer、capture、未确认 frame 和 peer 的资源持有数量。
 
 以上数值均为默认值。`mediaIdleTimeoutMs` 会释放无活动的直连视频 peer，但保留目标 Page；后续交互可在重试冷却期结束后重新协商。当文档或 Browser surface 变为隐藏时，`mediaHideGraceMs` 会在短暂恢复窗口内保留控制连接。到期前恢复可取消回收；到期后会关闭控制连接并释放对应 peer 和 encoder，但不会关闭目标 Page。插件关闭时允许 stream socket 和已启动任务在 `streamShutdownTimeoutMs` 内安全结束；超时后会 terminate 不响应的 socket，并停止保留未结束的任务记账。
 

@@ -35,13 +35,16 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, webrtcRetryCooldownMs: -1 })).toThrow('webrtcRetryCooldownMs')
     expect(() => new ManagedBrowserStream({ runtime, directVideoFrameRate: 0 })).toThrow('directVideoFrameRate')
     expect(() => new ManagedBrowserStream({ runtime, directVideoMaxBitrate: 0 })).toThrow('directVideoMaxBitrate')
+    expect(() => new ManagedBrowserStream({ runtime, directVideoCaptureQuality: 0 })).toThrow('directVideoCaptureQuality')
+    expect(() => new ManagedBrowserStream({ runtime, directVideoCaptureMaxScale: 0 })).toThrow('directVideoCaptureMaxScale')
+    expect(() => new ManagedBrowserStream({ runtime, directVideoCaptureMaxRawBytes: 0 })).toThrow('directVideoCaptureMaxRawBytes')
     expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, mediaHideGraceMs: -1 })).toThrow('mediaHideGraceMs')
     expect(() => new ManagedBrowserStream({ runtime, shutdownTimeoutMs: 0 })).toThrow('shutdownTimeoutMs')
   })
 
   it('waits for the exact previous owner to detach before activating its replacement', async () => {
-    const layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     let releaseEncoder: (() => void) | undefined
     let releaseScreencast: (() => void) | undefined
     const encoderGate = new Promise<void>((resolve) => { releaseEncoder = resolve })
@@ -125,6 +128,92 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       second?.client.close()
       releaseEncoder?.()
       releaseScreencast?.()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
+  it('keeps direct capture independent from an Origin-less Mobile fallback budget and reports route diagnostics', async () => {
+    let layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    const captures: Array<{ quality: number; scale: number }> = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method, params) => {
+      if (method === 'Page.captureScreenshot') {
+        const capture = params as { quality: number; clip: { scale: number } }
+        captures.push({ quality: capture.quality, scale: capture.clip.scale })
+        return { data: Buffer.alloc(120 * 1024, 1).toString('base64') }
+      }
+      return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    }
+    const runtime = {
+      target: () => ({ cdp, layout }), keyOf: () => 'mobile:t', touch: () => {}, acquire: () => () => {},
+      layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
+        layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, ...proposal }
+        return layout
+      },
+      outline: async () => ({ documentId: 'd1', nodes: [] }), trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+    }
+    const encoders: FakeEncoder[] = []
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never,
+      directVideoCaptureQuality: 88,
+      directVideoCaptureMaxScale: 1.25,
+      directVideoCaptureMaxRawBytes: 160 * 1024,
+      webrtcNegotiationTimeoutMs: 1_000,
+      encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
+    })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'mobile', tabId: 't' }).path)
+    let fallbackFrames = 0
+    client.on('message', (data) => {
+      const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string }
+      if (message.type === 'frame') fallbackFrames += 1
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: true } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => {
+        expect(encoders).toHaveLength(1)
+        expect(stream.diagnostics()).toMatchObject({ fallbackBytes: 0, fallbackRecaptures: 3, mediaAttempts: 1 })
+      })
+      encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
+      await vi.waitFor(() => { expect(encoders[0]?.frames.length).toBeGreaterThan(0) })
+      expect(captures).toContainEqual({ quality: 88, scale: 1.25 })
+      expect(captures.filter((capture) => capture.quality === 88)).toHaveLength(1)
+      expect(fallbackFrames).toBe(0)
+
+      client.send(JSON.stringify({ type: 'input', revision: 99, input: { type: 'tap', x: 10, y: 20 } }))
+      client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
+      await vi.waitFor(() => { expect(encoders).toHaveLength(2) })
+      encoders[1]?.signal({ type: 'connection-state', state: 'failed' })
+      await vi.waitFor(() => {
+        expect(stream.diagnostics()).toMatchObject({
+          layoutProposals: 1,
+          layoutCommits: 1,
+          staleInputs: 1,
+          mediaAttempts: 2,
+          mediaFailures: 1,
+          lastMediaRoute: { route: 'jpeg-fallback', status: 'degraded', reason: 'peer-failed' },
+          mediaRouteReasons: { 'peer-failed': 1 },
+        })
+      })
+      expect(Object.keys(stream.resources()).sort()).toEqual(['captures', 'peers', 'sockets', 'timers', 'unackedFrames'])
+      expect(stream.resources()).toMatchObject({ sockets: 1, captures: 0, unackedFrames: 0, peers: 0 })
+    } finally {
+      client.close()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => resolve()) })
     }

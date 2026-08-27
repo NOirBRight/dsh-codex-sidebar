@@ -65,6 +65,9 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Mana
       maxEncoderPages: 3
       directVideoFrameRate: 10
       directVideoMaxBitrate: 2000000
+      directVideoCaptureQuality: 80
+      directVideoCaptureMaxScale: 1.5
+      directVideoCaptureMaxRawBytes: 491520
       desktopJpegQuality: 80
       desktopJpegFrameIntervalMs: 100
       desktopJpegMaxScale: 1.5
@@ -84,7 +87,9 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Mana
 
 The fixed phone, tablet, and laptop presets remain `390×844`, `768×1024`, and `1280×800`. Fit mode proposes one clamped viewport only after the container settles; fixed presets never consume container resize observations. WebRTC carries video only and does not request camera, microphone, or audio. `stunUrls` accepts only `stun:` URLs; TURN is rejected. An empty list still permits host ICE candidates, while deployments that need NAT discovery must configure approved STUN servers. `jpeg-only` is available as a diagnostic `preferredMediaRoute`.
 
-The Origin-less Mobile tunnel wraps the Browser JSON frame in another Base64 envelope. Its default 96 KiB limit applies to the encoded JPEG bytes and leaves the complete tunnel plaintext below the 200 KiB ceiling. The fallback may lower JPEG quality or encoded resolution, but it never changes the committed CSS viewport. `desktopJpegFrameIntervalMs` and `mobileJpegFrameIntervalMs` are hard capture-rate ceilings, including interaction-triggered frames. Each interaction, navigation, refresh, or layout commit permits at most `desktopJpegInteractionBurstFrames` or `mobileJpegInteractionBurstFrames` later passive screencast updates; animation alone becomes quiet when that budget is exhausted. New activity replenishes the budget and retains the latest dirty update. Direct WebRTC video does not use this fallback budget. Each connection retains at most one capture, one unacknowledged frame, and one latest dirty request.
+The Origin-less Mobile tunnel wraps the Browser JSON frame in another Base64 envelope. Its default 96 KiB limit applies to the encoded JPEG bytes and leaves the complete tunnel plaintext below the 200 KiB ceiling. The fallback may lower JPEG quality or encoded resolution, but it never changes the committed CSS viewport. `desktopJpegFrameIntervalMs` and `mobileJpegFrameIntervalMs` are hard capture-rate ceilings, including interaction-triggered frames. Each interaction, navigation, refresh, or layout commit permits at most `desktopJpegInteractionBurstFrames` or `mobileJpegInteractionBurstFrames` later passive screencast updates; animation alone becomes quiet when that budget is exhausted. New activity replenishes the budget and retains the latest dirty update. Direct WebRTC video uses the separate `directVideoCaptureQuality`, `directVideoCaptureMaxScale`, and `directVideoCaptureMaxRawBytes` profile against the Host-committed viewport, regardless of whether the control socket has an Origin. These encoder-only JPEG bytes never enter the Mobile tunnel. Each connection retains at most one capture, one unacknowledged frame, and one latest dirty request.
+
+`ManagedBrowserStream.diagnostics()` exposes cumulative layout proposal/commit, stale input/capture, fallback byte/recapture, and media attempt/failure counters plus the latest route reason. `resources()` remains limited to current socket, timer, capture, unacknowledged-frame, and peer ownership counts.
 
 The values above are the defaults. `mediaIdleTimeoutMs` releases an inactive direct-video peer while keeping the target Page alive; later interaction may negotiate again after the retry cooldown. When the document or Browser surface becomes hidden, `mediaHideGraceMs` keeps the control connection alive for a short recovery window. Returning before the deadline cancels teardown; expiry closes the control connection and releases its peer and encoder without closing the target Page. Plugin shutdown gives stream sockets and owned work `streamShutdownTimeoutMs` to settle, then terminates unresponsive sockets and stops retaining unfinished task bookkeeping.
 

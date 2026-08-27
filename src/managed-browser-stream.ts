@@ -43,10 +43,13 @@ export const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4
 const HIGH_DENSITY_SCALE = 1.5
 export const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES = 96 * 1024
 export const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES = 480 * 1024
+export const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_RAW_BYTES = 480 * 1024
 export const MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES = 20
 export const MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES = 4
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
+export const MANAGED_BROWSER_DIRECT_CAPTURE_QUALITY = 80
+export const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_SCALE = 1.5
 export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
 export const MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS = 5 * 60_000
 
@@ -73,6 +76,23 @@ export type BrowserStreamProfileConfig = {
   mobileJpegMaxScale?: number | undefined
   mobileScreencastEveryNthFrame?: number | undefined
   mobileJpegInteractionBurstFrames?: number | undefined
+}
+
+export type BrowserDirectCaptureProfileConfig = {
+  directVideoCaptureQuality?: number | undefined
+  directVideoCaptureMaxScale?: number | undefined
+  directVideoCaptureMaxRawBytes?: number | undefined
+}
+
+export type BrowserDirectCaptureProfile = Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>
+
+/** Resolve the encoder capture independently from the socket's fallback transport. */
+export function browserDirectCaptureProfile(config: BrowserDirectCaptureProfileConfig = {}): BrowserDirectCaptureProfile {
+  return {
+    quality: jpegQuality(config.directVideoCaptureQuality, MANAGED_BROWSER_DIRECT_CAPTURE_QUALITY, 'directVideoCaptureQuality'),
+    maxScale: jpegScale(config.directVideoCaptureMaxScale, MANAGED_BROWSER_DIRECT_CAPTURE_MAX_SCALE, 'directVideoCaptureMaxScale'),
+    maxRawBytes: rawByteBudget(config.directVideoCaptureMaxRawBytes, MANAGED_BROWSER_DIRECT_CAPTURE_MAX_RAW_BYTES, 'directVideoCaptureMaxRawBytes'),
+  }
 }
 
 export function browserStreamTransportProfile(
@@ -181,6 +201,9 @@ export type ManagedBrowserStreamOptions = {
   maxMediaPeers?: number
   directVideoFrameRate?: number
   directVideoMaxBitrate?: number
+  directVideoCaptureQuality?: number
+  directVideoCaptureMaxScale?: number
+  directVideoCaptureMaxRawBytes?: number
   mediaIdleTimeoutMs?: number
   mediaHideGraceMs?: number
   shutdownTimeoutMs?: number
@@ -231,6 +254,25 @@ export type ManagedBrowserStreamResources = {
   peers: number
 }
 
+export type ManagedBrowserMediaRouteDiagnostic = {
+  route: 'jpeg-fallback' | 'webrtc-direct'
+  status: 'active' | 'degraded' | 'reconnecting'
+  reason?: string
+}
+
+export type ManagedBrowserStreamDiagnostics = {
+  layoutProposals: number
+  layoutCommits: number
+  staleInputs: number
+  staleCaptureDrops: number
+  fallbackBytes: number
+  fallbackRecaptures: number
+  mediaAttempts: number
+  mediaFailures: number
+  lastMediaRoute: ManagedBrowserMediaRouteDiagnostic | undefined
+  mediaRouteReasons: Record<string, number>
+}
+
 export class ManagedBrowserStream {
   #runtime: ManagedBrowserRuntime
   #now: () => number
@@ -245,6 +287,7 @@ export class ManagedBrowserStream {
   #captureCount = 0
   #unackedCount = 0
   #profiles: { desktop: BrowserStreamTransportProfile; mobile: BrowserStreamTransportProfile }
+  #directCaptureProfile: BrowserDirectCaptureProfile
   #tasks = new Set<Promise<void>>()
   #preferredMediaRoute: 'webrtc-preferred' | 'jpeg-only'
   #stunUrls: string[]
@@ -258,6 +301,18 @@ export class ManagedBrowserStream {
   #shutdownTimeoutMs: number
   #encoderFactory: ManagedBrowserWebRtcEncoderFactory
   #peerCount = 0
+  #diagnostics: ManagedBrowserStreamDiagnostics = {
+    layoutProposals: 0,
+    layoutCommits: 0,
+    staleInputs: 0,
+    staleCaptureDrops: 0,
+    fallbackBytes: 0,
+    fallbackRecaptures: 0,
+    mediaAttempts: 0,
+    mediaFailures: 0,
+    lastMediaRoute: undefined,
+    mediaRouteReasons: {},
+  }
   #disposePromise: Promise<void> | undefined
 
   constructor(opts: ManagedBrowserStreamOptions) {
@@ -283,6 +338,11 @@ export class ManagedBrowserStream {
       desktop: browserStreamTransportProfile('desktop', profileConfig),
       mobile: browserStreamTransportProfile('mobile', profileConfig),
     }
+    this.#directCaptureProfile = browserDirectCaptureProfile({
+      directVideoCaptureQuality: opts.directVideoCaptureQuality,
+      directVideoCaptureMaxScale: opts.directVideoCaptureMaxScale,
+      directVideoCaptureMaxRawBytes: opts.directVideoCaptureMaxRawBytes,
+    })
     this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
     if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')
     this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [])
@@ -345,6 +405,15 @@ export class ManagedBrowserStream {
       captures: this.#captureCount,
       unackedFrames: this.#unackedCount,
       peers: this.#peerCount,
+    }
+  }
+
+  /** Return cumulative protocol/media counters without changing owned-resource accounting. */
+  diagnostics(): ManagedBrowserStreamDiagnostics {
+    return {
+      ...this.#diagnostics,
+      lastMediaRoute: this.#diagnostics.lastMediaRoute === undefined ? undefined : { ...this.#diagnostics.lastMediaRoute },
+      mediaRouteReasons: { ...this.#diagnostics.mediaRouteReasons },
     }
   }
 
@@ -532,33 +601,52 @@ export class ManagedBrowserStream {
         releaseCapture()
         return
       }
-      const task = captureBrowserJpegForLayout(cdp, capturedLayout, currentLayout, profile).then((capture) => {
+      const captureRoute = directVideo ? 'webrtc-direct' : 'jpeg-fallback'
+      const captureProfile = directVideo ? this.#directCaptureProfile : profile
+      const task = captureBrowserJpegForLayout(cdp, capturedLayout, currentLayout, captureProfile, {
+        onCaptureAttempt: (attemptIndex) => {
+          if (captureRoute === 'jpeg-fallback' && attemptIndex > 0) this.#diagnostics.fallbackRecaptures += 1
+        },
+        onStaleDrop: () => { this.#diagnostics.staleCaptureDrops += 1 },
+      }).then((capture) => {
         if (detached) return
         if (capture === undefined) {
           const current = currentLayout()
           if (current?.revision !== capturedLayout.revision || current.mediaGeneration !== capturedLayout.mediaGeneration) return
+          if (captureRoute === 'webrtc-direct') {
+            const attempt = mediaAttempt
+            if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) {
+              this.#track(failMediaAttempt(attempt, 'direct-frame-budget-exceeded'))
+            }
+            return
+          }
           if (!mediaDegraded && socket.readyState === WebSocket.OPEN) {
             mediaDegraded = true
-            socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'frame-budget-exceeded' }))
+            sendMediaRoute('jpeg-fallback', 'degraded', 'frame-budget-exceeded')
           }
           return
         }
         if (mediaDegraded && socket.readyState === WebSocket.OPEN) {
           mediaDegraded = false
-          socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }))
+          sendMediaRoute('jpeg-fallback', 'active')
         }
         const attempt = mediaAttempt
-        if (attempt !== undefined && sameMediaLayout(attempt.layout, capturedLayout)) {
-          mediaFrameSequence += 1
-          attempt.encoder.submit({
-            sequence: mediaFrameSequence,
-            width: capture.encodedSize.width,
-            height: capture.encodedSize.height,
-            jpeg: capture.jpeg,
-          })
+        if (captureRoute === 'webrtc-direct') {
+          if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) {
+            mediaFrameSequence += 1
+            attempt.encoder.submit({
+              sequence: mediaFrameSequence,
+              width: capture.encodedSize.width,
+              height: capture.encodedSize.height,
+              jpeg: capture.jpeg,
+            })
+          }
+          return
         }
         if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) return
-        if (!sendFrame(capture, capturedLayout)) {
+        if (sendFrame(capture, capturedLayout)) {
+          this.#diagnostics.fallbackBytes += capture.jpeg.byteLength
+        } else {
           dirty = { kind: 'activity' }
         }
       }).finally(() => {
@@ -592,12 +680,15 @@ export class ManagedBrowserStream {
       await attempt.encoder.dispose().catch(() => undefined)
     }
     const sendMediaRoute = (route: 'jpeg-fallback' | 'webrtc-direct', status: 'active' | 'degraded' | 'reconnecting', reason?: string): void => {
+      this.#diagnostics.lastMediaRoute = { route, status, ...(reason === undefined ? {} : { reason }) }
+      if (reason !== undefined) this.#diagnostics.mediaRouteReasons[reason] = (this.#diagnostics.mediaRouteReasons[reason] ?? 0) + 1
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'media-route', route, status, ...(reason === undefined ? {} : { reason }) }))
     }
     const failMediaAttempt = async (attempt: BrowserMediaAttempt, reason: string): Promise<void> => {
       if (mediaAttempt !== attempt) return
       mediaAttempt = undefined
       lastMediaFailureAt = this.#now()
+      this.#diagnostics.mediaFailures += 1
       mediaIdleSuspended = reason === 'media-idle-timeout'
       await releaseMediaAttempt(attempt)
       if (detached) return
@@ -636,8 +727,10 @@ export class ManagedBrowserStream {
     }
     const startMediaAttempt = async (layout: BrowserLayout): Promise<void> => {
       if (detached || !clientWebRtc || this.#preferredMediaRoute === 'jpeg-only' || !sameMediaLayout(currentLayout(), layout)) return
+      this.#diagnostics.mediaAttempts += 1
       if (this.#peerCount >= this.#maxMediaPeers) {
         lastMediaFailureAt = this.#now()
+        this.#diagnostics.mediaFailures += 1
         sendMediaRoute('jpeg-fallback', 'degraded', 'local-capacity')
         requestFrame('activity')
         return
@@ -732,6 +825,7 @@ export class ManagedBrowserStream {
       }
     }
     const commitLayout = (layout: BrowserLayout): void => {
+      this.#diagnostics.layoutCommits += 1
       if (unacked !== undefined
         && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
         unacked = undefined
@@ -946,6 +1040,7 @@ export class ManagedBrowserStream {
     if (message.type === 'layout-propose') {
       if (message.proposalSequence <= proposal.latest) return
       proposal.latest = message.proposalSequence
+      this.#diagnostics.layoutProposals += 1
       const layout = await this.#runtime.proposeLayout(tab, { mode: message.mode, viewport: message.viewport })
       commitLayout(layout)
       return
@@ -953,6 +1048,7 @@ export class ManagedBrowserStream {
     if (message.type !== 'input') return
     const layout = currentLayout()
     if (layout === undefined || message.revision !== layout.revision) {
+      this.#diagnostics.staleInputs += 1
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
         type: 'input-result', accepted: false, reason: 'stale-layout', revision: layout?.revision ?? 0,
       }))
@@ -996,20 +1092,25 @@ export function browserStreamVisualViewportOrigin(value: unknown): { x: number; 
 
 export type BrowserJpegCapture = { jpeg: Uint8Array; encodedSize: BrowserSize; quality: number; scale: number }
 
+export type BrowserJpegCaptureObserver = {
+  onCaptureAttempt?: (attemptIndex: number) => void
+  onStaleDrop?: () => void
+}
+
 /** Capture only while the supplied committed layout remains current. */
 export async function captureBrowserJpegForLayout(
   cdp: ManagedCdpSession,
   layout: BrowserLayout,
   currentLayout: () => BrowserLayout | undefined,
   profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
+  observer: BrowserJpegCaptureObserver = {},
 ): Promise<BrowserJpegCapture | undefined> {
-  const capture = await captureBrowserJpegWithinBudget(cdp, layout.viewport, profile)
+  const capture = await captureBrowserJpegWithinBudget(cdp, layout.viewport, profile, observer)
   const current = currentLayout()
-  return capture !== undefined
-    && current?.revision === layout.revision
-    && current.mediaGeneration === layout.mediaGeneration
-    ? capture
-    : undefined
+  if (capture === undefined) return undefined
+  if (current?.revision === layout.revision && current.mediaGeneration === layout.mediaGeneration) return capture
+  observer.onStaleDrop?.()
+  return undefined
 }
 
 /** Capture the committed CSS viewport within one route's raw JPEG budget. */
@@ -1017,6 +1118,7 @@ export async function captureBrowserJpegWithinBudget(
   cdp: ManagedCdpSession,
   viewport: BrowserSize,
   profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
+  observer: Pick<BrowserJpegCaptureObserver, 'onCaptureAttempt'> = {},
 ): Promise<BrowserJpegCapture | undefined> {
   const metrics = await cdp.send('Page.getLayoutMetrics').catch(() => undefined)
   const origin = browserStreamVisualViewportOrigin(metrics)
@@ -1027,7 +1129,8 @@ export async function captureBrowserJpegWithinBudget(
     { quality: Math.min(profile.quality, 45), scale: Math.min(preferredScale, 0.75) },
     { quality: Math.min(profile.quality, 30), scale: Math.min(preferredScale, 0.5) },
   ])
-  for (const attempt of attempts) {
+  for (const [attemptIndex, attempt] of attempts.entries()) {
+    observer.onCaptureAttempt?.(attemptIndex)
     const result = await cdp.send('Page.captureScreenshot', {
       format: 'jpeg',
       quality: attempt.quality,
@@ -1220,8 +1323,8 @@ function rejectUpgrade(socket: Duplex, status: number, message: string): void {
   socket.destroy()
 }
 
-function rawByteBudget(value: number | undefined, fallback: number): number {
+function rawByteBudget(value: number | undefined, fallback: number, name = 'JPEG raw-byte budget'): number {
   if (value === undefined) return fallback
-  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('managed Browser JPEG raw-byte budget must be a positive safe integer')
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('managedBrowser ' + name + ' must be a positive safe integer')
   return value
 }

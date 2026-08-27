@@ -7,6 +7,7 @@ import {
   browserStreamCaptureDelay,
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
+  browserDirectCaptureProfile,
   browserStreamTransportProfile,
   browserStreamVisualViewportOrigin,
   decodeBrowserStreamFrame,
@@ -475,6 +476,18 @@ describe('managed browser stream protocol', () => {
       maxScale: 1.25, everyNthFrame: 3, interactionBurstFrames: 12, maxRawBytes: 320 * 1024,
     })
     expect(browserStreamCaptureScale(720, 860, 1)).toBe(1)
+  })
+
+  it('uses an Origin-independent capture profile for direct video', () => {
+    expect(browserDirectCaptureProfile()).toEqual({ quality: 80, maxScale: 1.5, maxRawBytes: 480 * 1024 })
+    expect(browserDirectCaptureProfile({
+      directVideoCaptureQuality: 88,
+      directVideoCaptureMaxScale: 1.25,
+      directVideoCaptureMaxRawBytes: 640 * 1024,
+    })).toEqual({ quality: 88, maxScale: 1.25, maxRawBytes: 640 * 1024 })
+    expect(() => browserDirectCaptureProfile({ directVideoCaptureQuality: 101 })).toThrow('directVideoCaptureQuality')
+    expect(() => browserDirectCaptureProfile({ directVideoCaptureMaxScale: 0 })).toThrow('directVideoCaptureMaxScale')
+    expect(() => browserDirectCaptureProfile({ directVideoCaptureMaxRawBytes: 0 })).toThrow('directVideoCaptureMaxRawBytes')
   })
 
   it('rejects invalid configured JPEG transport profiles', () => {
