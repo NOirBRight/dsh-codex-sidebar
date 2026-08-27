@@ -1,9 +1,11 @@
 /** Host half: one SidebarSession per 主会话, reached over Connection RPC. */
 
+import type {} from '@deepseek-ai/dsh-session'
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
 import { createHostBrowser } from './host-browser.ts'
 import { ManagedBrowserRuntime, type ManagedBrowserConfig } from './managed-browser-runtime.ts'
 import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
+import { installManagedBrowserSessionLifecycle } from './managed-browser-session-lifecycle.ts'
 import { ManagedBrowserStream, MANAGED_BROWSER_STREAM_PATH } from './managed-browser-stream.ts'
 import { createManagedBrowserDriveService } from './host-browser-tools.ts'
 import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-browser-tools.ts'
@@ -66,6 +68,11 @@ type EffectContext = {
 }
 
 type HostContext = EffectContext & {
+  on: (
+    name: 'session/disposed',
+    listener: (session: { id: string }) => void,
+    options: { global: true },
+  ) => () => void
   inject: (deps: readonly string[], callback: (ctx: EffectContext & {
     connection?: { rpc: RpcHandle }
     tools?: ToolsHost
@@ -130,6 +137,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }
   }, 'dsh-codex-sidebar: managed browser lifecycle')
+  installManagedBrowserSessionLifecycle(ctx, managedStream, managedBrowser, filesBySession)
   const registry = createRegistry({
     persist,
     filesFor: (sessionId, io) => {

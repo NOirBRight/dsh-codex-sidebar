@@ -90,6 +90,8 @@ phone、tablet、laptop 三个固定预设仍为 `390×844`、`768×1024`、`128
 
 Chromium 启动前，插件只会对允许列表中的派生缓存目录执行只读且不跟随符号链接的容量估算。Persistent Context 启动过程由 Chromium 自身仲裁单例；插件不会重命名、删除或修复配置文件路径。Context 成功启动后，超预算估算会触发一次临时空白 Page 和 CDP session，依次执行 `Network.enable` 与 `Network.clearBrowserCache`，并始终 detach、close。清理失败只记录警告，不会丢弃 Context。Chromium 缓存 API 不影响 Cookie、Local Storage 和 IndexedDB；磁盘与媒体缓存启动参数继续限制后续增长。
 
+DSH session 被释放时，插件会立即关闭该 session 的 Browser 控制连接和托管 Page；仅隐藏 Browser 时则在配置的宽限期后释放媒体，并保留 Page 供 Agent 工具继续使用。
+
 ## 本地安装
 
 ```sh
