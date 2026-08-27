@@ -1,4 +1,4 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
@@ -69,17 +69,8 @@ export function browserStreamHello(webrtcVideo = false): {
 }
 
 export function browserStreamReady(value: string): BrowserReadyMessage | undefined {
-  try {
-    const message = JSON.parse(value) as BrowserReadyMessage
-    if (message.type !== 'ready' || message.version !== 2 || message.flowControl !== 'frame-ack-v2') return undefined
-    if (message.frameEncoding !== 'binary-v2' && message.frameEncoding !== 'json-base64-v2') return undefined
-    if (!validSize(message.layoutPolicy?.minViewport) || !validSize(message.layoutPolicy?.maxViewport)
-      || !finiteNonnegative(message.layoutPolicy?.settleMs) || !finiteNonnegative(message.layoutPolicy?.hysteresisPx)
-      || !finiteNonnegative(message.fallback?.maxRawBytes)) return undefined
-    return message
-  } catch {
-    return undefined
-  }
+  const message = decodeBrowserHostMessage(value)
+  return message?.type === 'ready' ? message : undefined
 }
 
 export function decodeBrowserLayoutCommit(value: string): BrowserLayoutCommitMessage | undefined {
@@ -88,6 +79,18 @@ export function decodeBrowserLayoutCommit(value: string): BrowserLayoutCommitMes
     const layout = message.layout
     if (message.type !== 'layout-commit' || !positiveInteger(layout?.revision) || !positiveInteger(layout?.mediaGeneration)
       || !validSize(layout?.viewport) || !['fit', 'phone', 'tablet', 'laptop'].includes(layout?.mode)) return undefined
+    return message
+  } catch {
+    return undefined
+  }
+}
+
+export function decodeBrowserMediaRoute(value: string): BrowserMediaRouteMessage | undefined {
+  try {
+    const message = JSON.parse(value) as BrowserMediaRouteMessage
+    if (message.type !== 'media-route' || !['jpeg-fallback', 'webrtc-direct', 'unavailable'].includes(message.route)
+      || !['active', 'degraded', 'reconnecting'].includes(message.status)
+      || (message.reason !== undefined && typeof message.reason !== 'string')) return undefined
     return message
   } catch {
     return undefined

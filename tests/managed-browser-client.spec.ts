@@ -12,13 +12,13 @@ describe('managed Browser stream client', () => {
       flowControl: ['frame-ack-v2'],
       media: { webrtcVideo: true },
     })
-    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { webrtcVideo: true }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
       type: 'ready',
       version: 2,
       frameEncoding: 'binary-v2',
       flowControl: 'frame-ack-v2',
       ownerId: 'owner-1',
-      media: { webrtcVideo: true },
+      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000 },
       fallback: { maxRawBytes: 1024 },
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })
@@ -180,7 +180,7 @@ describe('managed Browser stream client', () => {
 
   it('removes the Connecting overlay when a frame or ready projection arrives', () => {
     expect(browserStreamSignalsReady(new ArrayBuffer(29))).toBe(true)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(false)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
