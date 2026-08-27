@@ -11,6 +11,7 @@ import {
   encodeBrowserStreamJsonFrameV2,
   MANAGED_BROWSER_PROTOCOL_VERSION,
   MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS,
+  MANAGED_BROWSER_MAX_RTC_CANDIDATES,
   type BrowserInput,
   type BrowserLayout,
   type BrowserSize,
@@ -33,7 +34,6 @@ export const MANAGED_BROWSER_STREAM_VERSION = MANAGED_BROWSER_PROTOCOL_VERSION
 
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
-const MAX_PENDING_RTC_CANDIDATES = 64
 export const MANAGED_BROWSER_STREAM_SHUTDOWN_TIMEOUT_MS = 2_000
 export const MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS = 5_000
 export const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100
@@ -779,7 +779,7 @@ export class ManagedBrowserStream {
       if (mediaAttempt !== attempt || detached || message.ownerId !== ownerId || message.generation !== attempt.layout.mediaGeneration) return
       const signal = message.signal
       if (signal.type === 'candidate') {
-        if (attempt.outboundCandidateCount >= MAX_PENDING_RTC_CANDIDATES) return
+        if (attempt.outboundCandidateCount >= MANAGED_BROWSER_MAX_RTC_CANDIDATES) return
         attempt.outboundCandidateCount += 1
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
           type: 'rtc-candidate', ownerId, revision: attempt.layout.revision,
@@ -1094,7 +1094,7 @@ export class ManagedBrowserStream {
           return
         }
         if (message.type === 'rtc-candidate') {
-          if (attempt.inboundCandidateCount >= MAX_PENDING_RTC_CANDIDATES) return
+          if (attempt.inboundCandidateCount >= MANAGED_BROWSER_MAX_RTC_CANDIDATES) return
           attempt.inboundCandidateCount += 1
           if (!attempt.answerAccepted) {
             attempt.candidates.push(message.candidate)

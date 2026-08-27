@@ -1,6 +1,4 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
-
-const MAX_PENDING_RTC_CANDIDATES = 64
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MAX_RTC_CANDIDATES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
@@ -21,7 +19,7 @@ export class BrowserRtcCandidateBuffer {
   /** Add one early candidate when it belongs to the selected identity and capacity remains. */
   add(identity: BrowserMediaIdentity, candidate: BrowserRtcCandidate | null): boolean {
     if (this.#identity === undefined || !sameMediaIdentity(this.#identity, identity)
-      || this.#candidates.length >= MAX_PENDING_RTC_CANDIDATES) return false
+      || this.#candidates.length >= MANAGED_BROWSER_MAX_RTC_CANDIDATES) return false
     this.#candidates.push(candidate)
     return true
   }

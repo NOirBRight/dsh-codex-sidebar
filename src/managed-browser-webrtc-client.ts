@@ -1,10 +1,8 @@
 /** Browser-client WebRTC receiver state, independent of React and DOM presentation. */
 
-import type { BrowserMediaIdentity, BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
+import { MANAGED_BROWSER_MAX_RTC_CANDIDATES, type BrowserMediaIdentity, type BrowserRtcCandidate, type BrowserRtcDescription } from './managed-browser-protocol.ts'
 
 export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
-
-const MAX_PENDING_RTC_CANDIDATES = 64
 
 export type BrowserMediaClientIdentity = Readonly<BrowserMediaIdentity>
 
@@ -154,7 +152,7 @@ export class ManagedBrowserWebRtcReceiver {
     const attempt = this.#current
     if (this.#disposed || attempt === undefined || !sameIdentity(this.identity, identity)) return false
     if (!attempt.remoteReady) {
-      if (attempt.pendingCandidates.length >= MAX_PENDING_RTC_CANDIDATES) return false
+      if (attempt.pendingCandidates.length >= MANAGED_BROWSER_MAX_RTC_CANDIDATES) return false
       attempt.pendingCandidates.push(candidate)
       return true
     }

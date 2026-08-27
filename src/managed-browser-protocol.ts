@@ -3,6 +3,8 @@
 export const MANAGED_BROWSER_PROTOCOL_VERSION = 2
 /** Default delay before a hidden managed Browser surface releases its control connection. */
 export const MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS = 15_000
+/** Maximum ICE candidates retained or forwarded for one media attempt in either direction. */
+export const MANAGED_BROWSER_MAX_RTC_CANDIDATES = 64
 export const BROWSER_STREAM_V2_HEADER_BYTES = 29
 const MAX_BROWSER_CONTROL_MESSAGE_BYTES = 128 * 1024
 const MAX_RTC_SDP_LENGTH = 64 * 1024
