@@ -176,6 +176,23 @@ describe('managed Browser WebRTC receiver', () => {
     }
   })
 
+  it('bounds candidates queued before the remote description is ready', async () => {
+    let releaseRemote: (() => void) | undefined
+    const remoteGate = new Promise<void>((resolve) => { releaseRemote = resolve })
+    const { receiver, peers } = harness({ remoteGate })
+    const pending = receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'offer' })
+
+    for (let index = 0; index < 64; index += 1) {
+      await expect(receiver.addCandidate(IDENTITY, { candidate: 'candidate:' + index })).resolves.toBe(true)
+    }
+    await expect(receiver.addCandidate(IDENTITY, { candidate: 'candidate:overflow' })).resolves.toBe(false)
+
+    releaseRemote?.()
+    await expect(pending).resolves.toEqual({ type: 'answer', sdp: 'answer-sdp' })
+    expect(peers[0]?.candidates).toHaveLength(64)
+    expect(peers[0]?.candidates.at(-1)).toEqual({ candidate: 'candidate:63' })
+  })
+
   it('enters an explicit fallback by releasing the current peer and enables retry after cooldown', async () => {
     vi.useFakeTimers()
     try {

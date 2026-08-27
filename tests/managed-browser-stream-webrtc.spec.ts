@@ -36,6 +36,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, directVideoMaxBitrate: 0 })).toThrow('directVideoMaxBitrate')
     expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, mediaHideGraceMs: -1 })).toThrow('mediaHideGraceMs')
+    expect(() => new ManagedBrowserStream({ runtime, shutdownTimeoutMs: 0 })).toThrow('shutdownTimeoutMs')
   })
 
   it('gates signaling by owner/layout and rotates one encoder per media generation', async () => {
@@ -96,6 +97,18 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       await new Promise((resolve) => { setTimeout(resolve, 10) })
       expect(first.answers).toHaveLength(1)
       expect(first.candidates).toHaveLength(64)
+
+      for (let index = 0; index < 63; index += 1) {
+        first.signal({ type: 'candidate', candidate: { candidate: 'candidate:host-' + index } })
+      }
+      first.signal({ type: 'candidate', candidate: null })
+      for (let index = 63; index < 70; index += 1) {
+        first.signal({ type: 'candidate', candidate: { candidate: 'candidate:host-' + index } })
+      }
+      await vi.waitFor(() => {
+        expect(messages.filter((value) => value.type === 'rtc-candidate')).toHaveLength(64)
+      })
+      expect(messages.filter((value) => value.type === 'rtc-candidate').at(-1)).toMatchObject({ candidate: null })
 
       first.signal({ type: 'connection-state', state: 'connected' })
       await vi.waitFor(() => { expect(messages).toContainEqual(expect.objectContaining({ type: 'media-route', route: 'webrtc-direct' })) })

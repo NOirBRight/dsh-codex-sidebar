@@ -116,6 +116,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
     ...(config.managedBrowser?.mediaIdleTimeoutMs === undefined ? {} : { mediaIdleTimeoutMs: config.managedBrowser.mediaIdleTimeoutMs }),
     ...(config.managedBrowser?.mediaHideGraceMs === undefined ? {} : { mediaHideGraceMs: config.managedBrowser.mediaHideGraceMs }),
+    ...(config.managedBrowser?.streamShutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs: config.managedBrowser.streamShutdownTimeoutMs }),
   })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()

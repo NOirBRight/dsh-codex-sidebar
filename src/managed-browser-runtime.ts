@@ -79,6 +79,8 @@ export type ManagedBrowserConfig = {
   mediaIdleTimeoutMs?: number
   /** Keep the Browser control connection alive this long after its surface becomes hidden. */
   mediaHideGraceMs?: number
+  /** Force-close Browser stream sockets and stop waiting for work after this shutdown deadline. */
+  streamShutdownTimeoutMs?: number
   /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
   maxEncoderPages?: number
 }

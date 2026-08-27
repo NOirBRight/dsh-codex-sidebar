@@ -34,6 +34,7 @@ export const MANAGED_BROWSER_STREAM_VERSION = MANAGED_BROWSER_PROTOCOL_VERSION
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
 const MAX_PENDING_RTC_CANDIDATES = 64
+export const MANAGED_BROWSER_STREAM_SHUTDOWN_TIMEOUT_MS = 2_000
 export const MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS = 5_000
 export const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100
 export const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2
@@ -182,6 +183,7 @@ export type ManagedBrowserStreamOptions = {
   directVideoMaxBitrate?: number
   mediaIdleTimeoutMs?: number
   mediaHideGraceMs?: number
+  shutdownTimeoutMs?: number
   encoderFactory?: ManagedBrowserWebRtcEncoderFactory
 }
 
@@ -206,7 +208,8 @@ type BrowserMediaAttempt = {
   connected: boolean
   answerStarted: boolean
   answerAccepted: boolean
-  candidateCount: number
+  inboundCandidateCount: number
+  outboundCandidateCount: number
   candidates: Array<BrowserRtcCandidate | null>
   negotiationTimer: ReturnType<typeof setTimeout> | undefined
   idleTimer: ReturnType<typeof setTimeout> | undefined
@@ -232,6 +235,7 @@ export class ManagedBrowserStream {
   #server = new WebSocketServer({ noServer: true })
   #sockets = new Set<WebSocket>()
   #tabSockets = new Map<string, WebSocket>()
+  #socketCleanup = new Map<WebSocket, () => Promise<void>>()
   #timerCount = 0
   #captureCount = 0
   #unackedCount = 0
@@ -246,8 +250,10 @@ export class ManagedBrowserStream {
   #directVideoMaxBitrate: number
   #mediaIdleTimeoutMs: number
   #mediaHideGraceMs: number
+  #shutdownTimeoutMs: number
   #encoderFactory: ManagedBrowserWebRtcEncoderFactory
   #peerCount = 0
+  #disposePromise: Promise<void> | undefined
 
   constructor(opts: ManagedBrowserStreamOptions) {
     this.#runtime = opts.runtime
@@ -282,6 +288,7 @@ export class ManagedBrowserStream {
     this.#directVideoMaxBitrate = boundedStreamInteger(opts.directVideoMaxBitrate, MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE, 1, 100_000_000, 'directVideoMaxBitrate')
     this.#mediaIdleTimeoutMs = positiveStreamInteger(opts.mediaIdleTimeoutMs, MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS, 'mediaIdleTimeoutMs')
     this.#mediaHideGraceMs = nonNegativeStreamInteger(opts.mediaHideGraceMs, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, 'mediaHideGraceMs')
+    this.#shutdownTimeoutMs = positiveStreamInteger(opts.shutdownTimeoutMs, MANAGED_BROWSER_STREAM_SHUTDOWN_TIMEOUT_MS, 'shutdownTimeoutMs')
     this.#encoderFactory = opts.encoderFactory ?? ((options) => new ManagedBrowserWebRtcEncoder(options))
   }
 
@@ -311,13 +318,9 @@ export class ManagedBrowserStream {
     })
   }
 
-  async dispose(): Promise<void> {
-    for (const socket of this.#sockets) socket.close(1001, 'Plugin disposed')
-    this.#sockets.clear()
-    this.#tabSockets.clear()
-    this.#tickets.clear()
-    await new Promise<void>((resolve) => { this.#server.close(() => resolve()) })
-    while (this.#tasks.size > 0) await Promise.all([...this.#tasks])
+  dispose(): Promise<void> {
+    this.#disposePromise ??= this.#dispose()
+    return this.#disposePromise
   }
 
   closeTab(tab: ManagedTabKey): void {
@@ -336,6 +339,36 @@ export class ManagedBrowserStream {
       unackedFrames: this.#unackedCount,
       peers: this.#peerCount,
     }
+  }
+
+  async #dispose(): Promise<void> {
+    const sockets = [...this.#sockets]
+    this.#tickets.clear()
+    for (const socket of sockets) {
+      socket.close(1001, 'Plugin disposed')
+      const cleanup = this.#socketCleanup.get(socket)
+      if (cleanup !== undefined) this.#track(cleanup())
+    }
+    const serverClosed = new Promise<void>((resolve) => { this.#server.close(() => resolve()) })
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        deadlineTimer = undefined
+        for (const socket of sockets) if (socket.readyState !== WebSocket.CLOSED) socket.terminate()
+        resolve()
+      }, this.#shutdownTimeoutMs)
+    })
+    await Promise.race([serverClosed, deadline])
+    await Promise.race([this.#drainTasks(), deadline])
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+    this.#sockets.clear()
+    this.#tabSockets.clear()
+    this.#socketCleanup.clear()
+    this.#tasks.clear()
+  }
+
+  async #drainTasks(): Promise<void> {
+    while (this.#tasks.size > 0) await Promise.allSettled([...this.#tasks])
   }
 
   consume(ticket: string): ManagedTabKey | undefined {
@@ -373,6 +406,7 @@ export class ManagedBrowserStream {
     let lastProjection = ''
     let lastLayout = ''
     let captureInFlight = false
+    let captureOwned = false
     let unacked: { sequence: number; revision: number; mediaGeneration: number } | undefined
     let dirty: { kind: 'activity' | 'passive' } | undefined
     let frameTimer: ReturnType<typeof setTimeout> | undefined
@@ -429,6 +463,11 @@ export class ManagedBrowserStream {
       this.#unackedCount += 1
       return true
     }
+    const releaseCapture = (): void => {
+      if (!captureOwned) return
+      captureOwned = false
+      this.#captureCount -= 1
+    }
     const armFrameTimer = (delay: number, pump: () => void): void => {
       if (frameTimer !== undefined) return
       this.#timerCount += 1
@@ -467,11 +506,12 @@ export class ManagedBrowserStream {
       dirty = undefined
       lastFrameAt = this.#now()
       captureInFlight = true
+      captureOwned = true
       this.#captureCount += 1
       const capturedLayout = currentLayout()
       if (capturedLayout === undefined) {
         captureInFlight = false
-        this.#captureCount -= 1
+        releaseCapture()
         return
       }
       const task = captureBrowserJpegForLayout(cdp, capturedLayout, currentLayout, profile).then((capture) => {
@@ -505,7 +545,7 @@ export class ManagedBrowserStream {
         }
       }).finally(() => {
         captureInFlight = false
-        this.#captureCount -= 1
+        releaseCapture()
         pump()
       })
       this.#track(task)
@@ -526,10 +566,9 @@ export class ManagedBrowserStream {
     const releaseMediaAttempt = async (attempt: BrowserMediaAttempt): Promise<void> => {
       clearMediaTimer(attempt, 'negotiationTimer')
       clearMediaTimer(attempt, 'idleTimer')
-      if (!attempt.released) {
-        attempt.released = true
-        this.#peerCount -= 1
-      }
+      if (attempt.released) return
+      attempt.released = true
+      this.#peerCount -= 1
       await attempt.encoder.dispose().catch(() => undefined)
     }
     const sendMediaRoute = (route: 'jpeg-fallback' | 'webrtc-direct', status: 'active' | 'degraded' | 'reconnecting', reason?: string): void => {
@@ -549,6 +588,8 @@ export class ManagedBrowserStream {
       if (mediaAttempt !== attempt || detached || message.ownerId !== ownerId || message.generation !== attempt.layout.mediaGeneration) return
       const signal = message.signal
       if (signal.type === 'candidate') {
+        if (attempt.outboundCandidateCount >= MAX_PENDING_RTC_CANDIDATES) return
+        attempt.outboundCandidateCount += 1
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
           type: 'rtc-candidate', ownerId, revision: attempt.layout.revision,
           mediaGeneration: attempt.layout.mediaGeneration, candidate: signal.candidate,
@@ -594,7 +635,7 @@ export class ManagedBrowserStream {
       })
       attempt = {
         layout: { ...layout, viewport: { ...layout.viewport } }, encoder, connected: false,
-        answerStarted: false, answerAccepted: false, candidateCount: 0, candidates: [],
+        answerStarted: false, answerAccepted: false, inboundCandidateCount: 0, outboundCandidateCount: 0, candidates: [],
         negotiationTimer: undefined, idleTimer: undefined, released: false,
       }
       mediaAttempt = attempt
@@ -676,17 +717,21 @@ export class ManagedBrowserStream {
       frameTimer = undefined
       if (sourceAttached) cdp.off('Page.screencastFrame', onFrame)
       this.#sockets.delete(socket)
+      this.#socketCleanup.delete(socket)
+      if (this.#tabSockets.get(tabKey) === socket) this.#tabSockets.delete(tabKey)
       dirty = undefined
       if (unacked !== undefined) this.#unackedCount -= 1
       unacked = undefined
-      await mediaTransition
+      captureInFlight = false
+      releaseCapture()
       const attempt = mediaAttempt
       mediaAttempt = undefined
-      if (attempt !== undefined) await releaseMediaAttempt(attempt)
       releaseLease()
-      if (this.#tabSockets.get(tabKey) !== socket) return
-      this.#tabSockets.delete(tabKey)
-      if (sourceAttached) await cdp.send('Page.stopScreencast').catch(() => undefined)
+      const releaseMedia = attempt === undefined ? Promise.resolve() : releaseMediaAttempt(attempt)
+      const stopScreencast = sourceAttached
+        ? cdp.send('Page.stopScreencast').then(() => undefined).catch(() => undefined)
+        : Promise.resolve()
+      await Promise.all([mediaTransition, releaseMedia, stopScreencast])
     }
     const start = async (): Promise<void> => {
       sourceAttached = true
@@ -812,8 +857,8 @@ export class ManagedBrowserStream {
           return
         }
         if (message.type === 'rtc-candidate') {
-          if (attempt.candidateCount >= MAX_PENDING_RTC_CANDIDATES) return
-          attempt.candidateCount += 1
+          if (attempt.inboundCandidateCount >= MAX_PENDING_RTC_CANDIDATES) return
+          attempt.inboundCandidateCount += 1
           if (!attempt.answerAccepted) {
             attempt.candidates.push(message.candidate)
             return
@@ -827,6 +872,7 @@ export class ManagedBrowserStream {
         set latest(value: number) { latestProposalSequence = value },
       }).catch(() => undefined)
     })
+    this.#socketCleanup.set(socket, detach)
     socket.once('close', () => { this.#track(detach()) })
     socket.once('error', () => { this.#track(detach()) })
   }

@@ -30,6 +30,66 @@ function v2RuntimePorts() {
 }
 
 describe('managed browser stream protocol', () => {
+  it('terminates an unresponsive socket and forgets hung work by the shutdown deadline', async () => {
+    let captureStarted: (() => void) | undefined
+    let finishCapture: ((value: unknown) => void) | undefined
+    const capturing = new Promise<void>((resolve) => { captureStarted = resolve })
+    const captureResult = new Promise<unknown>((resolve) => { finishCapture = resolve })
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: 0 } }
+      if (method === 'Page.captureScreenshot') {
+        captureStarted?.()
+        return await captureResult
+      }
+      return {}
+    }
+    let leaseReleases = 0
+    const runtime = {
+      ...v2RuntimePorts(),
+      acquire: () => () => { leaseReleases += 1 },
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 's:t',
+      touch: () => {},
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, shutdownTimeoutMs: 25 })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+    await new Promise<void>((resolve, reject) => {
+      client.once('open', () => {
+        client.send(JSON.stringify({
+          type: 'hello', version: 2, frameEncodings: ['json-base64-v2'],
+          flowControl: ['frame-ack-v2'], media: { webrtcVideo: false },
+        }))
+        resolve()
+      })
+      client.once('error', reject)
+    })
+    await capturing
+    ;(client as unknown as { _socket: { pause(): void } })._socket.pause()
+
+    const startedAt = Date.now()
+    const disposing = stream.dispose()
+    expect(stream.dispose()).toBe(disposing)
+    await disposing
+    expect(Date.now() - startedAt).toBeLessThan(250)
+    expect(stream.resources()).toEqual({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0, peers: 0 })
+    expect(leaseReleases).toBe(1)
+
+    finishCapture?.({ data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') })
+    await new Promise<void>((resolve) => { setImmediate(resolve) })
+    expect(stream.resources()).toEqual({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0, peers: 0 })
+
+    ;(client as unknown as { _socket: { resume(): void } })._socket.resume()
+    client.terminate()
+    await new Promise<void>((resolve) => { server.close(() => resolve()) })
+  })
+
   it('requires hello before ready and advertises the Mobile frame protocol before stalled CDP startup', async () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => {

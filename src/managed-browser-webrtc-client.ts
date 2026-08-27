@@ -4,6 +4,8 @@ import type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-brows
 
 export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-webrtc.ts'
 
+const MAX_PENDING_RTC_CANDIDATES = 64
+
 export type BrowserMediaClientIdentity = {
   readonly ownerId: string
   readonly layoutRevision: number
@@ -156,6 +158,7 @@ export class ManagedBrowserWebRtcReceiver {
     const attempt = this.#current
     if (this.#disposed || attempt === undefined || !sameIdentity(this.identity, identity)) return false
     if (!attempt.remoteReady) {
+      if (attempt.pendingCandidates.length >= MAX_PENDING_RTC_CANDIDATES) return false
       attempt.pendingCandidates.push(candidate)
       return true
     }
