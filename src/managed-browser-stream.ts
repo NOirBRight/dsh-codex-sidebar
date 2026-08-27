@@ -13,9 +13,25 @@ const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
 export const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100
 export const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2
+export const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250
+export const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4
 const HIGH_DENSITY_SCALE = 1.5
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
+export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
+
+export type BrowserStreamTransportProfile = {
+  quality: number
+  maxScale: number
+  frameIntervalMs: number
+  everyNthFrame: number
+}
+
+export function browserStreamTransportProfile(origin: string | undefined): BrowserStreamTransportProfile {
+  return origin === undefined || origin.length === 0
+    ? { quality: MANAGED_BROWSER_MOBILE_STREAM_QUALITY, maxScale: 1, frameIntervalMs: MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME }
+    : { quality: MANAGED_BROWSER_STREAM_QUALITY, maxScale: HIGH_DENSITY_SCALE, frameIntervalMs: MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME }
+}
 export const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560
 export const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048
 
@@ -100,7 +116,7 @@ export class ManagedBrowserStream {
     }
     this.#server.handleUpgrade(req, socket, head, (ws) => {
       this.#server.emit('connection', ws, req)
-      void this.#attach(ws, tab, target)
+      void this.#attach(ws, tab, target, browserStreamTransportProfile(typeof req.headers.origin === 'string' ? req.headers.origin : undefined))
     })
   }
 
@@ -129,7 +145,12 @@ export class ManagedBrowserStream {
     return this.consume(ticket)
   }
 
-  async #attach(socket: WebSocket, tab: ManagedTabKey, target: { page: { viewportSize(): { width: number; height: number } | null }; cdp: ManagedCdpSession }): Promise<void> {
+  async #attach(
+    socket: WebSocket,
+    tab: ManagedTabKey,
+    target: { page: { viewportSize(): { width: number; height: number } | null }; cdp: ManagedCdpSession },
+    profile: BrowserStreamTransportProfile,
+  ): Promise<void> {
     const cdp = target.cdp
     const tabKey = this.#runtime.keyOf(tab)
     const previous = this.#tabSockets.get(tabKey)
@@ -168,7 +189,7 @@ export class ManagedBrowserStream {
       try {
         const result = await cdp.send('Page.captureScreenshot', {
           format: 'jpeg',
-          quality: MANAGED_BROWSER_STREAM_QUALITY,
+          quality: profile.quality,
           fromSurface: true,
           captureBeyondViewport: false,
           clip: {
@@ -176,7 +197,7 @@ export class ManagedBrowserStream {
             y: 0,
             width: request.width,
             height: request.height,
-            scale: browserStreamCaptureScale(request.width, request.height),
+            scale: browserStreamCaptureScale(request.width, request.height, profile.maxScale),
           },
         })
         const data = screenshotData(result)
@@ -189,7 +210,7 @@ export class ManagedBrowserStream {
     const requestFrame = (request: CaptureRequest, force = false): void => {
       if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
       const now = this.#now()
-      if (!force && now - lastFrameAt < MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS) return
+      if (!force && now - lastFrameAt < profile.frameIntervalMs) return
       if (captureInFlight) {
         pendingCapture = { request, force }
         return
@@ -230,19 +251,20 @@ export class ManagedBrowserStream {
     })
     socket.once('close', () => { void detach() })
     socket.once('error', () => { void detach() })
+    // Transport readiness must not wait behind CDP startup or a large first JPEG.
+    socket.send(JSON.stringify({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION }))
+    sendProjection()
     try {
       await cdp.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: MANAGED_BROWSER_STREAM_QUALITY,
+        quality: profile.quality,
         maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
         maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
-        everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME,
+        everyNthFrame: profile.everyNthFrame,
       })
       // A settled page may not emit a screencast frame until it repaints.
       const viewport = target.page.viewportSize() ?? { width: 720, height: 860 }
       requestFrame({ width: viewport.width, height: viewport.height }, true)
-      socket.send(JSON.stringify({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION }))
-      sendProjection()
     } catch (error) {
       socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
     }
@@ -387,10 +409,10 @@ export function browserStreamRequestAllowed(origin: string | undefined, host: st
   }
 }
 
-export function browserStreamCaptureScale(width: number, height: number): number {
+export function browserStreamCaptureScale(width: number, height: number, maxScale = HIGH_DENSITY_SCALE): number {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1
   return Math.max(0.1, Math.min(
-    HIGH_DENSITY_SCALE,
+    maxScale,
     MANAGED_BROWSER_STREAM_MAX_WIDTH / width,
     MANAGED_BROWSER_STREAM_MAX_HEIGHT / height,
   ))

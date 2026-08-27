@@ -1,7 +1,11 @@
+import { createServer } from 'node:http'
+import { EventEmitter } from 'node:events'
+import { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
 import {
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
+  browserStreamTransportProfile,
   decodeBrowserStreamFrame,
   dispatchBrowserInput,
   encodeBrowserStreamFrame,
@@ -14,6 +18,42 @@ import {
 } from '../src/managed-browser-stream.ts'
 
 describe('managed browser stream protocol', () => {
+  it('sends ready before a stalled screencast startup can hold the Mobile UI on Connecting', async () => {
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => {
+      if (method === 'Page.startScreencast') return await new Promise(() => {})
+      return {}
+    }
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 's:t',
+      touch: () => {},
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const ticket = stream.issue({ sessionId: 's', tabId: 't' })
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + ticket.path)
+    try {
+      const first = await Promise.race([
+        new Promise<string>((resolve, reject) => {
+          client.once('message', (data) => { resolve(Buffer.from(data as Buffer).toString('utf8')) })
+          client.once('error', reject)
+        }),
+        new Promise<string>((_resolve, reject) => { setTimeout(() => { reject(new Error('ready timeout')) }, 100) }),
+      ])
+      expect(JSON.parse(first)).toMatchObject({ type: 'ready' })
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
   it('encodes JPEG frames as JSON text so DSH Mobile can tunnel them', () => {
     const encoded = encodeBrowserStreamJsonFrame({
       version: MANAGED_BROWSER_STREAM_VERSION,
@@ -57,6 +97,12 @@ describe('managed browser stream protocol', () => {
   it('caps screencast below a full 20fps capture loop', () => {
     expect(MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS).toBeGreaterThanOrEqual(100)
     expect(MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME).toBeGreaterThanOrEqual(2)
+  })
+
+  it('uses a low-bandwidth profile for Origin-less Mobile tunnel sockets', () => {
+    expect(browserStreamTransportProfile(undefined)).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4 })
+    expect(browserStreamTransportProfile('http://127.0.0.1:3080')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2 })
+    expect(browserStreamCaptureScale(720, 860, 1)).toBe(1)
   })
 
   it('uses a bounded high-density capture scale for visible frames', () => {

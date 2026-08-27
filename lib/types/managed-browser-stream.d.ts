@@ -6,7 +6,17 @@ export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
 export declare const MANAGED_BROWSER_STREAM_VERSION = 1;
 export declare const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100;
 export declare const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2;
+export declare const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250;
+export declare const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4;
 export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
+export declare const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65;
+export type BrowserStreamTransportProfile = {
+    quality: number;
+    maxScale: number;
+    frameIntervalMs: number;
+    everyNthFrame: number;
+};
+export declare function browserStreamTransportProfile(origin: string | undefined): BrowserStreamTransportProfile;
 export declare const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560;
 export declare const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048;
 export type BrowserStreamTicket = {
@@ -65,5 +75,5 @@ export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame):
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;
 export declare function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void>;
 export declare function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean;
-export declare function browserStreamCaptureScale(width: number, height: number): number;
+export declare function browserStreamCaptureScale(width: number, height: number, maxScale?: number): number;
 //# sourceMappingURL=managed-browser-stream.d.ts.map
