@@ -1,7 +1,7 @@
 /** Managed Chromium Browser chrome, Canvas stream, and screenshot-backed 批注. */
 
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactElement } from 'react'
-import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice } from '../browser.ts'
+import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice, type BrowserState } from '../browser.ts'
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
@@ -11,6 +11,8 @@ import { ManagedBrowserCanvas } from './ManagedBrowserCanvas.tsx'
 import { NoteComposer } from './NoteComposer.tsx'
 
 const BROWSER_CSS = `
+.dcs-browser-occupant { display:flex; flex:1; min-height:0; min-width:0; width:100%; }
+.dcs-browser-occupant[hidden] { display:none; }
 .dcs-browser { display:flex; flex-direction:column; flex:1; min-height:0; width:100%; position:relative; }
 .dcs-b-chrome { display:flex; align-items:center; gap:2px; padding:8px 10px; border-bottom:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); flex-shrink:0; }
 .dcs-b-nav { width:28px; height:28px; border:0; border-radius:6px; background:transparent; display:grid; place-items:center; color:var(--dsw-alias-label-tertiary); }
@@ -61,8 +63,11 @@ function ensureBrowserStyles(): void {
 
 type Ticket = { path: string; expiresAt: number }
 
-export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture, sendLabel, addLabel, deleteLabel }: {
+export function BrowserPane({ snapshot, browser, tabId, active, onIntent, requestTicket, requestCapture, sendLabel, addLabel, deleteLabel }: {
   snapshot: SidebarSnapshot
+  browser: BrowserState
+  tabId: string
+  active: boolean
   onIntent: (intent: Intent) => void
   requestTicket: (tabId: string) => Promise<Ticket | undefined>
   requestCapture: (tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => Promise<BrowserCaptureReply | undefined>
@@ -71,7 +76,6 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
   deleteLabel: string
 }): ReactElement {
   ensureBrowserStyles()
-  const browser = snapshot.browser
   const bodyRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState(browser.draft)
@@ -80,12 +84,11 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
   const device = deviceOverride ?? browser.device
   const href = liveHref(browser.url)
   const hasPage = href !== undefined
-  const tabId = snapshot.tabs.find((tab) => tab.id === snapshot.active && tab.kind === 'Browser')?.id
 
   useEffect(() => { setDraft(browser.draft) }, [browser.draft])
   useEffect(() => { setDeviceOverride(null) }, [browser.device])
   useEffect(() => {
-    if (!browser.annotate) return
+    if (!active || !browser.annotate) return
     const onKey = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
       event.preventDefault()
@@ -93,7 +96,7 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
     }
     window.addEventListener('keydown', onKey)
     return () => { window.removeEventListener('keydown', onKey) }
-  }, [browser.annotate, onIntent])
+  }, [active, browser.annotate, onIntent])
 
   const submitUrl = (event: FormEvent): void => {
     event.preventDefault()
@@ -158,10 +161,11 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
       {browser.status !== 'empty' && href === undefined && (
         <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http 或 https 地址'} />
       )}
-      {browser.status !== 'empty' && href !== undefined && tabId !== undefined && (
+      {browser.status !== 'empty' && href !== undefined && (
         <div className="dcs-b-page" ref={pageRef}>
           <ManagedBrowserCanvas
             tabId={tabId}
+            active={active}
             device={device}
             annotate={browser.annotate}
             selectedRect={browser.pendingRect}

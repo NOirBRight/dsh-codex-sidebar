@@ -19,6 +19,7 @@ type ManagedProjection = {
 
 type ManagedBrowserCanvasProps = {
   tabId: string
+  active: boolean
   device: BrowserDevice
   annotate: boolean
   selectedRect: AnnotationRect | null
@@ -34,7 +35,7 @@ type Size = { width: number; height: number }
 type TouchGesture = BrowserTouchGesture & { pointerId: number }
 type RevisionedInput = BrowserInput & { revision: number }
 
-export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
+export function ManagedBrowserCanvas({ tabId, active, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -54,6 +55,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const fallbackRetryRef = useRef<BrowserMediaRetryState>()
   const mediaRouteRef = useRef<BrowserMediaPresentationRoute>('reconnecting')
   const surfaceVisibleRef = useRef(true)
+  const surfaceActiveRef = useRef(active)
+  const visibilityUpdateRef = useRef<() => void>(() => {})
   ticketRef.current = requestTicket
   stateRef.current = onState
   deviceRef.current = device
@@ -81,7 +84,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
   const [surfaceSize, setSurfaceSize] = useState<Size>({ width: 0, height: 0 })
   const [mediaRoute, setMediaRoute] = useState<BrowserMediaPresentationRoute>('reconnecting')
-  const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
+  const [visible, setVisible] = useState(() => active && (typeof document === 'undefined' || document.visibilityState === 'visible'))
+  surfaceActiveRef.current = active
 
   const requestOutline = (delay = 0): void => {
     if (outlineTimerRef.current !== undefined) clearTimeout(outlineTimerRef.current)
@@ -163,16 +167,17 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   useEffect(() => {
     const root = rootRef.current
     let intersecting = true
-    const initialVisible = browserStreamShouldRun(typeof document === 'undefined' || document.visibilityState === 'visible', intersecting)
+    const initialVisible = browserStreamShouldRun(typeof document === 'undefined' || document.visibilityState === 'visible', intersecting, surfaceActiveRef.current)
     const grace = new BrowserVisibilityGrace(initialVisible, setVisible)
     setVisible(initialVisible)
     visibilityGraceRef.current = grace
     const update = (): void => {
       const pageVisible = typeof document === 'undefined' || document.visibilityState === 'visible'
-      const surfaceVisible = browserStreamShouldRun(pageVisible, intersecting)
+      const surfaceVisible = browserStreamShouldRun(pageVisible, intersecting, surfaceActiveRef.current)
       publishSurfaceVisibility(surfaceVisible)
       grace.setVisible(surfaceVisible)
     }
+    visibilityUpdateRef.current = update
     const onVisibility = (): void => { update() }
     document.addEventListener('visibilitychange', onVisibility)
     let observer: IntersectionObserver | undefined
@@ -188,9 +193,22 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       document.removeEventListener('visibilitychange', onVisibility)
       observer?.disconnect()
       grace.dispose()
+      if (visibilityUpdateRef.current === update) visibilityUpdateRef.current = () => {}
       if (visibilityGraceRef.current === grace) visibilityGraceRef.current = null
     }
   }, [tabId])
+
+  useEffect(() => {
+    if (!active) {
+      inputQueueRef.current?.cancel()
+      if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
+      layoutTimerRef.current = undefined
+      if (outlineTimerRef.current !== undefined) clearTimeout(outlineTimerRef.current)
+      outlineTimerRef.current = undefined
+    }
+    visibilityUpdateRef.current()
+    if (active) observeContainer()
+  }, [active, tabId])
 
   useEffect(() => {
     const root = rootRef.current
@@ -601,9 +619,9 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         setStatus('error')
         publishMediaRoute('unavailable')
       }
-      const retryNetwork = (): void => { requestMediaRetry('network-change') }
+      const retryNetwork = (): void => { if (surfaceActiveRef.current) requestMediaRetry('network-change') }
       const retryVisible = (): void => {
-        if (document.visibilityState === 'visible') requestMediaRetry('tab-reactivate')
+        if (surfaceActiveRef.current && document.visibilityState === 'visible') requestMediaRetry('tab-reactivate')
       }
       window.addEventListener('online', retryNetwork)
       document.addEventListener('visibilitychange', retryVisible)

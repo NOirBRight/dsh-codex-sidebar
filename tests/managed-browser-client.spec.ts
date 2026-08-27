@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
+import { browserSurfaceOccupants } from '../src/client/browser-occupancy.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
 describe('managed Browser stream client', () => {
@@ -25,6 +26,22 @@ describe('managed Browser stream client', () => {
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })
     expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1 }))).toBeUndefined()
+  })
+
+  it('retains Browser surface occupants while another tool Tab is active', () => {
+    const tabs = [
+      { id: 'browser-1', kind: 'Browser' as const },
+      { id: 'files-1', kind: 'Files' as const },
+      { id: 'browser-2', kind: 'Browser' as const },
+    ]
+    expect(browserSurfaceOccupants(tabs, 'files-1')).toEqual([
+      { tabId: 'browser-1', active: false },
+      { tabId: 'browser-2', active: false },
+    ])
+    expect(browserSurfaceOccupants(tabs, 'browser-2')).toEqual([
+      { tabId: 'browser-1', active: false },
+      { tabId: 'browser-2', active: true },
+    ])
   })
 
   it('assembles exact media decline and cooldown-limited fallback retry messages', () => {
@@ -230,9 +247,10 @@ describe('managed Browser stream client', () => {
     expect(browserStreamShouldRun(true, true)).toBe(true)
     expect(browserStreamShouldRun(false, true)).toBe(false)
     expect(browserStreamShouldRun(true, false)).toBe(false)
+    expect(browserStreamShouldRun(true, true, false)).toBe(false)
   })
 
-  it('keeps an active stream through the hidden grace and cancels teardown after recovery', () => {
+  it('keeps the socket through a short tool Tab switch, closes at grace expiry, and cancels teardown on recovery', () => {
     vi.useFakeTimers()
     const transitions: boolean[] = []
     const visibility = new BrowserVisibilityGrace(true, (active) => { transitions.push(active) })

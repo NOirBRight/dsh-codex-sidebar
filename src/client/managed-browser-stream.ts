@@ -1,7 +1,7 @@
 import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MAX_RTC_CANDIDATES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
-export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
-  return pageVisible && intersecting
+export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean, surfaceActive = true): boolean {
+  return pageVisible && intersecting && surfaceActive
 }
 
 /** Buffers bounded Host ICE candidates only for the current owner and media generation. */
