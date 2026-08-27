@@ -140,7 +140,10 @@ export function apply(ctx: HostContext, config: Config = {}): void {
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }
   }, 'dsh-codex-sidebar: managed browser lifecycle')
-  installManagedBrowserSessionLifecycle(ctx, managedStream, managedBrowser, filesBySession)
+  ctx.effect(
+    () => installManagedBrowserSessionLifecycle(ctx, managedStream, managedBrowser, filesBySession),
+    'dsh-codex-sidebar: managed browser session lifecycle',
+  )
   const registry = createRegistry({
     persist,
     filesFor: (sessionId, io) => {
