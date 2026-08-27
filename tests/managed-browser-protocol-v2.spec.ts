@@ -64,6 +64,14 @@ describe('managed Browser protocol v2', () => {
       type: 'media-decline', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, reason: 'presentation-failed',
     })
     expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'surface-visibility', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, visible: false,
+    }))).toEqual({
+      type: 'surface-visibility', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, visible: false,
+    })
+    expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'surface-visibility', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, visible: 'false',
+    }))).toBeUndefined()
+    expect(decodeBrowserClientMessage(JSON.stringify({
       type: 'media-decline', ownerId: 'owner-1', revision: 0, mediaGeneration: 2, reason: 'presentation-failed',
     }))).toBeUndefined()
     expect(decodeBrowserClientMessage(JSON.stringify({

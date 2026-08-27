@@ -124,6 +124,7 @@ Client messages include:
 - `rtc-answer` and `rtc-candidate`: authenticated WebRTC signaling.
 - `media-decline`: exact owner, layout revision, and media generation when negotiated video cannot present its first decoded frame.
 - `media-retry`: an explicit retry after a user action or recognized network change.
+- `surface-visibility`: immediate visible/hidden state for an exact owner, layout revision, and media generation.
 
 Host messages include:
 

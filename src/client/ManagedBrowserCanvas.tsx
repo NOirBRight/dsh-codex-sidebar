@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
@@ -51,6 +51,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const visibilityGraceRef = useRef<BrowserVisibilityGrace | null>(null)
   const fallbackRetryRef = useRef<BrowserMediaRetryState>()
   const mediaRouteRef = useRef<BrowserMediaPresentationRoute>('reconnecting')
+  const surfaceVisibleRef = useRef(true)
   ticketRef.current = requestTicket
   stateRef.current = onState
   deviceRef.current = device
@@ -115,6 +116,12 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     setMediaRoute(route)
   }
 
+  const publishSurfaceVisibility = (visible: boolean, socket: WebSocket | null = socketRef.current): void => {
+    surfaceVisibleRef.current = visible
+    const message = browserSurfaceVisibilityMessage(readyRef.current, layoutRef.current?.snapshot().committed, visible)
+    if (message !== undefined) send(socket, message)
+  }
+
   const updateSurface = (): void => {
     const surface = layoutRef.current?.surfaceSize()
     if (surface === undefined) return
@@ -156,7 +163,9 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     visibilityGraceRef.current = grace
     const update = (): void => {
       const pageVisible = typeof document === 'undefined' || document.visibilityState === 'visible'
-      grace.setVisible(browserStreamShouldRun(pageVisible, intersecting))
+      const surfaceVisible = browserStreamShouldRun(pageVisible, intersecting)
+      publishSurfaceVisibility(surfaceVisible)
+      grace.setVisible(surfaceVisible)
     }
     const onVisibility = (): void => { update() }
     document.addEventListener('visibilitychange', onVisibility)
@@ -376,6 +385,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
               revision: layoutCommit.layout.revision,
               mediaGeneration: layoutCommit.layout.mediaGeneration,
             })
+            publishSurfaceVisibility(surfaceVisibleRef.current, socket)
           }
           return
         }

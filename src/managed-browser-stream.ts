@@ -199,6 +199,7 @@ export type ManagedBrowserStreamOptions = {
   webrtcNegotiationTimeoutMs?: number
   webrtcRetryCooldownMs?: number
   maxMediaPeers?: number
+  maxEncoderPages?: number
   directVideoFrameRate?: number
   directVideoMaxBitrate?: number
   directVideoCaptureQuality?: number
@@ -244,7 +245,7 @@ type BrowserMediaAttempt = {
 type BrowserMediaCapacityOwner = {
   ownerId: string
   order: number
-  fallback(): boolean
+  evictionPriority(): 0 | 1 | undefined
   evict(): Promise<boolean>
 }
 
@@ -396,6 +397,8 @@ export class ManagedBrowserStream {
     this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 5_000, 'webrtcNegotiationTimeoutMs')
     this.#webrtcRetryCooldownMs = nonNegativeStreamInteger(opts.webrtcRetryCooldownMs, 30_000, 'webrtcRetryCooldownMs')
     this.#maxMediaPeers = positiveStreamInteger(opts.maxMediaPeers, 3, 'maxMediaPeers')
+    const maxEncoderPages = positiveStreamInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
+    if (this.#maxMediaPeers > maxEncoderPages) throw new Error('managedBrowser maxMediaPeers cannot exceed maxEncoderPages')
     this.#directVideoFrameRate = boundedStreamInteger(opts.directVideoFrameRate, MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE, 1, 60, 'directVideoFrameRate')
     this.#directVideoMaxBitrate = boundedStreamInteger(opts.directVideoMaxBitrate, MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE, 1, 100_000_000, 'directVideoMaxBitrate')
     this.#mediaIdleTimeoutMs = positiveStreamInteger(opts.mediaIdleTimeoutMs, MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS, 'mediaIdleTimeoutMs')
@@ -566,6 +569,7 @@ export class ManagedBrowserStream {
     let lastMediaRetryAt = Number.NEGATIVE_INFINITY
     let mediaIdleSuspended = false
     let mediaStarted = false
+    let surfaceHidden = false
     let mediaTransition = Promise.resolve()
     let activated = false
     let startTask: Promise<void> | undefined
@@ -843,10 +847,12 @@ export class ManagedBrowserStream {
         owner = {
           ownerId,
           order,
-          fallback: () => attempt !== undefined && !attempt.connected && !attempt.released,
+          evictionPriority: () => attempt === undefined || attempt.released
+            ? undefined
+            : surfaceHidden ? 0 : attempt.connected ? undefined : 1,
           evict: async () => {
             const target = attempt
-            if (target === undefined || mediaAttempt !== target || target.connected || target.released) return false
+            if (target === undefined || mediaAttempt !== target || target.released || (!surfaceHidden && target.connected)) return false
             await failMediaAttempt(target, 'local-capacity-evicted')
             return target.released
           },
@@ -1070,6 +1076,12 @@ export class ManagedBrowserStream {
         return
       }
       if (message === undefined || message.type === 'hello') return
+      if (message.type === 'surface-visibility') {
+        const layout = currentLayout()
+        if (mediaStarted && layout !== undefined && message.ownerId === ownerId && message.revision === layout.revision
+          && message.mediaGeneration === layout.mediaGeneration) surfaceHidden = !message.visible
+        return
+      }
       if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry' || message.type === 'media-decline') {
         if (message.type === 'media-retry') {
           const layout = currentLayout()
@@ -1205,11 +1217,12 @@ export class ManagedBrowserStream {
     const reservation = this.#mediaCapacityTransition.then(async () => {
       while (this.#peerCount >= this.#maxMediaPeers) {
         const candidates = [...this.#mediaCapacityOwners.values()]
-          .filter((owner) => owner.fallback())
-          .sort((left, right) => left.order - right.order)
+          .map((owner) => ({ owner, priority: owner.evictionPriority() }))
+          .filter((candidate): candidate is { owner: BrowserMediaCapacityOwner; priority: 0 | 1 } => candidate.priority !== undefined)
+          .sort((left, right) => left.priority - right.priority || left.owner.order - right.owner.order)
         let evicted = false
         for (const candidate of candidates) {
-          if (await candidate.evict()) {
+          if (await candidate.owner.evict()) {
             evicted = true
             break
           }

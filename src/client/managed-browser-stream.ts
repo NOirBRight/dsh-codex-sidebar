@@ -183,6 +183,16 @@ export function browserMediaDeclineForFailure(
   return browserMediaDeclineMessage(failed)
 }
 
+/** Report immediate surface visibility for the exact committed media identity. */
+export function browserSurfaceVisibilityMessage(
+  ready: Pick<BrowserReadyMessage, 'ownerId'> | null,
+  layout: Pick<BrowserMediaIdentity, 'revision' | 'mediaGeneration'> | undefined,
+  visible: boolean,
+): Extract<BrowserClientMessage, { type: 'surface-visibility' }> | undefined {
+  if (ready === null || layout === undefined) return undefined
+  return { type: 'surface-visibility', ownerId: ready.ownerId, ...layout, visible }
+}
+
 /** Project one Host route update without claiming direct video before a decoded frame is presented. */
 export function browserMediaRouteFromHost(
   message: BrowserMediaRouteMessage,

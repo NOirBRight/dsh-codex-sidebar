@@ -119,6 +119,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     ...(config.managedBrowser?.webrtcNegotiationTimeoutMs === undefined ? {} : { webrtcNegotiationTimeoutMs: config.managedBrowser.webrtcNegotiationTimeoutMs }),
     ...(config.managedBrowser?.webrtcRetryCooldownMs === undefined ? {} : { webrtcRetryCooldownMs: config.managedBrowser.webrtcRetryCooldownMs }),
     ...(config.managedBrowser?.maxMediaPeers === undefined ? {} : { maxMediaPeers: config.managedBrowser.maxMediaPeers }),
+    ...(config.managedBrowser?.maxEncoderPages === undefined ? {} : { maxEncoderPages: config.managedBrowser.maxEncoderPages }),
     ...(config.managedBrowser?.directVideoFrameRate === undefined ? {} : { directVideoFrameRate: config.managedBrowser.directVideoFrameRate }),
     ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
     ...(config.managedBrowser?.directVideoCaptureQuality === undefined ? {} : { directVideoCaptureQuality: config.managedBrowser.directVideoCaptureQuality }),

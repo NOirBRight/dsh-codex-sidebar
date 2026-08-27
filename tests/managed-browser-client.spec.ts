@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
@@ -56,6 +56,16 @@ describe('managed Browser stream client', () => {
     expect(browserMediaDeclineForFailure({ ...current, mediaGeneration: 8 }, current, 'peer-failed')).toBeUndefined()
     expect(browserMediaDeclineForFailure(current, undefined, 'presentation-failed')).toBeUndefined()
     expect(browserMediaDeclineForFailure(current, current, 'host-fallback')).toBeUndefined()
+  })
+
+  it('reports immediate surface visibility only for an exact committed media identity', () => {
+    const ready = { ownerId: 'owner-1' }
+    const layout = { revision: 3, mediaGeneration: 2 }
+    expect(browserSurfaceVisibilityMessage(ready, layout, false)).toEqual({
+      type: 'surface-visibility', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, visible: false,
+    })
+    expect(browserSurfaceVisibilityMessage(null, layout, false)).toBeUndefined()
+    expect(browserSurfaceVisibilityMessage(ready, undefined, true)).toBeUndefined()
   })
 
   it('projects every Host and receiver route into one user-visible media state', () => {

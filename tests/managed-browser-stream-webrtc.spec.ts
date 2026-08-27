@@ -71,6 +71,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, preferredMediaRoute: 'invalid' as never })).toThrow('preferredMediaRoute')
     expect(() => new ManagedBrowserStream({ runtime, stunUrls: ['turn:relay.example.test'] })).toThrow('STUN URLs only')
     expect(() => new ManagedBrowserStream({ runtime, maxMediaPeers: 0 })).toThrow('maxMediaPeers')
+    expect(() => new ManagedBrowserStream({ runtime, maxMediaPeers: 2, maxEncoderPages: 1 })).toThrow('maxMediaPeers cannot exceed maxEncoderPages')
     expect(() => new ManagedBrowserStream({ runtime, webrtcNegotiationTimeoutMs: 0 })).toThrow('webrtcNegotiationTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, webrtcRetryCooldownMs: -1 })).toThrow('webrtcRetryCooldownMs')
     expect(() => new ManagedBrowserStream({ runtime, directVideoFrameRate: 0 })).toThrow('directVideoFrameRate')
@@ -358,7 +359,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     }
   })
 
-  it('evicts the oldest fallback peer under capacity pressure but never evicts active peers', async () => {
+  it('evicts a hidden active peer before a fallback peer but never evicts visible active peers', async () => {
     const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     const cdps = new Map<string, EventEmitter & { send(method: string): Promise<unknown> }>()
     const cdpFor = (tabId: string) => {
@@ -408,6 +409,13 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       await vi.waitFor(() => { expect(messages.some((message) => message.type === 'rtc-offer' || message.type === 'media-route')).toBe(true) })
       return messages
     }
+    const waitForControlBarrier = async (client: WebSocket, messages: Array<Record<string, unknown>>): Promise<void> => {
+      const before = messages.filter((message) => message.type === 'input-result').length
+      client.send(JSON.stringify({ type: 'input', revision: 999, input: { type: 'tap', x: 1, y: 1 } }))
+      await vi.waitFor(() => {
+        expect(messages.filter((message) => message.type === 'input-result')).toHaveLength(before + 1)
+      })
+    }
     try {
       const firstMessages = await connect('first')
       await vi.waitFor(() => { expect(encoders).toHaveLength(1) })
@@ -415,31 +423,59 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       await vi.waitFor(() => { expect(encoders).toHaveLength(2) })
       expect(firstMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
       expect(secondMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+      const firstOffer = firstMessages.find((message) => message.type === 'rtc-offer')
+      if (firstOffer === undefined) throw new Error('missing first offer')
+      encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
+      await vi.waitFor(() => {
+        expect(firstMessages).toContainEqual(expect.objectContaining({ type: 'media-route', route: 'webrtc-direct' }))
+      })
+      clients[0]?.send(JSON.stringify({
+        type: 'surface-visibility', ownerId: firstOffer.ownerId, revision: firstOffer.revision,
+        mediaGeneration: Number(firstOffer.mediaGeneration) + 1, visible: false,
+      }))
+      if (clients[0] === undefined) throw new Error('missing first client')
+      await waitForControlBarrier(clients[0], firstMessages)
 
       const thirdMessages = await connect('third')
       await vi.waitFor(() => {
         expect(encoders).toHaveLength(3)
+        expect(encoders[1]?.disposed).toBe(1)
+        expect(secondMessages).toContainEqual(expect.objectContaining({
+          type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'local-capacity-evicted',
+        }))
+      })
+      expect(encoders[0]?.disposed).toBe(0)
+      expect(thirdMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+
+      clients[0]?.send(JSON.stringify({
+        type: 'surface-visibility', ownerId: firstOffer.ownerId, revision: firstOffer.revision,
+        mediaGeneration: firstOffer.mediaGeneration, visible: false,
+      }))
+      await waitForControlBarrier(clients[0], firstMessages)
+      const fourthMessages = await connect('fourth')
+      await vi.waitFor(() => {
+        expect(encoders).toHaveLength(4)
         expect(encoders[0]?.disposed).toBe(1)
         expect(firstMessages).toContainEqual(expect.objectContaining({
           type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'local-capacity-evicted',
         }))
       })
-      expect(encoders[1]?.disposed).toBe(0)
-      expect(thirdMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+      expect(encoders[2]?.disposed).toBe(0)
+      expect(fourthMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
       encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
-      expect(firstMessages.some((message) => message.type === 'media-route' && message.route === 'webrtc-direct')).toBe(false)
+      expect(firstMessages.filter((message) => message.type === 'media-route' && message.route === 'webrtc-direct')).toHaveLength(1)
 
-      encoders[1]?.signal({ type: 'connection-state', state: 'connected' })
       encoders[2]?.signal({ type: 'connection-state', state: 'connected' })
-      const fourthMessages = await connect('fourth')
+      encoders[3]?.signal({ type: 'connection-state', state: 'connected' })
+      const fifthMessages = await connect('fifth')
       await vi.waitFor(() => {
-        expect(fourthMessages).toContainEqual(expect.objectContaining({
+        expect(fifthMessages).toContainEqual(expect.objectContaining({
           type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'local-capacity',
         }))
       })
-      expect(encoders).toHaveLength(3)
-      expect(encoders[1]?.disposed).toBe(0)
+      expect(encoders).toHaveLength(4)
       expect(encoders[2]?.disposed).toBe(0)
+      expect(encoders[3]?.disposed).toBe(0)
       expect(stream.resources().peers).toBe(2)
     } finally {
       for (const client of clients) client.close()
