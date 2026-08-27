@@ -32,6 +32,9 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, maxMediaPeers: 0 })).toThrow('maxMediaPeers')
     expect(() => new ManagedBrowserStream({ runtime, webrtcNegotiationTimeoutMs: 0 })).toThrow('webrtcNegotiationTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, webrtcRetryCooldownMs: -1 })).toThrow('webrtcRetryCooldownMs')
+    expect(() => new ManagedBrowserStream({ runtime, directVideoFrameRate: 0 })).toThrow('directVideoFrameRate')
+    expect(() => new ManagedBrowserStream({ runtime, directVideoMaxBitrate: 0 })).toThrow('directVideoMaxBitrate')
+    expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
   })
 
   it('gates signaling by owner/layout and rotates one encoder per media generation', async () => {
@@ -57,6 +60,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       runtime: runtime as never,
       preferredMediaRoute: 'webrtc-preferred', stunUrls: ['stun:stun.example.test:3478'],
       webrtcNegotiationTimeoutMs: 500, webrtcRetryCooldownMs: 200, maxMediaPeers: 1,
+      directVideoFrameRate: 12, directVideoMaxBitrate: 1_500_000,
       encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
     })
     const server = createServer()
@@ -79,6 +83,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       const ready = messages.find((value) => value.type === 'ready') as { ownerId: string }
       const first = encoders[0]
       if (first === undefined) throw new Error('missing encoder')
+      expect(first.options).toMatchObject({ frameRate: 12, maxBitrate: 1_500_000 })
       const identity = { ownerId: ready.ownerId, revision: 1, mediaGeneration: 1 }
       for (let index = 0; index < 70; index += 1) {
         client.send(JSON.stringify({ type: 'rtc-candidate', ...identity, candidate: { candidate: 'candidate:queued-' + index } }))
@@ -120,6 +125,61 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
         expect(encoders[2]?.disposed).toBe(1)
         expect(messages).toContainEqual(expect.objectContaining({ type: 'media-route', reason: 'peer-failed' }))
       })
+    } finally {
+      client.close()
+      await vi.waitFor(() => { expect(encoders.at(-1)?.disposed).toBe(1) })
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
+  it('releases an inactive peer and lets later input retry after the cooldown', async () => {
+    const layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method) => method === 'Page.captureScreenshot'
+      ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      : method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    const runtime = {
+      target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
+      layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+    }
+    const encoders: FakeEncoder[] = []
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never, webrtcNegotiationTimeoutMs: 500, webrtcRetryCooldownMs: 20,
+      mediaIdleTimeoutMs: 35,
+      encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
+    })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+    const messages: Array<Record<string, unknown>> = []
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: true } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(encoders).toHaveLength(1) })
+      encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
+      await vi.waitFor(() => {
+        expect(encoders[0]?.disposed).toBe(1)
+        expect(messages).toContainEqual(expect.objectContaining({ type: 'media-route', route: 'jpeg-fallback', reason: 'media-idle-timeout' }))
+      }, { timeout: 1_000 })
+
+      await new Promise((resolve) => { setTimeout(resolve, 25) })
+      client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 10, y: 20 } }))
+      await vi.waitFor(() => { expect(encoders).toHaveLength(2) })
     } finally {
       client.close()
       await vi.waitFor(() => { expect(encoders.at(-1)?.disposed).toBe(1) })

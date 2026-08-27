@@ -97,11 +97,22 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     runtime: managedBrowser,
     ...(config.managedBrowser?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: config.managedBrowser.desktopJpegMaxRawBytes }),
     ...(config.managedBrowser?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: config.managedBrowser.mobileJpegMaxRawBytes }),
+    ...(config.managedBrowser?.desktopJpegQuality === undefined ? {} : { desktopJpegQuality: config.managedBrowser.desktopJpegQuality }),
+    ...(config.managedBrowser?.desktopJpegFrameIntervalMs === undefined ? {} : { desktopJpegFrameIntervalMs: config.managedBrowser.desktopJpegFrameIntervalMs }),
+    ...(config.managedBrowser?.desktopJpegMaxScale === undefined ? {} : { desktopJpegMaxScale: config.managedBrowser.desktopJpegMaxScale }),
+    ...(config.managedBrowser?.desktopScreencastEveryNthFrame === undefined ? {} : { desktopScreencastEveryNthFrame: config.managedBrowser.desktopScreencastEveryNthFrame }),
+    ...(config.managedBrowser?.mobileJpegQuality === undefined ? {} : { mobileJpegQuality: config.managedBrowser.mobileJpegQuality }),
+    ...(config.managedBrowser?.mobileJpegFrameIntervalMs === undefined ? {} : { mobileJpegFrameIntervalMs: config.managedBrowser.mobileJpegFrameIntervalMs }),
+    ...(config.managedBrowser?.mobileJpegMaxScale === undefined ? {} : { mobileJpegMaxScale: config.managedBrowser.mobileJpegMaxScale }),
+    ...(config.managedBrowser?.mobileScreencastEveryNthFrame === undefined ? {} : { mobileScreencastEveryNthFrame: config.managedBrowser.mobileScreencastEveryNthFrame }),
     ...(config.managedBrowser?.preferredMediaRoute === undefined ? {} : { preferredMediaRoute: config.managedBrowser.preferredMediaRoute }),
     ...(config.managedBrowser?.stunUrls === undefined ? {} : { stunUrls: config.managedBrowser.stunUrls }),
     ...(config.managedBrowser?.webrtcNegotiationTimeoutMs === undefined ? {} : { webrtcNegotiationTimeoutMs: config.managedBrowser.webrtcNegotiationTimeoutMs }),
     ...(config.managedBrowser?.webrtcRetryCooldownMs === undefined ? {} : { webrtcRetryCooldownMs: config.managedBrowser.webrtcRetryCooldownMs }),
     ...(config.managedBrowser?.maxMediaPeers === undefined ? {} : { maxMediaPeers: config.managedBrowser.maxMediaPeers }),
+    ...(config.managedBrowser?.directVideoFrameRate === undefined ? {} : { directVideoFrameRate: config.managedBrowser.directVideoFrameRate }),
+    ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
+    ...(config.managedBrowser?.mediaIdleTimeoutMs === undefined ? {} : { mediaIdleTimeoutMs: config.managedBrowser.mediaIdleTimeoutMs }),
   })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()

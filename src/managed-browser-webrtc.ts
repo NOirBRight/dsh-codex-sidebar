@@ -42,8 +42,15 @@ export type ManagedBrowserWebRtcEncoderOptions = {
   stunUrls?: readonly string[]
   width: number
   height: number
+  /** Maximum video frames encoded per second. */
+  frameRate?: number
+  /** Maximum outbound video bitrate in bits per second. */
+  maxBitrate?: number
   onSignal?: (signal: BrowserMediaSignal) => void
 }
+
+export const MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE = 10
+export const MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE = 2_000_000
 
 const SIGNAL_BINDING = '__dcsManagedMediaSignal'
 
@@ -59,7 +66,16 @@ const BOOTSTRAP = String.raw`async (config) => {
   const track = stream.getVideoTracks()[0];
   if (track === undefined) throw new Error('Managed Browser media track is unavailable');
   const peer = new RTCPeerConnection({ iceServers: config.iceServers });
-  peer.addTrack(track, stream);
+  const sender = peer.addTrack(track, stream);
+  let parametersApplied = false;
+  const applySenderParameters = async () => {
+    if (parametersApplied) return;
+    parametersApplied = true;
+    const parameters = sender.getParameters();
+    if (parameters.encodings.length === 0) parameters.encodings = [{}];
+    parameters.encodings[0].maxBitrate = config.maxBitrate;
+    await sender.setParameters(parameters);
+  };
   peer.onicecandidate = (event) => {
     void signal({ type: 'candidate', candidate: event.candidate === null ? null : event.candidate.toJSON() });
   };
@@ -99,6 +115,8 @@ const BOOTSTRAP = String.raw`async (config) => {
         if (canvas.height !== value.height) canvas.height = value.height;
         context.drawImage(image, 0, 0, value.width, value.height);
         track.requestFrame();
+        await new Promise((resolve) => setTimeout(resolve, Math.ceil(1000 / config.frameRate)));
+        await applySenderParameters();
       } finally {
         image.close();
       }
@@ -139,6 +157,8 @@ export class ManagedBrowserWebRtcEncoder {
   #stunUrls: string[]
   #width: number
   #height: number
+  #frameRate: number
+  #maxBitrate: number
   #onSignal: (signal: BrowserMediaSignal) => void
   #page: BrowserMediaPage | undefined
   #startPromise: Promise<BrowserRtcDescription> | undefined
@@ -154,6 +174,8 @@ export class ManagedBrowserWebRtcEncoder {
     this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [])
     this.#width = positiveDimension(opts.width, 'width')
     this.#height = positiveDimension(opts.height, 'height')
+    this.#frameRate = boundedInteger(opts.frameRate ?? MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE, 1, 60, 'frameRate')
+    this.#maxBitrate = boundedInteger(opts.maxBitrate ?? MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE, 1, 100_000_000, 'maxBitrate')
     this.#onSignal = opts.onSignal ?? (() => {})
   }
 
@@ -217,6 +239,8 @@ export class ManagedBrowserWebRtcEncoder {
         iceServers: this.#stunUrls.length === 0 ? [] : [{ urls: this.#stunUrls }],
         width: this.#width,
         height: this.#height,
+        frameRate: this.#frameRate,
+        maxBitrate: this.#maxBitrate,
       })
       const offer = await page.evaluateFunction<unknown>(COMMAND, { type: 'create-offer' })
       if (!browserRtcDescription(offer, 'offer')) throw new Error('Managed Browser media Page returned an invalid SDP offer')
@@ -314,6 +338,13 @@ function positiveDimension(value: number, name: string): number {
 
 function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error('Managed Browser media ' + name + ' must be a positive integer')
+  return value
+}
+
+function boundedInteger(value: number, min: number, max: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error('Managed Browser media ' + name + ' must be an integer from ' + min + ' to ' + max)
+  }
   return value
 }
 

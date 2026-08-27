@@ -388,7 +388,34 @@ describe('managed browser stream protocol', () => {
   it('uses a low-bandwidth profile for Origin-less Mobile tunnel sockets', () => {
     expect(browserStreamTransportProfile(undefined)).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4 })
     expect(browserStreamTransportProfile('http://127.0.0.1:3080')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2 })
+    expect(browserStreamTransportProfile(undefined, {
+      mobileJpegQuality: 52,
+      mobileJpegFrameIntervalMs: 400,
+      mobileJpegMaxScale: 0.75,
+      mobileScreencastEveryNthFrame: 6,
+      mobileJpegMaxRawBytes: 72 * 1024,
+    })).toEqual({
+      frameEncoding: 'json-base64-v2', quality: 52, frameIntervalMs: 400,
+      maxScale: 0.75, everyNthFrame: 6, maxRawBytes: 72 * 1024,
+    })
+    expect(browserStreamTransportProfile('http://127.0.0.1:3080', {
+      desktopJpegQuality: 74,
+      desktopJpegFrameIntervalMs: 125,
+      desktopJpegMaxScale: 1.25,
+      desktopScreencastEveryNthFrame: 3,
+      desktopJpegMaxRawBytes: 320 * 1024,
+    })).toEqual({
+      frameEncoding: 'binary-v2', quality: 74, frameIntervalMs: 125,
+      maxScale: 1.25, everyNthFrame: 3, maxRawBytes: 320 * 1024,
+    })
     expect(browserStreamCaptureScale(720, 860, 1)).toBe(1)
+  })
+
+  it('rejects invalid configured JPEG transport profiles', () => {
+    expect(() => browserStreamTransportProfile('https://host.test', { desktopJpegQuality: 101 })).toThrow('desktopJpegQuality')
+    expect(() => browserStreamTransportProfile(undefined, { mobileJpegFrameIntervalMs: 0 })).toThrow('mobileJpegFrameIntervalMs')
+    expect(() => browserStreamTransportProfile(undefined, { mobileJpegMaxScale: Number.NaN })).toThrow('mobileJpegMaxScale')
+    expect(() => browserStreamTransportProfile(undefined, { mobileScreencastEveryNthFrame: 0 })).toThrow('mobileScreencastEveryNthFrame')
   })
 
   it('uses a bounded high-density capture scale for visible frames', () => {

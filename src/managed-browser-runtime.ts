@@ -39,8 +39,24 @@ export type ManagedBrowserConfig = {
   layoutHysteresisPx?: number
   /** Raw JPEG ceiling for a same-origin desktop Browser stream frame. */
   desktopJpegMaxRawBytes?: number
+  /** Initial desktop JPEG quality from 1 to 100. */
+  desktopJpegQuality?: number
+  /** Minimum milliseconds between desktop JPEG captures. */
+  desktopJpegFrameIntervalMs?: number
+  /** Maximum encoded-to-CSS pixel scale for desktop JPEG captures. */
+  desktopJpegMaxScale?: number
+  /** Chromium screencast change-signal sampling interval for desktop clients. */
+  desktopScreencastEveryNthFrame?: number
   /** Raw JPEG ceiling before the Mobile tunnel's nested Base64 envelopes. */
   mobileJpegMaxRawBytes?: number
+  /** Initial Mobile JPEG quality from 1 to 100. */
+  mobileJpegQuality?: number
+  /** Minimum milliseconds between Mobile JPEG captures. */
+  mobileJpegFrameIntervalMs?: number
+  /** Maximum encoded-to-CSS pixel scale for Mobile JPEG captures. */
+  mobileJpegMaxScale?: number
+  /** Chromium screencast change-signal sampling interval for Mobile clients. */
+  mobileScreencastEveryNthFrame?: number
   /** Preferred managed Browser media route. */
   preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
   /** STUN-only ICE server URLs used by managed Browser WebRTC peers. */
@@ -51,6 +67,12 @@ export type ManagedBrowserConfig = {
   webrtcRetryCooldownMs?: number
   /** Maximum concurrent managed Browser WebRTC peers. */
   maxMediaPeers?: number
+  /** Maximum frames per second requested from a direct-video sender. */
+  directVideoFrameRate?: number
+  /** Maximum direct-video sender bitrate in bits per second. */
+  directVideoMaxBitrate?: number
+  /** Dispose an inactive direct-video peer after this many milliseconds. */
+  mediaIdleTimeoutMs?: number
   /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
   maxEncoderPages?: number
 }

@@ -74,9 +74,15 @@ describe('managed Browser protocol v2', () => {
     expect(decodeBrowserHostMessage(JSON.stringify({
       type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2',
       fallback: { maxRawBytes: 1024 }, ownerId: 'owner-1',
-      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 30000 },
+      media: {
+        preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 30000,
+        frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000,
+      },
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 },
-    }))).toMatchObject({ type: 'ready', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true } })
+    }))).toMatchObject({
+      type: 'ready', ownerId: 'owner-1',
+      media: { preferredRoute: 'webrtc-direct', stunOnly: true, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000 },
+    })
     expect(decodeBrowserHostMessage(JSON.stringify({
       type: 'rtc-offer', ownerId: 'owner-1', revision: 4, mediaGeneration: 3,
       description: { type: 'offer', sdp: 'offer-sdp' },

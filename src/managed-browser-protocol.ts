@@ -65,6 +65,9 @@ export type BrowserReadyMessage = {
     stunOnly: true
     negotiationTimeoutMs: number
     retryCooldownMs: number
+    frameRate: number
+    maxBitrate: number
+    idleTimeoutMs: number
   }
   layoutPolicy: { minViewport: BrowserSize; maxViewport: BrowserSize; settleMs: number; hysteresisPx: number }
 }
@@ -142,13 +145,17 @@ export function decodeBrowserHostMessage(raw: string): BrowserHostMessage | unde
       || typeof value.ownerId !== 'string' || value.ownerId.length === 0 || value.ownerId.length > 256
       || !record(value.media) || (value.media.preferredRoute !== 'webrtc-direct' && value.media.preferredRoute !== 'jpeg-fallback')
       || value.media.stunOnly !== true || !positiveSafeInteger(value.media.negotiationTimeoutMs)
-      || !nonNegativeSafeInteger(value.media.retryCooldownMs) || !layoutPolicy(value.layoutPolicy)) return undefined
+      || !nonNegativeSafeInteger(value.media.retryCooldownMs) || !positiveSafeInteger(value.media.frameRate)
+      || !positiveSafeInteger(value.media.maxBitrate) || !positiveSafeInteger(value.media.idleTimeoutMs)
+      || !layoutPolicy(value.layoutPolicy)) return undefined
     return {
       type: 'ready', version: 2, frameEncoding: value.frameEncoding, flowControl: 'frame-ack-v2',
       fallback: { maxRawBytes: value.fallback.maxRawBytes }, ownerId: value.ownerId,
       media: {
         preferredRoute: value.media.preferredRoute, stunOnly: true,
         negotiationTimeoutMs: value.media.negotiationTimeoutMs, retryCooldownMs: value.media.retryCooldownMs,
+        frameRate: value.media.frameRate, maxBitrate: value.media.maxBitrate,
+        idleTimeoutMs: value.media.idleTimeoutMs,
       },
       layoutPolicy: value.layoutPolicy,
     }

@@ -18,6 +18,8 @@ import {
   type BrowserRtcDescription,
 } from './managed-browser-protocol.ts'
 import {
+  MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE,
+  MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE,
   ManagedBrowserWebRtcEncoder,
   validateBrowserStunUrls,
   type BrowserMediaFrame,
@@ -42,6 +44,7 @@ export const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES = 480 * 1024
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
 export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
+export const MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS = 5 * 60_000
 
 export type BrowserStreamTransportProfile = {
   frameEncoding: 'binary-v2' | 'json-base64-v2'
@@ -52,13 +55,40 @@ export type BrowserStreamTransportProfile = {
   maxRawBytes: number
 }
 
+export type BrowserStreamProfileConfig = {
+  desktopJpegMaxRawBytes?: number | undefined
+  desktopJpegQuality?: number | undefined
+  desktopJpegFrameIntervalMs?: number | undefined
+  desktopJpegMaxScale?: number | undefined
+  desktopScreencastEveryNthFrame?: number | undefined
+  mobileJpegMaxRawBytes?: number | undefined
+  mobileJpegQuality?: number | undefined
+  mobileJpegFrameIntervalMs?: number | undefined
+  mobileJpegMaxScale?: number | undefined
+  mobileScreencastEveryNthFrame?: number | undefined
+}
+
 export function browserStreamTransportProfile(
   origin: string | undefined,
-  budgets: { desktopMaxRawBytes?: number; mobileMaxRawBytes?: number } = {},
+  config: BrowserStreamProfileConfig = {},
 ): BrowserStreamTransportProfile {
   return origin === undefined || origin.length === 0
-    ? { frameEncoding: 'json-base64-v2', quality: MANAGED_BROWSER_MOBILE_STREAM_QUALITY, maxScale: 1, frameIntervalMs: MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME, maxRawBytes: rawByteBudget(budgets.mobileMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES) }
-    : { frameEncoding: 'binary-v2', quality: MANAGED_BROWSER_STREAM_QUALITY, maxScale: HIGH_DENSITY_SCALE, frameIntervalMs: MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME, maxRawBytes: rawByteBudget(budgets.desktopMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES) }
+    ? {
+        frameEncoding: 'json-base64-v2',
+        quality: jpegQuality(config.mobileJpegQuality, MANAGED_BROWSER_MOBILE_STREAM_QUALITY, 'mobileJpegQuality'),
+        maxScale: jpegScale(config.mobileJpegMaxScale, 1, 'mobileJpegMaxScale'),
+        frameIntervalMs: positiveStreamInteger(config.mobileJpegFrameIntervalMs, MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, 'mobileJpegFrameIntervalMs'),
+        everyNthFrame: positiveStreamInteger(config.mobileScreencastEveryNthFrame, MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME, 'mobileScreencastEveryNthFrame'),
+        maxRawBytes: rawByteBudget(config.mobileJpegMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES),
+      }
+    : {
+        frameEncoding: 'binary-v2',
+        quality: jpegQuality(config.desktopJpegQuality, MANAGED_BROWSER_STREAM_QUALITY, 'desktopJpegQuality'),
+        maxScale: jpegScale(config.desktopJpegMaxScale, HIGH_DENSITY_SCALE, 'desktopJpegMaxScale'),
+        frameIntervalMs: positiveStreamInteger(config.desktopJpegFrameIntervalMs, MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, 'desktopJpegFrameIntervalMs'),
+        everyNthFrame: positiveStreamInteger(config.desktopScreencastEveryNthFrame, MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME, 'desktopScreencastEveryNthFrame'),
+        maxRawBytes: rawByteBudget(config.desktopJpegMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES),
+      }
 }
 export const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560
 export const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048
@@ -90,11 +120,22 @@ export type ManagedBrowserStreamOptions = {
   handshakeTimeoutMs?: number
   desktopMaxRawBytes?: number
   mobileMaxRawBytes?: number
+  desktopJpegQuality?: number
+  desktopJpegFrameIntervalMs?: number
+  desktopJpegMaxScale?: number
+  desktopScreencastEveryNthFrame?: number
+  mobileJpegQuality?: number
+  mobileJpegFrameIntervalMs?: number
+  mobileJpegMaxScale?: number
+  mobileScreencastEveryNthFrame?: number
   preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
   stunUrls?: string[]
   webrtcNegotiationTimeoutMs?: number
   webrtcRetryCooldownMs?: number
   maxMediaPeers?: number
+  directVideoFrameRate?: number
+  directVideoMaxBitrate?: number
+  mediaIdleTimeoutMs?: number
   encoderFactory?: ManagedBrowserWebRtcEncoderFactory
 }
 
@@ -121,7 +162,8 @@ type BrowserMediaAttempt = {
   answerAccepted: boolean
   candidateCount: number
   candidates: Array<BrowserRtcCandidate | null>
-  timer: ReturnType<typeof setTimeout> | undefined
+  negotiationTimer: ReturnType<typeof setTimeout> | undefined
+  idleTimer: ReturnType<typeof setTimeout> | undefined
   released: boolean
 }
 
@@ -147,13 +189,16 @@ export class ManagedBrowserStream {
   #timerCount = 0
   #captureCount = 0
   #unackedCount = 0
-  #budgets: { desktopMaxRawBytes?: number; mobileMaxRawBytes?: number }
+  #profiles: { desktop: BrowserStreamTransportProfile; mobile: BrowserStreamTransportProfile }
   #tasks = new Set<Promise<void>>()
   #preferredMediaRoute: 'webrtc-preferred' | 'jpeg-only'
   #stunUrls: string[]
   #webrtcNegotiationTimeoutMs: number
   #webrtcRetryCooldownMs: number
   #maxMediaPeers: number
+  #directVideoFrameRate: number
+  #directVideoMaxBitrate: number
+  #mediaIdleTimeoutMs: number
   #encoderFactory: ManagedBrowserWebRtcEncoderFactory
   #peerCount = 0
 
@@ -162,9 +207,21 @@ export class ManagedBrowserStream {
     this.#now = opts.now ?? Date.now
     this.#ticketTtlMs = opts.ticketTtlMs ?? TICKET_TTL_MS
     this.#handshakeTimeoutMs = opts.handshakeTimeoutMs ?? MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS
-    this.#budgets = {
-      ...(opts.desktopMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: rawByteBudget(opts.desktopMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES) }),
-      ...(opts.mobileMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: rawByteBudget(opts.mobileMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES) }),
+    const profileConfig: BrowserStreamProfileConfig = {
+      desktopJpegMaxRawBytes: opts.desktopMaxRawBytes,
+      desktopJpegQuality: opts.desktopJpegQuality,
+      desktopJpegFrameIntervalMs: opts.desktopJpegFrameIntervalMs,
+      desktopJpegMaxScale: opts.desktopJpegMaxScale,
+      desktopScreencastEveryNthFrame: opts.desktopScreencastEveryNthFrame,
+      mobileJpegMaxRawBytes: opts.mobileMaxRawBytes,
+      mobileJpegQuality: opts.mobileJpegQuality,
+      mobileJpegFrameIntervalMs: opts.mobileJpegFrameIntervalMs,
+      mobileJpegMaxScale: opts.mobileJpegMaxScale,
+      mobileScreencastEveryNthFrame: opts.mobileScreencastEveryNthFrame,
+    }
+    this.#profiles = {
+      desktop: browserStreamTransportProfile('desktop', profileConfig),
+      mobile: browserStreamTransportProfile(undefined, profileConfig),
     }
     this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
     if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')
@@ -172,6 +229,9 @@ export class ManagedBrowserStream {
     this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 5_000, 'webrtcNegotiationTimeoutMs')
     this.#webrtcRetryCooldownMs = nonNegativeStreamInteger(opts.webrtcRetryCooldownMs, 30_000, 'webrtcRetryCooldownMs')
     this.#maxMediaPeers = positiveStreamInteger(opts.maxMediaPeers, 3, 'maxMediaPeers')
+    this.#directVideoFrameRate = boundedStreamInteger(opts.directVideoFrameRate, MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE, 1, 60, 'directVideoFrameRate')
+    this.#directVideoMaxBitrate = boundedStreamInteger(opts.directVideoMaxBitrate, MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE, 1, 100_000_000, 'directVideoMaxBitrate')
+    this.#mediaIdleTimeoutMs = positiveStreamInteger(opts.mediaIdleTimeoutMs, MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS, 'mediaIdleTimeoutMs')
     this.#encoderFactory = opts.encoderFactory ?? ((options) => new ManagedBrowserWebRtcEncoder(options))
   }
 
@@ -196,7 +256,8 @@ export class ManagedBrowserStream {
     }
     this.#server.handleUpgrade(req, socket, head, (ws) => {
       this.#server.emit('connection', ws, req)
-      void this.#attach(ws, tab, target, browserStreamTransportProfile(typeof req.headers.origin === 'string' ? req.headers.origin : undefined, this.#budgets))
+      const profile = typeof req.headers.origin === 'string' && req.headers.origin.length > 0 ? this.#profiles.desktop : this.#profiles.mobile
+      void this.#attach(ws, tab, target, profile)
     })
   }
 
@@ -275,7 +336,9 @@ export class ManagedBrowserStream {
     let mediaAttempt: BrowserMediaAttempt | undefined
     let mediaFrameSequence = 0
     let lastMediaFailureAt = Number.NEGATIVE_INFINITY
+    let mediaIdleSuspended = false
     let mediaTransition = Promise.resolve()
+    let noteMediaActivity = (): void => {}
     const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
     const releaseLease = this.#runtime.acquire(tab)
     const sendProjection = (): void => {
@@ -326,7 +389,10 @@ export class ManagedBrowserStream {
     const pump = (): void => {
       if (detached || !handshaken || socket.readyState !== WebSocket.OPEN) return
       if (captureInFlight || unacked !== undefined || dirty === undefined) return
-      const delay = dirty.force ? 0 : profile.frameIntervalMs - (this.#now() - lastFrameAt)
+      const activeFrameIntervalMs = mediaAttempt?.connected === true
+        ? Math.ceil(1000 / this.#directVideoFrameRate)
+        : profile.frameIntervalMs
+      const delay = dirty.force ? 0 : activeFrameIntervalMs - (this.#now() - lastFrameAt)
       if (delay > 0) {
         armFrameTimer(delay, pump)
         return
@@ -337,7 +403,7 @@ export class ManagedBrowserStream {
         this.#timerCount -= 1
       }
       if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
-        armFrameTimer(profile.frameIntervalMs, pump)
+        armFrameTimer(activeFrameIntervalMs, pump)
         return
       }
       dirty = undefined
@@ -391,14 +457,16 @@ export class ManagedBrowserStream {
       dirty = { force: force || dirty?.force === true }
       pump()
     }
-    const clearMediaTimer = (attempt: BrowserMediaAttempt): void => {
-      if (attempt.timer === undefined) return
-      clearTimeout(attempt.timer)
-      attempt.timer = undefined
+    const clearMediaTimer = (attempt: BrowserMediaAttempt, field: 'negotiationTimer' | 'idleTimer'): void => {
+      const timer = attempt[field]
+      if (timer === undefined) return
+      clearTimeout(timer)
+      attempt[field] = undefined
       this.#timerCount -= 1
     }
     const releaseMediaAttempt = async (attempt: BrowserMediaAttempt): Promise<void> => {
-      clearMediaTimer(attempt)
+      clearMediaTimer(attempt, 'negotiationTimer')
+      clearMediaTimer(attempt, 'idleTimer')
       if (!attempt.released) {
         attempt.released = true
         this.#peerCount -= 1
@@ -412,6 +480,7 @@ export class ManagedBrowserStream {
       if (mediaAttempt !== attempt) return
       mediaAttempt = undefined
       lastMediaFailureAt = this.#now()
+      mediaIdleSuspended = reason === 'media-idle-timeout'
       await releaseMediaAttempt(attempt)
       if (detached) return
       sendMediaRoute('jpeg-fallback', 'degraded', reason)
@@ -430,7 +499,8 @@ export class ManagedBrowserStream {
       if (signal.type === 'connection-state') {
         if (signal.state === 'connected') {
           attempt.connected = true
-          clearMediaTimer(attempt)
+          clearMediaTimer(attempt, 'negotiationTimer')
+          noteMediaActivity()
           if (unacked !== undefined) {
             unacked = undefined
             this.#unackedCount -= 1
@@ -459,21 +529,25 @@ export class ManagedBrowserStream {
         stunUrls: this.#stunUrls,
         width: layout.viewport.width,
         height: layout.viewport.height,
+        frameRate: this.#directVideoFrameRate,
+        maxBitrate: this.#directVideoMaxBitrate,
         onSignal: (message) => { handleMediaSignal(attempt, message) },
       })
       attempt = {
         layout: { ...layout, viewport: { ...layout.viewport } }, encoder, connected: false,
-        answerStarted: false, answerAccepted: false, candidateCount: 0, candidates: [], timer: undefined, released: false,
+        answerStarted: false, answerAccepted: false, candidateCount: 0, candidates: [],
+        negotiationTimer: undefined, idleTimer: undefined, released: false,
       }
       mediaAttempt = attempt
+      mediaIdleSuspended = false
       this.#peerCount += 1
       this.#timerCount += 1
-      attempt.timer = setTimeout(() => {
-        attempt.timer = undefined
+      attempt.negotiationTimer = setTimeout(() => {
+        attempt.negotiationTimer = undefined
         this.#timerCount -= 1
         this.#track(failMediaAttempt(attempt, 'negotiation-timeout'))
       }, this.#webrtcNegotiationTimeoutMs)
-      attempt.timer.unref()
+      attempt.negotiationTimer.unref()
       sendMediaRoute('jpeg-fallback', 'reconnecting')
       try {
         const offer = await encoder.start()
@@ -495,6 +569,25 @@ export class ManagedBrowserStream {
       mediaTransition = task.catch(() => undefined)
       this.#track(task)
     }
+    noteMediaActivity = (): void => {
+      const attempt = mediaAttempt
+      if (attempt?.connected === true) {
+        clearMediaTimer(attempt, 'idleTimer')
+        this.#timerCount += 1
+        attempt.idleTimer = setTimeout(() => {
+          attempt.idleTimer = undefined
+          this.#timerCount -= 1
+          this.#track(failMediaAttempt(attempt, 'media-idle-timeout'))
+        }, this.#mediaIdleTimeoutMs)
+        attempt.idleTimer.unref()
+        return
+      }
+      if (!mediaIdleSuspended || attempt !== undefined || this.#now() - lastMediaFailureAt < this.#webrtcRetryCooldownMs) return
+      const layout = currentLayout()
+      if (layout === undefined) return
+      mediaIdleSuspended = false
+      replaceMediaAttempt(layout)
+    }
     const commitLayout = (layout: BrowserLayout): void => {
       if (unacked !== undefined
         && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
@@ -510,6 +603,7 @@ export class ManagedBrowserStream {
       sendProjection()
       if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
       this.#runtime.touch(tab)
+      if (typeof payload.data === 'string') noteMediaActivity()
       if (typeof payload.data === 'string') requestFrame()
     }
     const detach = async (): Promise<void> => {
@@ -550,6 +644,9 @@ export class ManagedBrowserStream {
           stunOnly: true,
           negotiationTimeoutMs: this.#webrtcNegotiationTimeoutMs,
           retryCooldownMs: this.#webrtcRetryCooldownMs,
+          frameRate: this.#directVideoFrameRate,
+          maxBitrate: this.#directVideoMaxBitrate,
+          idleTimeoutMs: this.#mediaIdleTimeoutMs,
         },
         layoutPolicy: this.#runtime.layoutPolicy(),
       }))
@@ -655,7 +752,7 @@ export class ManagedBrowserStream {
           return
         }
       }
-      void this.#onMessage(socket, tab, cdp, message, requestFrame, commitLayout, currentLayout, {
+      void this.#onMessage(socket, tab, cdp, message, requestFrame, commitLayout, currentLayout, noteMediaActivity, {
         get latest() { return latestProposalSequence },
         set latest(value: number) { latestProposalSequence = value },
       }).catch(() => undefined)
@@ -672,6 +769,7 @@ export class ManagedBrowserStream {
     requestFrame: (force?: boolean) => void,
     commitLayout: (layout: BrowserLayout) => void,
     currentLayout: () => BrowserLayout | undefined,
+    noteMediaActivity: () => void,
     proposal: { latest: number },
   ): Promise<void> {
     if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') return
@@ -701,6 +799,7 @@ export class ManagedBrowserStream {
       }))
       return
     }
+    noteMediaActivity()
     this.#runtime.touch(tab)
     await dispatchBrowserInput(cdp, message.input)
     if (message.input.type === 'wheel') await waitForBrowserPaint(cdp)
@@ -920,6 +1019,26 @@ function nonNegativeStreamInteger(value: number | undefined, fallback: number, n
   if (value === undefined) return fallback
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('managedBrowser ' + name + ' must be a non-negative safe integer')
   return value
+}
+
+function boundedStreamInteger(value: number | undefined, fallback: number, min: number, max: number, name: string): number {
+  const resolved = value ?? fallback
+  if (!Number.isSafeInteger(resolved) || resolved < min || resolved > max) {
+    throw new Error('managedBrowser ' + name + ' must be an integer from ' + min + ' to ' + max)
+  }
+  return resolved
+}
+
+function jpegQuality(value: number | undefined, fallback: number, name: string): number {
+  return boundedStreamInteger(value, fallback, 1, 100, name)
+}
+
+function jpegScale(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback
+  if (!Number.isFinite(resolved) || resolved <= 0 || resolved > 4) {
+    throw new Error('managedBrowser ' + name + ' must be a finite number greater than 0 and at most 4')
+  }
+  return resolved
 }
 
 export function browserStreamCaptureScale(width: number, height: number, maxScale = HIGH_DENSITY_SCALE): number {

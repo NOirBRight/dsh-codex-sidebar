@@ -60,6 +60,8 @@ describe('managed Browser WebRTC encoder', () => {
       stunUrls: ['stun:stun.example.test:3478'],
       width: 640,
       height: 480,
+      frameRate: 12,
+      maxBitrate: 1_500_000,
     })
 
     await expect(encoder.start()).resolves.toEqual({ type: 'offer', sdp: 'offer-sdp' })
@@ -70,12 +72,27 @@ describe('managed Browser WebRTC encoder', () => {
       iceServers: [{ urls: ['stun:stun.example.test:3478'] }],
       width: 640,
       height: 480,
+      frameRate: 12,
+      maxBitrate: 1_500_000,
     }])
     expect(page.commands).toEqual([
       { type: 'create-offer' },
       { type: 'accept-answer', description: { type: 'answer', sdp: 'answer-sdp' } },
       { type: 'add-candidate', candidate: { candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 } },
     ])
+  })
+
+  it('rejects invalid direct-video encoder limits before creating a Page', () => {
+    const pageFactory = vi.fn(async () => new FakeMediaPage())
+    expect(() => new ManagedBrowserWebRtcEncoder({
+      identity: { ownerId: 'owner', generation: 1 }, pageFactory, width: 640, height: 480,
+      frameRate: 0, maxBitrate: 2_000_000,
+    })).toThrow('frameRate')
+    expect(() => new ManagedBrowserWebRtcEncoder({
+      identity: { ownerId: 'owner', generation: 1 }, pageFactory, width: 640, height: 480,
+      frameRate: 10, maxBitrate: 0,
+    })).toThrow('maxBitrate')
+    expect(pageFactory).not.toHaveBeenCalled()
   })
 
   it('replays only the latest queued frame after the peer connects', async () => {

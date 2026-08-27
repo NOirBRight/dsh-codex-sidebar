@@ -23,6 +23,8 @@ describe('real managed Browser WebRTC encoder', () => {
       pageFactory: () => runtime.createMediaPage(),
       width: 640,
       height: 480,
+      frameRate: 12,
+      maxBitrate: 1_500_000,
       onSignal: (signal) => { signals.push(signal) },
     })
     cleanups.push(async () => { await encoder.dispose() })
