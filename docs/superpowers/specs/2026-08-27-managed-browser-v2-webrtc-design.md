@@ -6,7 +6,7 @@
 
 ## Context
 
-The Sidebar Browser must remain an interactive browser inside the Sidebar, support sites that reject framing, let the human and Agent operate the same page, and work through desktop and Mobile clients without a separate desktop application. A Host-managed Chromium page therefore remains the authoritative page. An iframe cannot satisfy these requirements because sites such as GitHub deny framing and a cross-origin parent cannot provide the required DOM access, automation, screenshot evidence, or shared page state.
+The side-panel Browser must remain interactive inside the side panel, support sites that reject framing, let the human and Agent operate the same page, and work through desktop and Mobile clients without a separate desktop application. A Host-managed Chromium page therefore remains the authoritative page. An iframe cannot satisfy these requirements because sites such as GitHub deny framing and a cross-origin parent cannot provide the required DOM access, automation, screenshot evidence, or shared page state.
 
 The current display path uses CDP screencast events as change signals, captures JPEG screenshots, sends them over a WebSocket, and paints them into a Canvas. It has two independent defects:
 
@@ -20,7 +20,7 @@ DSH Mobile adds a second constraint. Its normal connection is an encrypted tunne
 ## Goals
 
 - Keep one Host-managed Chromium page for human interaction, Agent automation, and Browser evidence.
-- Keep Browser content inside the Sidebar on desktop and Mobile.
+- Keep Browser content inside the side panel on desktop and Mobile.
 - Make Host-committed page geometry the only authority for layout and input coordinates.
 - Remove visible resize oscillation for fixed presets and adaptive layout.
 - Prefer direct WebRTC video when ICE succeeds without TURN.
@@ -64,7 +64,7 @@ The control plane is always available before media begins. WebRTC is the preferr
 
 Managed Browser v2 keeps three distinct sizes:
 
-- `containerSize`: the local Sidebar display area.
+- `containerSize`: the local side-panel display area.
 - `committedViewport`: the Host-confirmed Chromium CSS viewport.
 - `encodedSize`: the JPEG or video pixel dimensions.
 
@@ -95,7 +95,7 @@ Selecting a fixed preset sends one layout proposal. The Host validates and appli
 
 ### Adaptive layout
 
-In `fit` mode, the client measures the Browser container and proposes a clamped CSS viewport only after the measurement remains stable for a configurable settle interval. It applies configurable jitter hysteresis and retains only the latest unsent proposal. While the human drags the Sidebar, the client scales the last good presentation locally and does not resize Chromium continuously.
+In `fit` mode, the client measures the Browser container and proposes a clamped CSS viewport only after the measurement remains stable for a configurable settle interval. It applies configurable jitter hysteresis and retains only the latest unsent proposal. While the human drags the side panel, the client scales the last good presentation locally and does not resize Chromium continuously.
 
 The Host serializes layout commits and retains only the latest pending proposal. A commit is published only after `page.setViewportSize()` completes. Media startup waits for the initial commit, so a connection does not display an initial frame with unrelated default geometry.
 
@@ -138,15 +138,15 @@ One control connection owns a Browser Tab presentation. A newer connection repla
 
 ## Input model
 
-The client maps pointer, touch, wheel, annotation, and IME coordinates from the displayed surface into the currently presented `committedViewport`. Every input message names that layout revision. The Host accepts input only for its current revision and returns a bounded stale-layout result otherwise.
+The client maps pointer, touch, wheel, evidence mark, and IME coordinates from the displayed surface into the currently presented `committedViewport`. Every input message names that layout revision. The Host accepts input only for its current revision and returns a bounded stale-layout result otherwise.
 
 Move and wheel coalescing remains client-side. A pending layout switch pauses new input rather than guessing coordinates across a page reflow. Keyboard and IME input retain their current document focus behavior.
 
 ## Direct WebRTC media
 
-Each visible Browser Tab may own one Sidebar-managed RTCPeerConnection. Signaling rides the authenticated control WebSocket. The media peer does not reuse the DSH Mobile Pairing peer because that peer is absent on desktop, may remain on a tunnel route, and has an independent lifecycle.
+Each visible Browser Tab may own one plugin-managed RTCPeerConnection. Signaling rides the authenticated control WebSocket. The media peer does not reuse the DSH Mobile Pairing peer because that peer is absent on desktop, may remain on a tunnel route, and has an independent lifecycle.
 
-ICE is STUN-only. TURN URLs are rejected by Sidebar configuration. A configurable negotiation deadline bounds connection setup. Failure immediately selects JPEG fallback. Failed connections do not retry continuously; retry is permitted after a network-change signal, Tab reactivation, or explicit user action and is rate-limited by a configurable cooldown.
+ICE is STUN-only. TURN URLs are rejected by `dsh-codex-sidebar` configuration. A configurable negotiation deadline bounds connection setup. Failure immediately selects JPEG fallback. Failed connections do not retry continuously; retry is permitted after a network-change signal, Tab reactivation, or explicit user action and is rate-limited by a configurable cooldown.
 
 The client does not treat ICE connection as proof that video is usable. If autoplay, decode, or first-frame presentation fails, it sends an exact `media-decline`; the Host releases that attempt and resumes JPEG fallback. Retry remains available when no client peer was created, such as Host capacity fallback.
 
@@ -172,13 +172,13 @@ JPEG fallback is an interaction-first remote page, not continuous animation stre
 
 The Host retains at most one capture, one delivered unacknowledged frame, and one latest dirty request. JPEG frames include layout revision and media generation. The client paints and then acknowledges a valid frame, acknowledges a decodable protocol frame whose image fails, and never advances flow control for stale, future, or duplicate acknowledgements.
 
-Origin-less Mobile tunnel connections use a conservative raw-JPEG ceiling. The tunnel encodes a Sidebar JSON Base64 frame inside another Base64 `ws-msg`; raw bytes therefore expand by approximately 16/9 before envelopes and encryption. A default ceiling near 96 KiB keeps the resulting plaintext safely below the existing 200 KiB limit. The exact ceiling is configurable and validated against the tunnel envelope in tests.
+Origin-less Mobile tunnel connections use a conservative raw-JPEG ceiling. The tunnel encodes a side-panel JSON Base64 frame inside another Base64 `ws-msg`; raw bytes therefore expand by approximately 16/9 before envelopes and encryption. A default ceiling near 96 KiB keeps the resulting plaintext safely below the existing 200 KiB limit. The exact ceiling is configurable and validated against the tunnel envelope in tests.
 
 If an image exceeds its route budget, the Host reduces JPEG quality and encoded resolution while retaining the same CSS viewport. It never reduces `committedViewport` to fit a transport budget. If the minimum display profile still exceeds the budget, the Host retains the last good frame and reports a bounded degraded-media status. Evidence capture is separate from this path.
 
 ## Browser evidence
 
-Browser annotation evidence continues to capture the exact committed viewport and current DOM/accessibility boxes from the target Page. It does not reuse a video frame or low-quality fallback frame. Evidence uses the committed layout revision and document identity so a stale selection cannot be attached to a reflowed or navigated document.
+Browser evidence mark evidence continues to capture the exact committed viewport and current DOM/accessibility boxes from the target Page. It does not reuse a video frame or low-quality fallback frame. Evidence uses the committed layout revision and document identity so a stale selection cannot be attached to a reflowed or navigated document.
 
 Mobile evidence transfer requires a bounded, explicit mechanism compatible with the existing tunnel body/chunk limits. It must not weaken the realtime fallback ceiling or silently send an oversized WebSocket frame.
 
@@ -239,7 +239,7 @@ Defaults are defined with the implementation plan after the feasibility measurem
 - Verify the current tunnel WebSocket facade preserves signaling and bounded fallback frames.
 - Add only generic transport capability or error projection if the existing facade lacks it.
 - Document the tightly bounded Browser fallback exception to the normal no-image tunnel policy.
-- Do not implement a second Browser, expose Pairing peer internals, or make Sidebar depend on Pairing state.
+- Do not implement a second Browser, expose Pairing peer internals, or make the side panel depend on Pairing state.
 
 ### DSH Core
 
@@ -267,7 +267,7 @@ The primary regression drives a committed 1280 x 800 viewport while injecting al
 Additional automated coverage includes:
 
 - one hundred ResizeObserver jitter events produce at most one settled fit commit;
-- continuous Sidebar drag produces local scaling and one final remote resize;
+- continuous side-panel drag produces local scaling and one final remote resize;
 - stale/future layout commits, frames, acknowledgements, candidates, and generations are ignored;
 - fixed presets never consume container resize proposals;
 - Mobile IME open/close does not resize Chromium;
@@ -284,7 +284,7 @@ Additional automated coverage includes:
 2. Android receive spike: physical Android WebView over IPv6/direct-capable network.
 3. Tunnel fallback: physical Android on a route forced to Tunnel, stable click/type/scroll at low frame rate and no frame-limit close.
 4. Desktop remote: browser outside the Host LAN, direct WebRTC when reachable and automatic JPEG fallback otherwise.
-5. Evidence: annotation screenshot and DOM locator remain exact in every route.
+5. Evidence: evidence mark screenshot and DOM locator remain exact in every route.
 
 ### Lab acceptance
 
@@ -306,7 +306,7 @@ The final feature contains authoritative geometry and direct media, but implemen
 4. Add WebRTC negotiation, direct media, and lifecycle cleanup.
 5. Add and budget interaction-first JPEG fallback.
 6. Validate desktop remote, Android direct, and Android tunnel routes.
-7. Update Sidebar and Mobile decisions and operator documentation.
+7. Update side-panel and Mobile decisions and operator documentation.
 8. Release through isolated tags and 3082 acceptance before any production promotion.
 
 This sequence isolates failures without creating two product architectures. Every stage uses the same control protocol and layout model.
@@ -314,7 +314,7 @@ This sequence isolates failures without creating two product architectures. Ever
 ## Alternatives rejected
 
 - **Direct iframe:** blocked by common framing policies and cannot provide the shared automation/evidence semantics.
-- **External browser Tab:** violates the in-Sidebar Browser requirement.
+- **External browser Tab:** violates the in-side-panel Browser requirement.
 - **Desktop client or native WebView:** creates a separate platform product and maintenance surface.
 - **Fixed viewport only:** stable but wastes available space and does not satisfy adaptive desktop and Mobile use.
 - **WebRTC without layout revision:** changes transport while preserving the resize defect.

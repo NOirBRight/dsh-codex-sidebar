@@ -76,10 +76,10 @@ export type BrowserStreamProfileConfig = {
 }
 
 export function browserStreamTransportProfile(
-  origin: string | undefined,
+  route: 'desktop' | 'mobile',
   config: BrowserStreamProfileConfig = {},
 ): BrowserStreamTransportProfile {
-  return origin === undefined || origin.length === 0
+  return route === 'mobile'
     ? {
         frameEncoding: 'json-base64-v2',
         quality: jpegQuality(config.mobileJpegQuality, MANAGED_BROWSER_MOBILE_STREAM_QUALITY, 'mobileJpegQuality'),
@@ -276,7 +276,7 @@ export class ManagedBrowserStream {
     }
     this.#profiles = {
       desktop: browserStreamTransportProfile('desktop', profileConfig),
-      mobile: browserStreamTransportProfile(undefined, profileConfig),
+      mobile: browserStreamTransportProfile('mobile', profileConfig),
     }
     this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
     if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')

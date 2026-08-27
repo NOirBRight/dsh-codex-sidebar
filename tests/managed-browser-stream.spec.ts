@@ -450,9 +450,9 @@ describe('managed browser stream protocol', () => {
   })
 
   it('uses a low-bandwidth profile for Origin-less Mobile tunnel sockets', () => {
-    expect(browserStreamTransportProfile(undefined)).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4, interactionBurstFrames: 4 })
-    expect(browserStreamTransportProfile('http://127.0.0.1:3080')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2, interactionBurstFrames: 20 })
-    expect(browserStreamTransportProfile(undefined, {
+    expect(browserStreamTransportProfile('mobile')).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4, interactionBurstFrames: 4 })
+    expect(browserStreamTransportProfile('desktop')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2, interactionBurstFrames: 20 })
+    expect(browserStreamTransportProfile('mobile', {
       mobileJpegQuality: 52,
       mobileJpegFrameIntervalMs: 400,
       mobileJpegMaxScale: 0.75,
@@ -463,7 +463,7 @@ describe('managed browser stream protocol', () => {
       frameEncoding: 'json-base64-v2', quality: 52, frameIntervalMs: 400,
       maxScale: 0.75, everyNthFrame: 6, interactionBurstFrames: 3, maxRawBytes: 72 * 1024,
     })
-    expect(browserStreamTransportProfile('http://127.0.0.1:3080', {
+    expect(browserStreamTransportProfile('desktop', {
       desktopJpegQuality: 74,
       desktopJpegFrameIntervalMs: 125,
       desktopJpegMaxScale: 1.25,
@@ -478,12 +478,12 @@ describe('managed browser stream protocol', () => {
   })
 
   it('rejects invalid configured JPEG transport profiles', () => {
-    expect(() => browserStreamTransportProfile('https://host.test', { desktopJpegQuality: 101 })).toThrow('desktopJpegQuality')
-    expect(() => browserStreamTransportProfile(undefined, { mobileJpegFrameIntervalMs: 0 })).toThrow('mobileJpegFrameIntervalMs')
-    expect(() => browserStreamTransportProfile(undefined, { mobileJpegMaxScale: Number.NaN })).toThrow('mobileJpegMaxScale')
-    expect(() => browserStreamTransportProfile(undefined, { mobileScreencastEveryNthFrame: 0 })).toThrow('mobileScreencastEveryNthFrame')
-    expect(() => browserStreamTransportProfile(undefined, { mobileJpegInteractionBurstFrames: -1 })).toThrow('mobileJpegInteractionBurstFrames')
-    expect(() => browserStreamTransportProfile('https://host.test', { desktopJpegInteractionBurstFrames: 601 })).toThrow('desktopJpegInteractionBurstFrames')
+    expect(() => browserStreamTransportProfile('desktop', { desktopJpegQuality: 101 })).toThrow('desktopJpegQuality')
+    expect(() => browserStreamTransportProfile('mobile', { mobileJpegFrameIntervalMs: 0 })).toThrow('mobileJpegFrameIntervalMs')
+    expect(() => browserStreamTransportProfile('mobile', { mobileJpegMaxScale: Number.NaN })).toThrow('mobileJpegMaxScale')
+    expect(() => browserStreamTransportProfile('mobile', { mobileScreencastEveryNthFrame: 0 })).toThrow('mobileScreencastEveryNthFrame')
+    expect(() => browserStreamTransportProfile('mobile', { mobileJpegInteractionBurstFrames: -1 })).toThrow('mobileJpegInteractionBurstFrames')
+    expect(() => browserStreamTransportProfile('desktop', { desktopJpegInteractionBurstFrames: 601 })).toThrow('desktopJpegInteractionBurstFrames')
   })
 
   it('keeps twenty forced demands behind the configured hard frame interval with fake time', () => {
