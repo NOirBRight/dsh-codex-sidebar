@@ -55,6 +55,64 @@ export type DecodedBrowserFrame = {
   jpeg: Uint8Array
 }
 
+export type BrowserStreamFrameEncoding = 'binary-v1' | 'json-base64-v1'
+
+/** Declare the encodings and flow control understood by the Canvas client. */
+export function browserStreamHello(): {
+  type: 'hello'
+  version: 1
+  frameEncodings: BrowserStreamFrameEncoding[]
+  flowControl: ['frame-ack-v1']
+} {
+  return {
+    type: 'hello',
+    version: 1,
+    frameEncodings: ['binary-v1', 'json-base64-v1'],
+    flowControl: ['frame-ack-v1'],
+  }
+}
+
+export function browserStreamReady(value: string): { frameEncoding: BrowserStreamFrameEncoding; flowControl: 'frame-ack-v1' } | undefined {
+  try {
+    const message = JSON.parse(value) as { type?: unknown; version?: unknown; frameEncoding?: unknown; flowControl?: unknown }
+    if (message.type !== 'ready' || message.version !== 1 || message.flowControl !== 'frame-ack-v1') return undefined
+    if (message.frameEncoding !== 'binary-v1' && message.frameEncoding !== 'json-base64-v1') return undefined
+    return { frameEncoding: message.frameEncoding, flowControl: message.flowControl }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Decode and paint one frame only while its originating connection remains current.
+ * @param sequence Host frame sequence to acknowledge.
+ * @param decode Deferred frame decoder.
+ * @param isCurrent Whether the originating socket generation is still active.
+ * @param paint Synchronous Canvas paint operation.
+ * @param dispose Decoded-frame resource disposer.
+ * @param acknowledge ACK sender bound to the originating socket.
+ * @returns A promise that settles after decode, optional paint, disposal, and optional ACK.
+ */
+export async function paintBrowserFrameForConnection<T>(
+  sequence: number,
+  decode: () => Promise<T>,
+  isCurrent: () => boolean,
+  paint: (decoded: T) => void,
+  dispose: (decoded: T) => void,
+  acknowledge: (sequence: number) => void,
+): Promise<void> {
+  let disposeDecoded: (() => void) | undefined
+  try {
+    const decoded = await decode()
+    disposeDecoded = () => { dispose(decoded) }
+    if (!isCurrent()) return
+    paint(decoded)
+  } finally {
+    disposeDecoded?.()
+    if (isCurrent()) acknowledge(sequence)
+  }
+}
+
 export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
   if (value.byteLength < BROWSER_STREAM_HEADER_BYTES) throw new Error('Browser frame header is truncated')
   const view = new DataView(value)
@@ -66,6 +124,11 @@ export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
     height: view.getUint16(15),
     jpeg: new Uint8Array(value, BROWSER_STREAM_HEADER_BYTES),
   }
+}
+
+export function browserBinaryFrameSequence(value: ArrayBuffer): number | undefined {
+  if (value.byteLength < 5) return undefined
+  return new DataView(value).getUint32(1)
 }
 
 function looksLikeJsonText(value: string): boolean {
@@ -218,6 +281,17 @@ export function decodeBrowserJpegJson(value: string): DecodedBrowserFrame | unde
   }
 }
 
+export function browserJsonFrameSequence(value: string): number | undefined {
+  try {
+    const message = JSON.parse(value) as { type?: unknown; sequence?: unknown }
+    return message.type === 'frame' && typeof message.sequence === 'number' && Number.isSafeInteger(message.sequence) && message.sequence > 0
+      ? message.sequence
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function decodeBase64Bytes(value: string): Uint8Array {
   const bin = atob(value)
   const bytes = new Uint8Array(bin.length)
@@ -230,7 +304,8 @@ export function browserStreamSignalsReady(value: unknown): boolean {
   if (typeof value !== 'string') return false
   try {
     const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
-    if (message.type === 'ready' || message.type === 'frame') return true
+    if (message.type === 'ready') return browserStreamReady(value) !== undefined
+    if (message.type === 'frame') return true
     if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false
     return (message.projection as { status?: unknown }).status === 'ready'
   } catch {

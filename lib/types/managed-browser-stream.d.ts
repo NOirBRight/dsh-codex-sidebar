@@ -4,6 +4,7 @@ import type { Duplex } from 'node:stream';
 import type { ManagedBrowserRuntime, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts';
 export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
 export declare const MANAGED_BROWSER_STREAM_VERSION = 1;
+export declare const MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS = 5000;
 export declare const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100;
 export declare const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2;
 export declare const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250;
@@ -11,6 +12,7 @@ export declare const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4;
 export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
 export declare const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65;
 export type BrowserStreamTransportProfile = {
+    frameEncoding: 'binary-v1' | 'json-base64-v1';
     quality: number;
     maxScale: number;
     frameIntervalMs: number;
@@ -36,6 +38,7 @@ export type ManagedBrowserStreamOptions = {
     runtime: ManagedBrowserRuntime;
     now?: () => number;
     ticketTtlMs?: number;
+    handshakeTimeoutMs?: number;
 };
 export type BrowserInput = {
     type: 'wheel';
@@ -70,6 +73,10 @@ export declare class ManagedBrowserStream {
     dispose(): Promise<void>;
     consume(ticket: string): ManagedTabKey | undefined;
 }
+export declare function browserStreamVisualViewportOrigin(value: unknown): {
+    x: number;
+    y: number;
+};
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;

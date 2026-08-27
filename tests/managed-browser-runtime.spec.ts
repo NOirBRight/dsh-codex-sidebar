@@ -1,8 +1,8 @@
-import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
-import { hostname, tmpdir } from 'node:os'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { findBrowserExecutable, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -86,6 +86,110 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
     ...opts,
   })
   return { runtime, pages, closed }
+}
+
+function cacheContext(expectClear: boolean, clearError?: Error): {
+  context: {
+    newPage(): Promise<FakePage>
+    newCDPSession(page: unknown): Promise<{ send(method: string): Promise<void>; on(): void; off(): void; detach(): Promise<void> }>
+    on(): void
+    close(): Promise<void>
+  }
+  temporaryPage: FakePage
+  managedPages: FakePage[]
+  cacheCommands: string[]
+  observation: { cacheDetached: boolean; contextClosed: boolean }
+} {
+  const temporaryPage = new FakePage()
+  const managedPages: FakePage[] = []
+  const cacheCommands: string[] = []
+  const observation = { cacheDetached: false, contextClosed: false }
+  let temporaryClaimed = false
+  return {
+    temporaryPage,
+    managedPages,
+    cacheCommands,
+    observation,
+    context: {
+      async newPage() {
+        if (expectClear && !temporaryClaimed) {
+          temporaryClaimed = true
+          return temporaryPage
+        }
+        const page = new FakePage()
+        managedPages.push(page)
+        return page
+      },
+      async newCDPSession(page) {
+        if (page === temporaryPage && expectClear) {
+          return {
+            async send(method) {
+              cacheCommands.push(method)
+              if (method === 'Network.clearBrowserCache' && clearError !== undefined) throw clearError
+            },
+            on() {},
+            off() {},
+            async detach() { observation.cacheDetached = true },
+          }
+        }
+        return { async send() {}, on() {}, off() {}, async detach() {} }
+      },
+      on() {},
+      async close() { observation.contextClosed = true },
+    },
+  }
+}
+
+function cacheContextThatClosesDuringClear(): {
+  context: {
+    newPage(): Promise<FakePage>
+    newCDPSession(page: unknown): Promise<{ send(method: string): Promise<void>; on(): void; off(): void; detach(): Promise<void> }>
+    on(event: 'close', listener: () => void): void
+    close(): Promise<void>
+  }
+  temporaryPage: FakePage
+  cacheCommands: string[]
+} {
+  const temporaryPage = new FakePage()
+  const cacheCommands: string[] = []
+  const closeHandlers: Array<() => void> = []
+  let temporaryClaimed = false
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    for (const listener of closeHandlers) listener()
+  }
+  return {
+    temporaryPage,
+    cacheCommands,
+    context: {
+      async newPage() {
+        if (!temporaryClaimed) {
+          temporaryClaimed = true
+          return temporaryPage
+        }
+        if (closed) throw new Error('browserContext.newPage: Target page, context or browser has been closed')
+        return new FakePage()
+      },
+      async newCDPSession(page) {
+        if (page === temporaryPage) {
+          return {
+            async send(method) {
+              cacheCommands.push(method)
+              if (method === 'Network.clearBrowserCache') close()
+            },
+            on() {},
+            off() {},
+            async detach() {},
+          }
+        }
+        return { async send() {}, on() {}, off() {}, async detach() {} }
+      },
+      on(event, listener) { if (event === 'close') closeHandlers.push(listener) },
+      async close() { close() },
+    },
+  }
 }
 
 describe('ManagedBrowserRuntime', () => {
@@ -233,12 +337,14 @@ describe('ManagedBrowserRuntime', () => {
   it('keeps Chromium font shared memory on /dev/shm and uses a dense viewport', async () => {
     let ignored: string[] | undefined
     let scale: number | undefined
+    let args: string[] | undefined
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-shm-' + Math.random().toString(36).slice(2),
       launch: async (_profileDir, options) => {
         ignored = (options as { ignoreDefaultArgs?: string[] }).ignoreDefaultArgs
         scale = (options as { deviceScaleFactor?: number }).deviceScaleFactor
+        args = (options as { args?: string[] }).args
         return {
           async newPage() { return new FakePage() },
           async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
@@ -253,7 +359,150 @@ describe('ManagedBrowserRuntime', () => {
     expect(ignored).toContain('--disable-backgrounding-occluded-windows')
     expect(ignored).toContain('--disable-renderer-backgrounding')
     expect(scale).toBe(2)
+    expect(MANAGED_BROWSER_CACHE_BUDGET_BYTES).toBe(256 * 1024 * 1024)
+    expect(args).toContain('--disk-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
+    expect(args).toContain('--media-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
     await runtime.dispose()
+  })
+
+  it('clears Browser cache once through CDP only after an over-budget context launches', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-clear-'))
+    const cacheDir = join(profileDir, 'Default', 'Cache')
+    await mkdir(cacheDir, { recursive: true })
+    await mkdir(join(profileDir, 'Default', 'Local Storage'), { recursive: true })
+    await mkdir(join(profileDir, 'Default', 'IndexedDB'), { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '12345678')
+    await writeFile(join(profileDir, 'Default', 'Cookies'), 'cookie')
+    await writeFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'storage')
+    await writeFile(join(profileDir, 'Default', 'IndexedDB', 'keep'), 'database')
+    const box = cacheContext(true)
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => box.context,
+    })
+    await expect(runtime.ensure({ sessionId: 'cache-clear', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+    await expect(runtime.ensure({ sessionId: 'cache-clear', tabId: 'second' }, 'https://two.example')).resolves.toMatchObject({ status: 'ready' })
+    expect(box.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(box.observation.cacheDetached).toBe(true)
+    expect(box.temporaryPage.closed).toBe(true)
+    expect(box.managedPages).toHaveLength(2)
+    await expect(readFile(join(cacheDir, 'data'), 'utf8')).resolves.toBe('12345678')
+    await expect(readFile(join(profileDir, 'Default', 'Cookies'), 'utf8')).resolves.toBe('cookie')
+    await expect(readFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'utf8')).resolves.toBe('storage')
+    await expect(readFile(join(profileDir, 'Default', 'IndexedDB', 'keep'), 'utf8')).resolves.toBe('database')
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    expect((await readdir(join(profileDir, 'Default'))).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('does not clear Browser cache when the read-only estimate is within budget', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-within-budget-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-outside-'))
+    const cacheDir = join(profileDir, 'Default', 'Cache')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '1234')
+    await writeFile(join(outside, 'large'), '12345678')
+    await symlink(outside, join(profileDir, 'GPUCache'))
+    const box = cacheContext(false)
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 4,
+      launch: async () => box.context,
+    })
+    await runtime.ensure({ sessionId: 'cache-small', tabId: 'tab' }, 'https://example.com')
+    expect(box.cacheCommands).toEqual([])
+    expect(box.managedPages).toHaveLength(1)
+    expect(box.temporaryPage.closed).toBe(false)
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  })
+
+  it('warns and keeps the launched context usable when Browser cache clear fails', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-clear-failure-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const box = cacheContext(true, new Error('CDP clear failed'))
+    const warnings: string[] = []
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      onWarning: (message) => { warnings.push(message) },
+      launch: async () => box.context,
+    })
+    await expect(runtime.ensure({ sessionId: 'cache-failure', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+    expect(box.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(box.observation.cacheDetached).toBe(true)
+    expect(box.temporaryPage.closed).toBe(true)
+    expect(box.managedPages).toHaveLength(1)
+    expect(warnings).toEqual([expect.stringContaining('Browser cache clear failed: CDP clear failed')])
+    await runtime.dispose()
+    expect(box.observation.contextClosed).toBe(true)
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('relaunches after the context exits while Browser cache cleanup is running', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-close-during-clear-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const first = cacheContextThatClosesDuringClear()
+    const second = cacheContext(true)
+    const launchContexts = [first.context, second.context]
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => {
+        const context = launchContexts.shift()
+        if (context === undefined) throw new Error('unexpected extra launch')
+        return context
+      },
+    })
+
+    await expect(runtime.ensure({ sessionId: 'cache-close', tabId: 'first' }, 'https://one.example')).rejects.toThrow('closed')
+    await expect(runtime.ensure({ sessionId: 'cache-close', tabId: 'second' }, 'https://two.example')).resolves.toMatchObject({ status: 'ready' })
+    expect(first.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(first.temporaryPage.closed).toBe(true)
+    expect(second.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(second.managedPages).toHaveLength(1)
+
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('lets Chromium choose one shared-profile winner and only that context clears cache', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-concurrent-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const winner = cacheContext(true)
+    let profileOwned = false
+    let launchCalls = 0
+    const launch = async () => {
+      launchCalls += 1
+      if (profileOwned) throw new Error('Chromium profile is already in use')
+      profileOwned = true
+      return winner.context
+    }
+    const first = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, cacheBudgetBytes: 1, launch })
+    const second = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, cacheBudgetBytes: 1, launch })
+    const results = await Promise.allSettled([
+      first.ensure({ sessionId: 'concurrent', tabId: 'first' }, 'https://one.example'),
+      second.ensure({ sessionId: 'concurrent', tabId: 'second' }, 'https://two.example'),
+    ])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(launchCalls).toBe(2)
+    expect(winner.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(winner.temporaryPage.closed).toBe(true)
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    await Promise.all([first.dispose(), second.dispose()])
+    await rm(profileDir, { recursive: true, force: true })
   })
 
   it('keeps the stream target while a public page is still navigating', async () => {
@@ -343,31 +592,6 @@ describe('ManagedBrowserRuntime', () => {
       else process.env.DSH_CODEX_BROWSER_EXECUTABLE = previousExplicit
       await rm(cacheRoot, { recursive: true, force: true })
     }
-  })
-
-  it('removes a dead Chromium singleton before relaunching the persistent profile', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-stale-chromium-'))
-    await symlink(hostname() + '-2147483646', join(profileDir, 'SingletonLock'))
-    await symlink('/tmp/dcs-stale-singleton/socket', join(profileDir, 'SingletonSocket'))
-    await symlink('stale-cookie', join(profileDir, 'SingletonCookie'))
-    let staleAtLaunch = false
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      launch: async () => {
-        staleAtLaunch = await lstat(join(profileDir, 'SingletonLock')).then(() => true, () => false)
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
-    })
-    await runtime.ensure({ sessionId: 'stale', tabId: 'tab' }, 'https://example.com')
-    expect(staleAtLaunch).toBe(false)
-    await runtime.dispose()
-    await rm(profileDir, { recursive: true, force: true })
   })
 
   it('keeps the requested http URL when Chromium lands on chrome-error://', async () => {

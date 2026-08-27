@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -145,7 +145,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     let reconnect: ReturnType<typeof setTimeout> | undefined
     let attempt = 0
     let decoding = false
-    let latest: Uint8Array | undefined
+    let connectionGeneration = 0
+    let latest: { sequence: number; jpeg: Uint8Array; socket: WebSocket; generation: number } | undefined
 
     if (!visible) {
       setStatus('connecting')
@@ -157,20 +158,27 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       decoding = true
       try {
         while (!stopped && latest !== undefined) {
-          const jpeg = latest
+          const frame = latest
           latest = undefined
           const canvas = canvasRef.current
           if (canvas === null) return
-          const bitmap = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }))
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width
-            canvas.height = bitmap.height
-          }
-          const context = canvas.getContext('bitmaprenderer')
-          if (context !== null) context.transferFromImageBitmap(bitmap)
-          else canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
-          bitmap.close()
-          setStatus('ready')
+          await paintBrowserFrameForConnection(
+            frame.sequence,
+            () => createImageBitmap(new Blob([frame.jpeg], { type: 'image/jpeg' })),
+            () => !stopped && socketRef.current === frame.socket && connectionGeneration === frame.generation,
+            (bitmap) => {
+              if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+                canvas.width = bitmap.width
+                canvas.height = bitmap.height
+              }
+              const context = canvas.getContext('bitmaprenderer')
+              if (context !== null) context.transferFromImageBitmap(bitmap)
+              else canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
+              setStatus('ready')
+            },
+            (bitmap) => { bitmap.close() },
+            (sequence) => { send(frame.socket, { type: 'frame-ack', sequence }) },
+          )
         }
       } catch {
         // DSH Mobile's tunnel used to UTF-8-mangle binary JPEGs; skip a bad frame.
@@ -188,14 +196,19 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         return
       }
       const socket = new WebSocket(browserWebSocketUrl(ticket.path))
+      const generation = ++connectionGeneration
       socket.binaryType = 'arraybuffer'
       socketRef.current = socket
+      const isCurrent = (): boolean => !stopped && socketRef.current === socket && connectionGeneration === generation
       socket.onopen = () => {
+        if (!isCurrent()) return
         attempt = 0
+        send(socket, browserStreamHello())
         sendLayout(socket)
         if (annotateRef.current) requestOutline()
       }
-      const acceptJpeg = (jpeg: Uint8Array, css?: { width: number; height: number }): void => {
+      const acceptJpeg = (sequence: number, jpeg: Uint8Array, css?: { width: number; height: number }): void => {
+        if (!isCurrent()) return
         if (css !== undefined && css.width > 0 && css.height > 0) {
           viewportRef.current = css
           const root = rootRef.current
@@ -210,18 +223,21 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
             }
           }
         }
-        latest = jpeg
+        latest = { sequence, jpeg, socket, generation }
         void drawLatest()
       }
       const acceptBinary = (buffer: ArrayBuffer): void => {
         try {
           const frame = decodeBrowserFrame(buffer)
-          if (frame.version === 1) acceptJpeg(frame.jpeg, { width: frame.width, height: frame.height })
+          if (frame.version === 1) acceptJpeg(frame.sequence, frame.jpeg, { width: frame.width, height: frame.height })
+          else if (isCurrent()) send(socket, { type: 'frame-ack', sequence: frame.sequence })
         } catch {
-          // Ignore truncated binary leftovers from the mobile tunnel.
+          const sequence = browserBinaryFrameSequence(buffer)
+          if (sequence !== undefined && isCurrent()) send(socket, { type: 'frame-ack', sequence })
         }
       }
       socket.onmessage = (event) => {
+        if (!isCurrent()) return
         const buffer = browserStreamFrameBuffer(event.data)
         if (buffer !== undefined) {
           acceptBinary(buffer)
@@ -237,7 +253,12 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (text === undefined) return
         const jpegFrame = decodeBrowserJpegJson(text)
         if (jpegFrame !== undefined) {
-          acceptJpeg(jpegFrame.jpeg, { width: jpegFrame.width, height: jpegFrame.height })
+          acceptJpeg(jpegFrame.sequence, jpegFrame.jpeg, { width: jpegFrame.width, height: jpegFrame.height })
+          return
+        }
+        const failedFrame = browserJsonFrameSequence(text)
+        if (failedFrame !== undefined) {
+          send(socket, { type: 'frame-ack', sequence: failedFrame })
           return
         }
         if (browserStreamSignalsReady(text)) setStatus('ready')
@@ -260,7 +281,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         }
         try {
           const message = JSON.parse(text) as { type?: unknown; projection?: unknown }
-          if (message.type === 'ready') setStatus('ready')
+          if (message.type === 'ready') {
+            if (browserStreamReady(text) === undefined) socket.close(1002, 'Unsupported Browser stream protocol')
+            else setStatus('ready')
+          }
           if (message.type === 'state' && managedProjection(message.projection)) {
             if (documentRef.current !== undefined && documentRef.current !== message.projection.documentId) {
               setOutlineNodes([])
@@ -275,10 +299,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           // APP WebViews sometimes deliver non-protocol text; keep the last good frame.
         }
       }
-      socket.onerror = () => { setStatus('error') }
+      socket.onerror = () => { if (isCurrent()) setStatus('error') }
       socket.onclose = () => {
-        if (socketRef.current === socket) socketRef.current = null
-        if (!stopped) reconnect = setTimeout(() => { void connect() }, Math.min(2000, 250 * 2 ** attempt++))
+        const wasCurrent = socketRef.current === socket
+        if (wasCurrent) socketRef.current = null
+        if (wasCurrent && !stopped) reconnect = setTimeout(() => { void connect() }, Math.min(2000, 250 * 2 ** attempt++))
       }
     }
 

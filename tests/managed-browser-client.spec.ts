@@ -1,8 +1,82 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
+  it('offers both frame carriers and frame ACK flow control in hello', () => {
+    expect(browserStreamHello()).toEqual({
+      type: 'hello',
+      version: 1,
+      frameEncodings: ['binary-v1', 'json-base64-v1'],
+      flowControl: ['frame-ack-v1'],
+    })
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1, frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' }))).toEqual({
+      frameEncoding: 'binary-v1',
+      flowControl: 'frame-ack-v1',
+    })
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1 }))).toBeUndefined()
+  })
+
+  it('ACKs only after Canvas paint settles and also ACKs a decode failure', async () => {
+    const events: string[] = []
+    let finish: ((value: string) => void) | undefined
+    const painting = paintBrowserFrameForConnection(
+      7,
+      () => new Promise<string>((resolve) => { finish = resolve }),
+      () => true,
+      (value) => { events.push('paint:' + value) },
+      (value) => { events.push('dispose:' + value) },
+      (sequence) => { events.push('ack:' + sequence) },
+    )
+    expect(events).toEqual([])
+    finish?.('bitmap')
+    await painting
+    expect(events).toEqual(['paint:bitmap', 'dispose:bitmap', 'ack:7'])
+
+    await expect(paintBrowserFrameForConnection(
+      8,
+      async () => { throw new Error('bad jpeg') },
+      () => true,
+      () => { throw new Error('must not paint') },
+      () => { throw new Error('must not dispose') },
+      (sequence) => { events.push('ack:' + sequence) },
+    )).rejects.toThrow('bad jpeg')
+    expect(events.at(-1)).toBe('ack:8')
+    const truncated = new ArrayBuffer(5)
+    new DataView(truncated).setUint32(1, 9)
+    expect(browserBinaryFrameSequence(truncated)).toBe(9)
+    expect(browserJsonFrameSequence('{"type":"frame","sequence":10,"jpeg":"bad"}')).toBe(10)
+  })
+
+  it('drops a delayed decode after reconnect without painting or ACKing the new socket', async () => {
+    const oldAcks: number[] = []
+    const newAcks: number[] = []
+    const paints: string[] = []
+    const disposals: string[] = []
+    let activeConnection = 'old'
+    let finishDecode: ((value: string) => void) | undefined
+    const work = paintBrowserFrameForConnection(
+      11,
+      () => new Promise<string>((resolve) => { finishDecode = resolve }),
+      () => activeConnection === 'old',
+      (value) => { paints.push(value) },
+      (value) => { disposals.push(value) },
+      (sequence) => {
+        if (activeConnection === 'old') oldAcks.push(sequence)
+        else newAcks.push(sequence)
+      },
+    )
+
+    activeConnection = 'new'
+    finishDecode?.('old bitmap')
+    await work
+
+    expect(paints).toEqual([])
+    expect(disposals).toEqual(['old bitmap'])
+    expect(oldAcks).toEqual([])
+    expect(newAcks).toEqual([])
+  })
+
   it('letterboxes a desktop JPEG into a phone sidebar without stretching', () => {
     const surface = browserStreamFitSurface({ width: 390, height: 600 }, { width: 720, height: 860 })
     expect(surface.width / surface.height).toBeCloseTo(720 / 860, 2)
@@ -55,7 +129,8 @@ describe('managed Browser stream client', () => {
 
   it('removes the Connecting overlay when a frame or ready projection arrives', () => {
     expect(browserStreamSignalsReady(new ArrayBuffer(17))).toBe(true)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 1, frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(false)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
     expect(browserStreamSignalsReady('not json')).toBe(false)

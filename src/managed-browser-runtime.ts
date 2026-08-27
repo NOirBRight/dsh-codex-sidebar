@@ -1,8 +1,8 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 
 import { constants } from 'node:fs'
-import { access, mkdir, readlink, readdir, unlink } from 'node:fs/promises'
-import { homedir, hostname } from 'node:os'
+import { access, lstat, mkdir, readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
 import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
@@ -11,6 +11,7 @@ import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
 
 export const MANAGED_BROWSER_MAX_LIVE_PAGES = 3
 export const MANAGED_BROWSER_IDLE_MS = 120_000
+export const MANAGED_BROWSER_CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 export const PLAYWRIGHT_IGNORE_DEFAULT_ARGS = [
   '--disable-dev-shm-usage',
   '--disable-background-timer-throttling',
@@ -24,6 +25,8 @@ export type ManagedBrowserConfig = {
   executablePath?: string
   profileDir?: string
   headless?: boolean
+  /** Maximum total bytes retained in allowlisted Chromium-derived cache directories. */
+  cacheBudgetBytes?: number
 }
 
 export type ManagedBrowserStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed'
@@ -113,6 +116,7 @@ type LaunchContext = (profileDir: string, opts: {
   viewport: { width: number; height: number }
   deviceScaleFactor: number
   ignoreDefaultArgs: string[]
+  args: string[]
 }) => Promise<ContextLike>
 
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
@@ -122,6 +126,7 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   now?: () => number
   maxLivePages?: number
   idleMs?: number
+  onWarning?: (message: string) => void
 }
 
 type RefTarget = { documentId: string; selector: string }
@@ -162,6 +167,8 @@ export class ManagedBrowserRuntime {
   #now: () => number
   #maxLivePages: number
   #idleMs: number
+  #cacheBudgetBytes: number
+  #onWarning: (message: string) => void
   #reaping = false
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
@@ -174,6 +181,8 @@ export class ManagedBrowserRuntime {
     this.#now = opts.now ?? Date.now
     this.#maxLivePages = opts.maxLivePages ?? MANAGED_BROWSER_MAX_LIVE_PAGES
     this.#idleMs = opts.idleMs ?? MANAGED_BROWSER_IDLE_MS
+    this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
+    this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
   }
 
   keyOf(tab: ManagedTabKey): string {
@@ -446,19 +455,24 @@ export class ManagedBrowserRuntime {
     const pending = (async () => {
       const executablePath = await findBrowserExecutable(this.#executablePath)
       await mkdir(this.profileDir, { recursive: true, mode: 0o700 })
-      await clearStaleChromiumSingleton(this.profileDir)
-      return this.#launch(this.profileDir, {
+      const derivedCacheBytes = await estimateDerivedChromiumCacheBytes(this.profileDir).catch((error) => {
+        this.#onWarning('managed Browser cache size estimate failed: ' + errorMessage(error))
+        return 0
+      })
+      const context = await this.#launch(this.profileDir, {
         executablePath,
         headless: this.headless,
         viewport: DEFAULT_VIEWPORT,
         deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
         ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
+        args: [
+          '--disk-cache-size=' + this.#cacheBudgetBytes,
+          '--media-cache-size=' + this.#cacheBudgetBytes,
+        ],
       })
-    })()
-    this.#context = pending
-    try {
-      const context = await pending
+      let contextClosed = false
       context.on('close', () => {
+        contextClosed = true
         if (this.#context !== pending) return
         this.#context = undefined
         const records = [...this.#pages.values()]
@@ -470,7 +484,17 @@ export class ManagedBrowserRuntime {
           this.#publish(record)
         }
       })
+      if (derivedCacheBytes > this.#cacheBudgetBytes) {
+        await clearChromiumBrowserCache(context).catch((error) => {
+          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
+        })
+      }
+      if (contextClosed) throw new Error('Chromium context closed during startup')
       return context
+    })()
+    this.#context = pending
+    try {
+      return await pending
     } catch (error) {
       if (this.#context === pending) this.#context = undefined
       throw error
@@ -641,34 +665,71 @@ function playwrightCacheRoot(env: NodeJS.ProcessEnv): string {
 }
 
 
-const CHROMIUM_SINGLETON_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'] as const
+const CHROMIUM_DERIVED_CACHE_DIRS = [
+  ['Default', 'Cache'],
+  ['Default', 'Code Cache'],
+  ['Default', 'GPUCache'],
+  ['GPUCache'],
+  ['ShaderCache'],
+  ['GrShaderCache'],
+  ['GraphiteDawnCache'],
+  ['DawnWebGPUCache'],
+  ['DawnGraphiteCache'],
+] as const
 
-async function clearStaleChromiumSingleton(profileDir: string): Promise<void> {
-  let owner: string
-  try {
-    owner = await readlink(join(profileDir, 'SingletonLock'))
-  } catch {
-    return
+async function estimateDerivedChromiumCacheBytes(profileDir: string): Promise<number> {
+  let total = 0
+  for (const segments of CHROMIUM_DERIVED_CACHE_DIRS) {
+    const path = join(profileDir, ...segments)
+    const info = await lstat(path).catch((error: unknown) => {
+      if (hasErrorCode(error, 'ENOENT')) return undefined
+      throw error
+    })
+    if (info === undefined || info.isSymbolicLink() || !info.isDirectory()) continue
+    total += await directoryBytesWithoutSymlinks(path)
   }
-  const prefix = hostname() + '-'
-  if (!owner.startsWith(prefix)) return
-  const rawPid = owner.slice(prefix.length)
-  if (!/^\d+$/.test(rawPid)) return
-  const pid = Number(rawPid)
-  if (!Number.isSafeInteger(pid) || pid < 1) return
+  return total
+}
+
+async function clearChromiumBrowserCache(context: ContextLike): Promise<void> {
+  const page = await context.newPage()
+  let cdp: ManagedCdpSession | undefined
+  const failures: unknown[] = []
   try {
-    process.kill(pid, 0)
-    return
+    cdp = await context.newCDPSession(page)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.clearBrowserCache')
   } catch (error) {
-    if (!hasErrorCode(error, 'ESRCH')) return
-  }
-  await Promise.all(CHROMIUM_SINGLETON_FILES.map(async (name) => {
-    try {
-      await unlink(join(profileDir, name))
-    } catch (error) {
-      if (!hasErrorCode(error, 'ENOENT')) throw error
+    failures.push(error)
+  } finally {
+    if (cdp !== undefined) {
+      await cdp.detach().catch((error) => { failures.push(error) })
     }
-  }))
+    await page.close().catch((error) => { failures.push(error) })
+  }
+  if (failures.length > 0) throw failures[0]
+}
+
+async function directoryBytesWithoutSymlinks(path: string): Promise<number> {
+  let bytes = 0
+  const entries = await readdir(path, { withFileTypes: true }).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ENOENT')) return []
+    throw error
+  })
+  for (const entry of entries) {
+    const child = join(path, entry.name)
+    const info = await lstat(child).catch((error: unknown) => {
+      if (hasErrorCode(error, 'ENOENT')) return undefined
+      throw error
+    })
+    if (info === undefined || info.isSymbolicLink()) continue
+    if (info.isDirectory()) {
+      bytes += await directoryBytesWithoutSymlinks(child)
+      continue
+    }
+    if (info.isFile()) bytes += info.size
+  }
+  return bytes
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -686,6 +747,7 @@ async function launchPlaywright(profileDir: string, opts: {
   viewport: { width: number; height: number }
   deviceScaleFactor: number
   ignoreDefaultArgs: string[]
+  args: string[]
 }): Promise<ContextLike> {
   await mkdir(dirname(profileDir), { recursive: true, mode: 0o700 })
   const context = await chromium.launchPersistentContext(profileDir, {
@@ -694,8 +756,19 @@ async function launchPlaywright(profileDir: string, opts: {
     viewport: opts.viewport,
     deviceScaleFactor: opts.deviceScaleFactor,
     ignoreDefaultArgs: opts.ignoreDefaultArgs,
+    args: opts.args,
   })
   return context as unknown as ContextLike
+}
+
+function cacheBudgetBytes(value: number | undefined): number {
+  const resolved = value ?? MANAGED_BROWSER_CACHE_BUDGET_BYTES
+  if (!Number.isSafeInteger(resolved) || resolved < 0) throw new Error('managedBrowser.cacheBudgetBytes must be a non-negative safe integer')
+  return resolved
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function project(record: PageRecord): ManagedBrowserProjection {
