@@ -1,20 +1,12 @@
 /** Chromium-owned Canvas/WebRTC encoder isolated from the Browser control protocol. */
 
+import type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
+
+export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
+
 export type BrowserMediaIdentity = {
   readonly ownerId: string
   readonly generation: number
-}
-
-export type BrowserRtcDescription = {
-  type: 'offer' | 'answer'
-  sdp: string
-}
-
-export type BrowserRtcCandidate = {
-  candidate: string
-  sdpMid?: string | null
-  sdpMLineIndex?: number | null
-  usernameFragment?: string | null
 }
 
 export type BrowserMediaFrame = {

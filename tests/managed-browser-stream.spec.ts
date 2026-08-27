@@ -63,6 +63,7 @@ describe('managed browser stream protocol', () => {
         version: MANAGED_BROWSER_STREAM_VERSION,
         frameEncodings: ['binary-v2', 'json-base64-v2'],
         flowControl: ['frame-ack-v2'],
+        media: { webrtcVideo: false },
       }))
       const first = await Promise.race([
         new Promise<string>((resolve, reject) => {
@@ -157,7 +158,7 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
           resolve()
         })
         client.once('error', reject)
@@ -203,7 +204,7 @@ describe('managed browser stream protocol', () => {
       client.on('message', (data, isBinary) => { messages.push({ data, isBinary }) })
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
           resolve()
         })
         client.once('error', reject)
@@ -257,7 +258,7 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
           resolve()
         })
         client.once('error', reject)
@@ -317,7 +318,7 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
           resolve()
         })
         client.once('error', reject)

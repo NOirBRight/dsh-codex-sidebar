@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { findBrowserExecutable, PLAYWRIGHT_IGNORE_DEFAULT_ARGS } from '../src/managed-browser-runtime.ts'
-import { ManagedBrowserWebRtcEncoder, type BrowserMediaPage, type BrowserMediaSignal, type BrowserRtcCandidate, type BrowserRtcDescription } from '../src/managed-browser-webrtc.ts'
+import { findBrowserExecutable, ManagedBrowserRuntime, PLAYWRIGHT_IGNORE_DEFAULT_ARGS } from '../src/managed-browser-runtime.ts'
+import { ManagedBrowserWebRtcEncoder, type BrowserMediaSignal, type BrowserRtcCandidate, type BrowserRtcDescription } from '../src/managed-browser-webrtc.ts'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -13,13 +13,14 @@ describe('real managed Browser WebRTC encoder', () => {
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('replays the latest pre-connect frame and changes encoded size without leaking its Page', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'dcs-webrtc-'))
     const context = await launchContext(profileDir)
-    cleanups.push(async () => { await context.close(); await rm(profileDir, { recursive: true, force: true }) })
+    const runtime = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, launch: async () => context as never })
+    cleanups.push(async () => { await runtime.dispose(); await rm(profileDir, { recursive: true, force: true }) })
     const receiver = await context.newPage()
     const pageCountWithReceiver = context.pages().length
     const signals: BrowserMediaSignal[] = []
     const encoder = new ManagedBrowserWebRtcEncoder({
       identity: { ownerId: 'real-owner', generation: 1 },
-      pageFactory: () => ownedPage(context),
+      pageFactory: () => runtime.createMediaPage(),
       width: 640,
       height: 480,
       onSignal: (signal) => { signals.push(signal) },
@@ -67,21 +68,6 @@ async function launchContext(profileDir: string): Promise<BrowserContext> {
     viewport: { width: 640, height: 480 },
     ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
   })
-}
-
-async function ownedPage(context: BrowserContext): Promise<BrowserMediaPage> {
-  const page = await context.newPage()
-  const owned: BrowserMediaPage = {
-    exposeBinding: async (name, callback) => {
-      await page.exposeBinding(name, (_source, payload) => { callback({ page: owned }, payload) })
-    },
-    evaluateFunction: async <R>(source: string, argument: unknown): Promise<R> => page.evaluate(async ({ source, argument }) => {
-      const callable = (0, eval)('(' + source + ')') as (value: unknown) => Promise<unknown>
-      return callable(argument)
-    }, { source, argument }) as Promise<R>,
-    close: async () => { await page.close() },
-  }
-  return owned
 }
 
 async function solidJpeg(page: Page, width: number, height: number, color: string): Promise<Uint8Array> {

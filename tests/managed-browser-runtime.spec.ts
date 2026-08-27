@@ -17,6 +17,8 @@ class FakePage {
   blockResizes = false
   handlers = new Map<string, Array<(...args: unknown[]) => void>>()
   frame = { url: () => this.currentUrl }
+  exposedBindings: Array<{ name: string; callback: (source: unknown, payload: unknown) => void }> = []
+  evaluations: Array<{ source: string; argument: unknown }> = []
 
   async goto(url: string): Promise<void> {
     this.history.push(this.currentUrl)
@@ -42,8 +44,12 @@ class FakePage {
     if (this.blockResizes) await new Promise<void>((resolve) => { this.resizeReleases.push(resolve) })
     this.size = size
   }
-  async evaluate<T>(): Promise<T> {
+  async evaluate<T>(source?: string, argument?: unknown): Promise<T> {
+    if (source !== undefined) this.evaluations.push({ source, argument })
     return [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }] as T
+  }
+  async exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
+    this.exposedBindings.push({ name, callback })
   }
   async screenshot(): Promise<Uint8Array> { return new Uint8Array([1, 2, 3]) }
   locator(selector: string): { click(): Promise<void>; fill(text: string): Promise<void> } {
@@ -200,6 +206,34 @@ function cacheContextThatClosesDuringClear(): {
 }
 
 describe('ManagedBrowserRuntime', () => {
+  it('leases narrow owned media Pages from the persistent context with an exact capacity', async () => {
+    const box = harness({ maxEncoderPages: 1 })
+    await box.runtime.ensure({ sessionId: 'media', tabId: 'target' }, 'https://example.com')
+    const pendingMedia = box.runtime.createMediaPage()
+    await expect(box.runtime.createMediaPage()).rejects.toThrow('media Page capacity')
+    const media = await pendingMedia
+    expect(Object.keys(media).sort()).toEqual(['close', 'evaluateFunction', 'exposeBinding'])
+    expect(box.runtime.mediaPageCount()).toBe(1)
+    await expect(box.runtime.createMediaPage()).rejects.toThrow('media Page capacity')
+
+    let bindingSource: unknown
+    await media.exposeBinding('signal', (source) => { bindingSource = source })
+    const page = box.pages[1]
+    if (page === undefined) throw new Error('missing media Page')
+    page.exposedBindings[0]?.callback({ page }, { type: 'connected' })
+    expect(bindingSource).toEqual({ page: media })
+    await media.evaluateFunction('value => value', { pixel: 'only' })
+    expect(page.evaluations).toEqual([{ source: '(value => value)({"pixel":"only"})', argument: undefined }])
+
+    await media.close()
+    await media.close()
+    expect(page.closed).toBe(true)
+    expect(box.runtime.mediaPageCount()).toBe(0)
+    const replacement = await box.runtime.createMediaPage()
+    await box.runtime.dispose()
+    expect(box.pages[2]?.closed).toBe(true)
+    await replacement.close()
+  })
   it('owns revisioned fixed and clamped fit layouts', async () => {
     const box = harness()
     const tab = { sessionId: 'layout', tabId: 'page' }

@@ -97,6 +97,11 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     runtime: managedBrowser,
     ...(config.managedBrowser?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: config.managedBrowser.desktopJpegMaxRawBytes }),
     ...(config.managedBrowser?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: config.managedBrowser.mobileJpegMaxRawBytes }),
+    ...(config.managedBrowser?.preferredMediaRoute === undefined ? {} : { preferredMediaRoute: config.managedBrowser.preferredMediaRoute }),
+    ...(config.managedBrowser?.stunUrls === undefined ? {} : { stunUrls: config.managedBrowser.stunUrls }),
+    ...(config.managedBrowser?.webrtcNegotiationTimeoutMs === undefined ? {} : { webrtcNegotiationTimeoutMs: config.managedBrowser.webrtcNegotiationTimeoutMs }),
+    ...(config.managedBrowser?.webrtcRetryCooldownMs === undefined ? {} : { webrtcRetryCooldownMs: config.managedBrowser.webrtcRetryCooldownMs }),
+    ...(config.managedBrowser?.maxMediaPeers === undefined ? {} : { maxMediaPeers: config.managedBrowser.maxMediaPeers }),
   })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()

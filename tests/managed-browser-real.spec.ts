@@ -167,7 +167,7 @@ describe('real managed Chromium', () => {
     })
     await new Promise<void>((resolve, reject) => {
       client?.once('open', () => {
-        client?.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+        client?.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
         resolve()
       })
       client?.once('error', reject)

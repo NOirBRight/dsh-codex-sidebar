@@ -9,6 +9,7 @@ import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from
 import { isChromiumErrorUrl, liveHref } from './browser.ts'
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
 import type { BrowserLayout, BrowserLayoutMode, BrowserSize } from './managed-browser-protocol.ts'
+import type { BrowserMediaPage } from './managed-browser-webrtc.ts'
 
 export const MANAGED_BROWSER_MAX_LIVE_PAGES = 3
 export const MANAGED_BROWSER_IDLE_MS = 120_000
@@ -40,6 +41,18 @@ export type ManagedBrowserConfig = {
   desktopJpegMaxRawBytes?: number
   /** Raw JPEG ceiling before the Mobile tunnel's nested Base64 envelopes. */
   mobileJpegMaxRawBytes?: number
+  /** Preferred managed Browser media route. */
+  preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
+  /** STUN-only ICE server URLs used by managed Browser WebRTC peers. */
+  stunUrls?: string[]
+  /** Maximum time allowed for one WebRTC negotiation. */
+  webrtcNegotiationTimeoutMs?: number
+  /** Minimum delay before retrying a failed WebRTC generation. */
+  webrtcRetryCooldownMs?: number
+  /** Maximum concurrent managed Browser WebRTC peers. */
+  maxMediaPeers?: number
+  /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
+  maxEncoderPages?: number
 }
 
 export type ManagedBrowserLayoutPolicy = {
@@ -107,7 +120,8 @@ type PageLike = {
   title(): Promise<string>
   viewportSize(): { width: number; height: number } | null
   setViewportSize(size: { width: number; height: number }): Promise<void>
-  evaluate<R>(expression: string): Promise<R>
+  evaluate<R>(expression: string, argument?: unknown): Promise<R>
+  exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void>
   screenshot(opts: { type: 'jpeg'; quality: number }): Promise<Uint8Array>
   locator(selector: string): LocatorLike
   mainFrame(): FrameLike
@@ -210,6 +224,9 @@ export class ManagedBrowserRuntime {
   #onWarning: (message: string) => void
   #reaping = false
   #layoutPolicy: ManagedBrowserLayoutPolicy
+  #mediaPages = new Set<{ page: PageLike; close: () => Promise<void> }>()
+  #mediaPageReservations = 0
+  #maxEncoderPages: number
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
     this.profileDir = resolve(opts.profileDir ?? defaultProfileDir())
@@ -223,6 +240,7 @@ export class ManagedBrowserRuntime {
     this.#idleMs = opts.idleMs ?? MANAGED_BROWSER_IDLE_MS
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
     this.#layoutPolicy = layoutPolicy(opts)
+    this.#maxEncoderPages = configuredPositiveInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
   }
 
@@ -448,6 +466,48 @@ export class ManagedBrowserRuntime {
     return { page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout) }
   }
 
+  /** Lease one narrow media Page from the same persistent Chromium context. */
+  async createMediaPage(): Promise<BrowserMediaPage> {
+    if (this.#mediaPages.size + this.#mediaPageReservations >= this.#maxEncoderPages) throw new Error('Managed Browser media Page capacity is exhausted')
+    this.#mediaPageReservations += 1
+    let page: PageLike
+    try {
+      const context = await this.#ensureContext()
+      page = await context.newPage()
+    } finally {
+      this.#mediaPageReservations -= 1
+    }
+    let closed = false
+    let lease: { page: PageLike; close: () => Promise<void> }
+    const adapter: BrowserMediaPage = Object.freeze({
+      exposeBinding: async (name, callback) => {
+        if (closed) throw new Error('Managed Browser media Page is closed')
+        await page.exposeBinding(name, (_source, payload) => { callback({ page: adapter }, payload) })
+      },
+      evaluateFunction: async <R>(source: string, argument: unknown): Promise<R> => {
+        if (closed) throw new Error('Managed Browser media Page is closed')
+        const json = JSON.stringify(argument)
+        if (json === undefined) throw new Error('Managed Browser media Page accepts JSON arguments only')
+        return page.evaluate<R>('(' + source + ')(' + json + ')')
+      },
+      close: async () => { await lease.close() },
+    })
+    const close = async (): Promise<void> => {
+      if (closed) return
+      closed = true
+      this.#mediaPages.delete(lease)
+      if (!page.isClosed()) await page.close()
+    }
+    lease = { page, close }
+    this.#mediaPages.add(lease)
+    return adapter
+  }
+
+  /** Return the number of owned encoder Pages. */
+  mediaPageCount(): number {
+    return this.#mediaPages.size
+  }
+
   async close(tab: ManagedTabKey): Promise<void> {
     const key = this.keyOf(tab)
     const record = this.#pages.get(key)
@@ -465,11 +525,12 @@ export class ManagedBrowserRuntime {
     this.#pages.clear()
     this.#requestedViewports.clear()
     this.#leases.clear()
-    await Promise.all(pages.map(async (record) => {
+    const mediaPages = [...this.#mediaPages]
+    await Promise.all([...pages.map(async (record) => {
       rejectPendingLayout(record, new Error('Managed Browser disposed'))
       await record.cdp.detach().catch(() => undefined)
       if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
-    }))
+    }), ...mediaPages.map((lease) => lease.close().catch(() => undefined))])
     const context = this.#context
     this.#context = undefined
     if (context !== undefined) await (await context).close().catch(() => undefined)
@@ -567,6 +628,7 @@ export class ManagedBrowserRuntime {
         contextClosed = true
         if (this.#context !== pending) return
         this.#context = undefined
+        this.#mediaPages.clear()
         const records = [...this.#pages.values()]
         this.#pages.clear()
         for (const record of records) {
@@ -767,6 +829,12 @@ function configuredNonNegative(value: number | undefined, fallback: number, name
   if (value === undefined) return fallback
   if (!Number.isFinite(value) || value < 0) throw new Error('managedBrowser ' + name + ' must be a non-negative finite number')
   return Math.round(value)
+}
+
+function configuredPositiveInteger(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('managedBrowser ' + name + ' must be a positive safe integer')
+  return value
 }
 
 function normalizeLayoutProposal(proposal: LayoutProposal, policy: ManagedBrowserLayoutPolicy): LayoutProposal {

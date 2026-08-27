@@ -14,13 +14,23 @@ import {
   type BrowserLayout,
   type BrowserSize,
   type BrowserStreamFrameV2,
+  type BrowserRtcCandidate,
+  type BrowserRtcDescription,
 } from './managed-browser-protocol.ts'
+import {
+  ManagedBrowserWebRtcEncoder,
+  validateBrowserStunUrls,
+  type BrowserMediaFrame,
+  type BrowserMediaSignal,
+  type ManagedBrowserWebRtcEncoderOptions,
+} from './managed-browser-webrtc.ts'
 
 export const MANAGED_BROWSER_STREAM_PATH = '/__dcs/browser-stream'
 export const MANAGED_BROWSER_STREAM_VERSION = MANAGED_BROWSER_PROTOCOL_VERSION
 
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
+const MAX_PENDING_RTC_CANDIDATES = 64
 export const MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS = 5_000
 export const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100
 export const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2
@@ -80,11 +90,39 @@ export type ManagedBrowserStreamOptions = {
   handshakeTimeoutMs?: number
   desktopMaxRawBytes?: number
   mobileMaxRawBytes?: number
+  preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
+  stunUrls?: string[]
+  webrtcNegotiationTimeoutMs?: number
+  webrtcRetryCooldownMs?: number
+  maxMediaPeers?: number
+  encoderFactory?: ManagedBrowserWebRtcEncoderFactory
 }
+
+export type ManagedBrowserWebRtcEncoderLike = {
+  start(): Promise<BrowserRtcDescription>
+  acceptAnswer(description: BrowserRtcDescription): Promise<void>
+  addCandidate(candidate: BrowserRtcCandidate | null): Promise<void>
+  submit(frame: BrowserMediaFrame): boolean
+  dispose(): Promise<void>
+}
+
+export type ManagedBrowserWebRtcEncoderFactory = (options: ManagedBrowserWebRtcEncoderOptions) => ManagedBrowserWebRtcEncoderLike
 
 type ScreencastPayload = {
   data?: unknown
   sessionId?: unknown
+}
+
+type BrowserMediaAttempt = {
+  layout: BrowserLayout
+  encoder: ManagedBrowserWebRtcEncoderLike
+  connected: boolean
+  answerStarted: boolean
+  answerAccepted: boolean
+  candidateCount: number
+  candidates: Array<BrowserRtcCandidate | null>
+  timer: ReturnType<typeof setTimeout> | undefined
+  released: boolean
 }
 
 export type { BrowserInput } from './managed-browser-protocol.ts'
@@ -94,6 +132,7 @@ export type ManagedBrowserStreamResources = {
   timers: number
   captures: number
   unackedFrames: number
+  peers: number
 }
 
 export class ManagedBrowserStream {
@@ -110,6 +149,13 @@ export class ManagedBrowserStream {
   #unackedCount = 0
   #budgets: { desktopMaxRawBytes?: number; mobileMaxRawBytes?: number }
   #tasks = new Set<Promise<void>>()
+  #preferredMediaRoute: 'webrtc-preferred' | 'jpeg-only'
+  #stunUrls: string[]
+  #webrtcNegotiationTimeoutMs: number
+  #webrtcRetryCooldownMs: number
+  #maxMediaPeers: number
+  #encoderFactory: ManagedBrowserWebRtcEncoderFactory
+  #peerCount = 0
 
   constructor(opts: ManagedBrowserStreamOptions) {
     this.#runtime = opts.runtime
@@ -120,6 +166,13 @@ export class ManagedBrowserStream {
       ...(opts.desktopMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: rawByteBudget(opts.desktopMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES) }),
       ...(opts.mobileMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: rawByteBudget(opts.mobileMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES) }),
     }
+    this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
+    if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')
+    this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [])
+    this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 5_000, 'webrtcNegotiationTimeoutMs')
+    this.#webrtcRetryCooldownMs = nonNegativeStreamInteger(opts.webrtcRetryCooldownMs, 30_000, 'webrtcRetryCooldownMs')
+    this.#maxMediaPeers = positiveStreamInteger(opts.maxMediaPeers, 3, 'maxMediaPeers')
+    this.#encoderFactory = opts.encoderFactory ?? ((options) => new ManagedBrowserWebRtcEncoder(options))
   }
 
   issue(tab: ManagedTabKey): BrowserStreamTicket {
@@ -170,6 +223,7 @@ export class ManagedBrowserStream {
       timers: this.#timerCount,
       captures: this.#captureCount,
       unackedFrames: this.#unackedCount,
+      peers: this.#peerCount,
     }
   }
 
@@ -216,6 +270,12 @@ export class ManagedBrowserStream {
     let detached = false
     let latestProposalSequence = 0
     let mediaDegraded = false
+    const ownerId = randomBytes(18).toString('base64url')
+    let clientWebRtc = false
+    let mediaAttempt: BrowserMediaAttempt | undefined
+    let mediaFrameSequence = 0
+    let lastMediaFailureAt = Number.NEGATIVE_INFINITY
+    let mediaTransition = Promise.resolve()
     const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
     const releaseLease = this.#runtime.acquire(tab)
     const sendProjection = (): void => {
@@ -305,6 +365,17 @@ export class ManagedBrowserStream {
           mediaDegraded = false
           socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }))
         }
+        const attempt = mediaAttempt
+        if (attempt !== undefined && sameMediaLayout(attempt.layout, capturedLayout)) {
+          mediaFrameSequence += 1
+          attempt.encoder.submit({
+            sequence: mediaFrameSequence,
+            width: capture.encodedSize.width,
+            height: capture.encodedSize.height,
+            jpeg: capture.jpeg,
+          })
+        }
+        if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) return
         if (!sendFrame(capture, capturedLayout)) {
           dirty = { force: true }
         }
@@ -320,6 +391,110 @@ export class ManagedBrowserStream {
       dirty = { force: force || dirty?.force === true }
       pump()
     }
+    const clearMediaTimer = (attempt: BrowserMediaAttempt): void => {
+      if (attempt.timer === undefined) return
+      clearTimeout(attempt.timer)
+      attempt.timer = undefined
+      this.#timerCount -= 1
+    }
+    const releaseMediaAttempt = async (attempt: BrowserMediaAttempt): Promise<void> => {
+      clearMediaTimer(attempt)
+      if (!attempt.released) {
+        attempt.released = true
+        this.#peerCount -= 1
+      }
+      await attempt.encoder.dispose().catch(() => undefined)
+    }
+    const sendMediaRoute = (route: 'jpeg-fallback' | 'webrtc-direct', status: 'active' | 'degraded' | 'reconnecting', reason?: string): void => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'media-route', route, status, ...(reason === undefined ? {} : { reason }) }))
+    }
+    const failMediaAttempt = async (attempt: BrowserMediaAttempt, reason: string): Promise<void> => {
+      if (mediaAttempt !== attempt) return
+      mediaAttempt = undefined
+      lastMediaFailureAt = this.#now()
+      await releaseMediaAttempt(attempt)
+      if (detached) return
+      sendMediaRoute('jpeg-fallback', 'degraded', reason)
+      requestFrame(true)
+    }
+    const handleMediaSignal = (attempt: BrowserMediaAttempt, message: BrowserMediaSignal): void => {
+      if (mediaAttempt !== attempt || detached || message.ownerId !== ownerId || message.generation !== attempt.layout.mediaGeneration) return
+      const signal = message.signal
+      if (signal.type === 'candidate') {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+          type: 'rtc-candidate', ownerId, revision: attempt.layout.revision,
+          mediaGeneration: attempt.layout.mediaGeneration, candidate: signal.candidate,
+        }))
+        return
+      }
+      if (signal.type === 'connection-state') {
+        if (signal.state === 'connected') {
+          attempt.connected = true
+          clearMediaTimer(attempt)
+          if (unacked !== undefined) {
+            unacked = undefined
+            this.#unackedCount -= 1
+          }
+          sendMediaRoute('webrtc-direct', 'active')
+          requestFrame(true)
+        } else if (signal.state === 'disconnected' || signal.state === 'failed' || signal.state === 'closed') {
+          this.#track(failMediaAttempt(attempt, 'peer-' + signal.state))
+        }
+        return
+      }
+      if (signal.type === 'encoder-error') this.#track(failMediaAttempt(attempt, 'encoder-error'))
+    }
+    const startMediaAttempt = async (layout: BrowserLayout): Promise<void> => {
+      if (detached || !clientWebRtc || this.#preferredMediaRoute === 'jpeg-only' || !sameMediaLayout(currentLayout(), layout)) return
+      if (this.#peerCount >= this.#maxMediaPeers) {
+        lastMediaFailureAt = this.#now()
+        sendMediaRoute('jpeg-fallback', 'degraded', 'local-capacity')
+        requestFrame(true)
+        return
+      }
+      let attempt: BrowserMediaAttempt
+      const encoder = this.#encoderFactory({
+        identity: { ownerId, generation: layout.mediaGeneration },
+        pageFactory: () => this.#runtime.createMediaPage(),
+        stunUrls: this.#stunUrls,
+        width: layout.viewport.width,
+        height: layout.viewport.height,
+        onSignal: (message) => { handleMediaSignal(attempt, message) },
+      })
+      attempt = {
+        layout: { ...layout, viewport: { ...layout.viewport } }, encoder, connected: false,
+        answerStarted: false, answerAccepted: false, candidateCount: 0, candidates: [], timer: undefined, released: false,
+      }
+      mediaAttempt = attempt
+      this.#peerCount += 1
+      this.#timerCount += 1
+      attempt.timer = setTimeout(() => {
+        attempt.timer = undefined
+        this.#timerCount -= 1
+        this.#track(failMediaAttempt(attempt, 'negotiation-timeout'))
+      }, this.#webrtcNegotiationTimeoutMs)
+      attempt.timer.unref()
+      sendMediaRoute('jpeg-fallback', 'reconnecting')
+      try {
+        const offer = await encoder.start()
+        if (mediaAttempt !== attempt || detached || !sameMediaLayout(currentLayout(), layout)) return
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+          type: 'rtc-offer', ownerId, revision: layout.revision, mediaGeneration: layout.mediaGeneration, description: offer,
+        }))
+      } catch {
+        await failMediaAttempt(attempt, 'encoder-start-failed')
+      }
+    }
+    const replaceMediaAttempt = (layout: BrowserLayout): void => {
+      const task = mediaTransition.then(async () => {
+        const previousAttempt = mediaAttempt
+        mediaAttempt = undefined
+        if (previousAttempt !== undefined) await releaseMediaAttempt(previousAttempt)
+        await startMediaAttempt(layout)
+      })
+      mediaTransition = task.catch(() => undefined)
+      this.#track(task)
+    }
     const commitLayout = (layout: BrowserLayout): void => {
       if (unacked !== undefined
         && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
@@ -327,6 +502,7 @@ export class ManagedBrowserStream {
         this.#unackedCount -= 1
       }
       sendLayout(layout)
+      replaceMediaAttempt(layout)
       requestFrame(true)
     }
     const onFrame = (value: unknown): void => {
@@ -350,6 +526,10 @@ export class ManagedBrowserStream {
       dirty = undefined
       if (unacked !== undefined) this.#unackedCount -= 1
       unacked = undefined
+      await mediaTransition
+      const attempt = mediaAttempt
+      mediaAttempt = undefined
+      if (attempt !== undefined) await releaseMediaAttempt(attempt)
       releaseLease()
       if (this.#tabSockets.get(tabKey) !== socket) return
       this.#tabSockets.delete(tabKey)
@@ -364,6 +544,13 @@ export class ManagedBrowserStream {
         frameEncoding: profile.frameEncoding,
         flowControl: 'frame-ack-v2',
         fallback: { maxRawBytes: profile.maxRawBytes },
+        ownerId,
+        media: {
+          preferredRoute: clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'webrtc-direct' : 'jpeg-fallback',
+          stunOnly: true,
+          negotiationTimeoutMs: this.#webrtcNegotiationTimeoutMs,
+          retryCooldownMs: this.#webrtcRetryCooldownMs,
+        },
         layoutPolicy: this.#runtime.layoutPolicy(),
       }))
       const layout = currentLayout()
@@ -372,7 +559,8 @@ export class ManagedBrowserStream {
         return
       }
       sendLayout(layout)
-      socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }))
+      sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
+      replaceMediaAttempt(layout)
       sendProjection()
       try {
         await cdp.send('Page.startScreencast', {
@@ -413,6 +601,7 @@ export class ManagedBrowserStream {
           socket.close(1002, 'Invalid Browser stream hello')
           return
         }
+        clientWebRtc = hello.media.webrtcVideo
         handshaken = true
         clearHelloTimer()
         void start()
@@ -431,6 +620,41 @@ export class ManagedBrowserStream {
         return
       }
       if (message === undefined || message.type === 'hello') return
+      if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') {
+        if (message.type === 'media-retry') {
+          const layout = currentLayout()
+          if (layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
+            || message.mediaGeneration !== layout.mediaGeneration || mediaAttempt?.connected === true
+            || this.#now() - lastMediaFailureAt < this.#webrtcRetryCooldownMs) return
+          replaceMediaAttempt(layout)
+          return
+        }
+        const attempt = mediaAttempt
+        if (attempt === undefined || message.ownerId !== ownerId
+          || message.revision !== attempt.layout.revision || message.mediaGeneration !== attempt.layout.mediaGeneration) return
+        if (message.type === 'rtc-answer') {
+          if (attempt.answerStarted) return
+          attempt.answerStarted = true
+          const task = attempt.encoder.acceptAnswer(message.description).then(async () => {
+            if (mediaAttempt !== attempt) return
+            attempt.answerAccepted = true
+            const candidates = attempt.candidates.splice(0)
+            for (const candidate of candidates) await attempt.encoder.addCandidate(candidate)
+          }).catch(() => failMediaAttempt(attempt, 'answer-rejected'))
+          this.#track(task)
+          return
+        }
+        if (message.type === 'rtc-candidate') {
+          if (attempt.candidateCount >= MAX_PENDING_RTC_CANDIDATES) return
+          attempt.candidateCount += 1
+          if (!attempt.answerAccepted) {
+            attempt.candidates.push(message.candidate)
+            return
+          }
+          this.#track(attempt.encoder.addCandidate(message.candidate).catch(() => failMediaAttempt(attempt, 'candidate-rejected')))
+          return
+        }
+      }
       void this.#onMessage(socket, tab, cdp, message, requestFrame, commitLayout, currentLayout, {
         get latest() { return latestProposalSequence },
         set latest(value: number) { latestProposalSequence = value },
@@ -450,6 +674,7 @@ export class ManagedBrowserStream {
     currentLayout: () => BrowserLayout | undefined,
     proposal: { latest: number },
   ): Promise<void> {
+    if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') return
     if (message.type === 'outline') {
       const outline = await this.#runtime.outline(tab)
       if ('nodes' in outline && socket.readyState === WebSocket.OPEN) {
@@ -678,6 +903,23 @@ export function browserStreamRequestAllowed(origin: string | undefined, host: st
   } catch {
     return false
   }
+}
+
+function sameMediaLayout(left: BrowserLayout | undefined, right: BrowserLayout | undefined): boolean {
+  return left !== undefined && right !== undefined
+    && left.revision === right.revision && left.mediaGeneration === right.mediaGeneration
+}
+
+function positiveStreamInteger(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('managedBrowser ' + name + ' must be a positive safe integer')
+  return value
+}
+
+function nonNegativeStreamInteger(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('managedBrowser ' + name + ' must be a non-negative safe integer')
+  return value
 }
 
 export function browserStreamCaptureScale(width: number, height: number, maxScale = HIGH_DENSITY_SCALE): number {
