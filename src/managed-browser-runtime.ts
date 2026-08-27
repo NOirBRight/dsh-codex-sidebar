@@ -470,17 +470,9 @@ export class ManagedBrowserRuntime {
           '--media-cache-size=' + this.#cacheBudgetBytes,
         ],
       })
-      if (derivedCacheBytes > this.#cacheBudgetBytes) {
-        await clearChromiumBrowserCache(context).catch((error) => {
-          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
-        })
-      }
-      return context
-    })()
-    this.#context = pending
-    try {
-      const context = await pending
+      let contextClosed = false
       context.on('close', () => {
+        contextClosed = true
         if (this.#context !== pending) return
         this.#context = undefined
         const records = [...this.#pages.values()]
@@ -492,7 +484,17 @@ export class ManagedBrowserRuntime {
           this.#publish(record)
         }
       })
+      if (derivedCacheBytes > this.#cacheBudgetBytes) {
+        await clearChromiumBrowserCache(context).catch((error) => {
+          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
+        })
+      }
+      if (contextClosed) throw new Error('Chromium context closed during startup')
       return context
+    })()
+    this.#context = pending
+    try {
+      return await pending
     } catch (error) {
       if (this.#context === pending) this.#context = undefined
       throw error

@@ -140,6 +140,58 @@ function cacheContext(expectClear: boolean, clearError?: Error): {
   }
 }
 
+function cacheContextThatClosesDuringClear(): {
+  context: {
+    newPage(): Promise<FakePage>
+    newCDPSession(page: unknown): Promise<{ send(method: string): Promise<void>; on(): void; off(): void; detach(): Promise<void> }>
+    on(event: 'close', listener: () => void): void
+    close(): Promise<void>
+  }
+  temporaryPage: FakePage
+  cacheCommands: string[]
+} {
+  const temporaryPage = new FakePage()
+  const cacheCommands: string[] = []
+  const closeHandlers: Array<() => void> = []
+  let temporaryClaimed = false
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    for (const listener of closeHandlers) listener()
+  }
+  return {
+    temporaryPage,
+    cacheCommands,
+    context: {
+      async newPage() {
+        if (!temporaryClaimed) {
+          temporaryClaimed = true
+          return temporaryPage
+        }
+        if (closed) throw new Error('browserContext.newPage: Target page, context or browser has been closed')
+        return new FakePage()
+      },
+      async newCDPSession(page) {
+        if (page === temporaryPage) {
+          return {
+            async send(method) {
+              cacheCommands.push(method)
+              if (method === 'Network.clearBrowserCache') close()
+            },
+            on() {},
+            off() {},
+            async detach() {},
+          }
+        }
+        return { async send() {}, on() {}, off() {}, async detach() {} }
+      },
+      on(event, listener) { if (event === 'close') closeHandlers.push(listener) },
+      async close() { close() },
+    },
+  }
+}
+
 describe('ManagedBrowserRuntime', () => {
   it('opens public https pages and drives document-scoped refs', async () => {
     const box = harness()
@@ -392,6 +444,35 @@ describe('ManagedBrowserRuntime', () => {
     expect(warnings).toEqual([expect.stringContaining('Browser cache clear failed: CDP clear failed')])
     await runtime.dispose()
     expect(box.observation.contextClosed).toBe(true)
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('relaunches after the context exits while Browser cache cleanup is running', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-close-during-clear-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const first = cacheContextThatClosesDuringClear()
+    const second = cacheContext(true)
+    const launchContexts = [first.context, second.context]
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => {
+        const context = launchContexts.shift()
+        if (context === undefined) throw new Error('unexpected extra launch')
+        return context
+      },
+    })
+
+    await expect(runtime.ensure({ sessionId: 'cache-close', tabId: 'first' }, 'https://one.example')).rejects.toThrow('closed')
+    await expect(runtime.ensure({ sessionId: 'cache-close', tabId: 'second' }, 'https://two.example')).resolves.toMatchObject({ status: 'ready' })
+    expect(first.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(first.temporaryPage.closed).toBe(true)
+    expect(second.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(second.managedPages).toHaveLength(1)
+
+    await runtime.dispose()
     await rm(profileDir, { recursive: true, force: true })
   })
 
