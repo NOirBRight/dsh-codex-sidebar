@@ -336,6 +336,7 @@ export class ManagedBrowserStream {
     let mediaAttempt: BrowserMediaAttempt | undefined
     let mediaFrameSequence = 0
     let lastMediaFailureAt = Number.NEGATIVE_INFINITY
+    let lastMediaRetryAt = Number.NEGATIVE_INFINITY
     let mediaIdleSuspended = false
     let mediaTransition = Promise.resolve()
     let noteMediaActivity = (): void => {}
@@ -720,9 +721,12 @@ export class ManagedBrowserStream {
       if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry') {
         if (message.type === 'media-retry') {
           const layout = currentLayout()
+          const now = this.#now()
           if (layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
-            || message.mediaGeneration !== layout.mediaGeneration || mediaAttempt?.connected === true
-            || this.#now() - lastMediaFailureAt < this.#webrtcRetryCooldownMs) return
+            || message.mediaGeneration !== layout.mediaGeneration
+            || (mediaAttempt?.connected === true && message.trigger !== 'explicit')
+            || now - Math.max(lastMediaFailureAt, lastMediaRetryAt) < this.#webrtcRetryCooldownMs) return
+          lastMediaRetryAt = now
           replaceMediaAttempt(layout)
           return
         }

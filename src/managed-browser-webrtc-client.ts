@@ -31,12 +31,13 @@ export type BrowserMediaReceiverPeer = {
 }
 
 export type BrowserMediaRetryTrigger = 'explicit' | 'network-change' | 'tab-reactivate'
+export type BrowserMediaFallbackReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
 
 export type BrowserMediaReceiverEvent = BrowserMediaClientIdentity & {
   event:
     | { type: 'candidate'; candidate: BrowserRtcCandidate | null }
     | { type: 'video-track'; track: BrowserMediaReceiverTrack }
-    | { type: 'route'; route: 'connecting' | 'webrtc-direct' | 'jpeg-fallback'; reason?: 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' }
+    | { type: 'route'; route: 'connecting' | 'webrtc-direct' | 'jpeg-fallback'; reason?: BrowserMediaFallbackReason }
     | { type: 'generation-ready'; track: BrowserMediaReceiverTrack }
     | { type: 'retry-request'; trigger: BrowserMediaRetryTrigger }
 }
@@ -182,6 +183,16 @@ export class ManagedBrowserWebRtcReceiver {
     if (this.#disposed || this.#route !== 'jpeg-fallback' || now < this.#nextRetryAt) return false
     this.#nextRetryAt = now + this.#retryCooldownMs
     this.#emit({ type: 'retry-request', trigger })
+    return true
+  }
+
+  /** Release the current direct-video attempt and enter cooldown-backed JPEG fallback. */
+  useFallback(reason: 'host-fallback' | 'presentation-failed'): boolean {
+    if (this.#disposed || this.#route === 'jpeg-fallback') return false
+    if (this.#current !== undefined) this.#disposeAttempt(this.#current)
+    this.#route = 'jpeg-fallback'
+    this.#nextRetryAt = this.#now() + this.#retryCooldownMs
+    this.#emit({ type: 'route', route: 'jpeg-fallback', reason })
     return true
   }
 

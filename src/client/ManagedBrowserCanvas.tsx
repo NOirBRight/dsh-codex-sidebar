@@ -327,6 +327,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (mediaRouteMessage !== undefined) {
           if (mediaRouteMessage.route === 'unavailable') disposeMedia('fallback')
           else if (mediaRouteMessage.route === 'jpeg-fallback') {
+            receiverRef.current?.useFallback('host-fallback')
             videoSurfaceRef.current?.clear()
             setMediaRoute('fallback')
           }
@@ -357,8 +358,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 void surface.present(event.event.track).then((size) => {
                   if (receiverRef.current !== receiver || size === undefined) {
                     if (receiverRef.current === receiver && size === undefined) {
-                      surface.clear()
-                      setMediaRoute('fallback')
+                      receiver.useFallback('presentation-failed')
                     }
                     return
                   }

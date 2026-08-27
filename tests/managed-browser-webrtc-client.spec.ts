@@ -176,6 +176,37 @@ describe('managed Browser WebRTC receiver', () => {
     }
   })
 
+  it('enters an explicit fallback by releasing the current peer and enables retry after cooldown', async () => {
+    vi.useFakeTimers()
+    try {
+      const { receiver, peers, events } = harness({ cooldownMs: 500 })
+      await receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'offer' })
+      const peer = peers[0]!
+      const video = new FakeTrack('video')
+      peer.track(video)
+      peer.connection('connected')
+      receiver.markFrameReady(IDENTITY, video)
+
+      expect(receiver.useFallback('host-fallback')).toBe(true)
+      expect(peer.closeCalls).toBe(1)
+      expect(video.stopCalls).toBe(1)
+      expect(events.at(-1)).toEqual({
+        ...IDENTITY,
+        event: { type: 'route', route: 'jpeg-fallback', reason: 'host-fallback' },
+      })
+      expect(receiver.requestRetry('explicit')).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(250)
+      expect(receiver.useFallback('presentation-failed')).toBe(false)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(receiver.requestRetry('explicit')).toBe(true)
+      expect(peer.closeCalls).toBe(1)
+      expect(video.stopCalls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores stale messages and stops tracks from replaced peers', async () => {
     const { receiver, peers, events } = harness()
     await receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'first' })
