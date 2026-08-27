@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer } from './managed-browser-webrtc-dom.ts'
-import { ManagedBrowserWebRtcReceiver, type BrowserMediaClientIdentity } from '../managed-browser-webrtc-client.ts'
+import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
 import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 import type { BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
@@ -50,6 +50,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const readyRef = useRef<BrowserReadyMessage | null>(null)
   const visibilityGraceRef = useRef<BrowserVisibilityGrace | null>(null)
   const fallbackRetryRef = useRef<BrowserMediaRetryState>()
+  const mediaRouteRef = useRef<BrowserMediaPresentationRoute>('reconnecting')
   ticketRef.current = requestTicket
   stateRef.current = onState
   deviceRef.current = device
@@ -76,7 +77,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const [selectedLiveRect, setSelectedLiveRect] = useState<AnnotationRect | null>(selectedRect)
   const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
   const [surfaceSize, setSurfaceSize] = useState<Size>({ width: 0, height: 0 })
-  const [mediaRoute, setMediaRoute] = useState<'canvas' | 'connecting' | 'video' | 'fallback'>('canvas')
+  const [mediaRoute, setMediaRoute] = useState<BrowserMediaPresentationRoute>('reconnecting')
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
 
   const requestOutline = (delay = 0): void => {
@@ -107,6 +108,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     )
     fallbackRetryRef.current = request.state
     if (request.message !== undefined) send(socketRef.current, request.message)
+  }
+
+  const publishMediaRoute = (route: BrowserMediaPresentationRoute): void => {
+    mediaRouteRef.current = route
+    setMediaRoute(route)
   }
 
   const updateSurface = (): void => {
@@ -217,12 +223,12 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       return () => { inputQueueRef.current?.cancel() }
     }
 
-    const disposeMedia = (route: 'canvas' | 'fallback' = 'canvas'): void => {
+    const disposeMedia = (route: BrowserMediaPresentationRoute = 'unavailable'): void => {
       receiverRef.current?.dispose()
       receiverRef.current = null
       videoSurfaceRef.current?.clear()
       videoSurfaceRef.current = null
-      setMediaRoute(route)
+      publishMediaRoute(route)
     }
 
     const drawLatest = async (): Promise<void> => {
@@ -280,6 +286,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
 
     const connect = async (): Promise<void> => {
       setStatus('connecting')
+      publishMediaRoute('reconnecting')
       const ticket = await ticketRef.current(tabId)
       if (stopped) return
       if (ticket === undefined) {
@@ -292,6 +299,18 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       socket.binaryType = 'arraybuffer'
       socketRef.current = socket
       const isCurrent = (): boolean => !stopped && socketRef.current === socket && connectionGeneration === generation
+      const currentMediaIdentity = (): BrowserMediaIdentity | undefined => {
+        const ready = readyRef.current
+        const committed = layoutRef.current?.snapshot().committed
+        return ready === null || committed === undefined
+          ? undefined
+          : { ownerId: ready.ownerId, revision: committed.revision, mediaGeneration: committed.mediaGeneration }
+      }
+      const declineMedia = (identity: BrowserMediaIdentity, reason: BrowserMediaFailureReason | undefined): void => {
+        if (!isCurrent()) return
+        const decline = browserMediaDeclineForFailure(identity, currentMediaIdentity(), reason)
+        if (decline !== undefined) send(socket, decline)
+      }
       socket.onopen = () => {
         if (!isCurrent()) return
         attempt = 0
@@ -349,7 +368,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (layoutCommit !== undefined) {
           if (layoutRef.current?.acceptCommit(layoutCommit.layout)) {
             inputQueueRef.current?.cancel()
-            disposeMedia()
+            disposeMedia('reconnecting')
             const ready = readyRef.current
             if (ready === null) earlyCandidates.clear()
             else earlyCandidates.setIdentity({
@@ -362,11 +381,14 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         }
         const mediaRouteMessage = decodeBrowserMediaRoute(text)
         if (mediaRouteMessage !== undefined) {
-          if (mediaRouteMessage.route === 'unavailable') disposeMedia('fallback')
+          const route = browserMediaRouteFromHost(mediaRouteMessage, mediaRouteRef.current)
+          if (mediaRouteMessage.route === 'unavailable') disposeMedia(route)
           else if (mediaRouteMessage.route === 'jpeg-fallback') {
             receiverRef.current?.useFallback('host-fallback')
             videoSurfaceRef.current?.clear()
-            setMediaRoute('fallback')
+            publishMediaRoute(route)
+          } else {
+            publishMediaRoute(route)
           }
           return
         }
@@ -377,9 +399,9 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           const committed = layoutRef.current?.snapshot().committed
           if (ready === null || videoRef.current === null || hostMessage.ownerId !== ready.ownerId
             || committed?.revision !== hostMessage.revision || committed.mediaGeneration !== hostMessage.mediaGeneration) return
-          disposeMedia()
+          disposeMedia('reconnecting')
           earlyCandidates.setIdentity(hostMessage)
-          const identity = receiverIdentity(hostMessage)
+          const identity: BrowserMediaIdentity = hostMessage
           const surface = new BrowserVideoSurface(videoRef.current, undefined, ready.media.negotiationTimeoutMs)
           videoSurfaceRef.current = surface
           let videoSize: Size | undefined
@@ -391,17 +413,18 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
             onEvent: (event) => {
               if (receiverRef.current !== receiver || !isCurrent()) return
               if (event.event.type === 'candidate') {
-                send(socket, { type: 'rtc-candidate', ...protocolIdentity(event), candidate: event.event.candidate })
+                send(socket, { type: 'rtc-candidate', ownerId: event.ownerId, revision: event.revision, mediaGeneration: event.mediaGeneration, candidate: event.event.candidate })
               } else if (event.event.type === 'video-track') {
-                void surface.present(event.event.track).then((size) => {
+                const track = event.event.track
+                void surface.present(track).then((size) => {
                   if (receiverRef.current !== receiver || size === undefined) {
                     if (receiverRef.current === receiver && size === undefined) {
-                      if (receiver.useFallback('presentation-failed')) send(socket, browserMediaDeclineMessage(protocolIdentity(identity)))
+                      receiver.useFallback('presentation-failed')
                     }
                     return
                   }
                   videoSize = size
-                  receiver.markFrameReady(identity, event.event.track)
+                  receiver.markFrameReady(identity, track)
                 })
               } else if (event.event.type === 'generation-ready') {
                 const current = layoutRef.current?.snapshot().committed
@@ -415,16 +438,16 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 if (accepted) {
                   viewportRef.current = current.viewport
                   updateSurface()
-                  setMediaRoute('video')
+                  publishMediaRoute('direct-video')
                   setStatus('ready')
                 }
               } else if (event.event.type === 'retry-request') {
-                send(socket, { type: 'media-retry', ...protocolIdentity(event), trigger: event.event.trigger })
+                send(socket, { type: 'media-retry', ownerId: event.ownerId, revision: event.revision, mediaGeneration: event.mediaGeneration, trigger: event.event.trigger })
               } else if (event.event.type === 'route') {
-                if (event.event.route === 'connecting') setMediaRoute('connecting')
+                publishMediaRoute(browserMediaRouteFromReceiver(event.event.route))
                 if (event.event.route === 'jpeg-fallback') {
                   surface.clear()
-                  setMediaRoute('fallback')
+                  declineMedia(event, event.event.reason)
                 }
               }
             },
@@ -434,7 +457,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           try {
             negotiation = receiver.acceptOffer(identity, hostMessage.description)
           } catch {
-            disposeMedia('fallback')
+            declineMedia(hostMessage, 'negotiation-error')
+            disposeMedia('low-bandwidth-fallback')
             return
           }
           const pendingCandidates = earlyCandidates.drain(hostMessage)
@@ -446,7 +470,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           })()
           void negotiation.then((answer) => {
             if (answer !== undefined && receiverRef.current === receiver && isCurrent()) {
-              send(socket, { type: 'rtc-answer', ...protocolIdentity(identity), description: answer })
+              send(socket, { type: 'rtc-answer', ...identity, description: answer })
             }
           })
           return
@@ -460,7 +484,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           earlyCandidates.setIdentity(identity)
           const receiver = receiverRef.current
           if (receiver === null) earlyCandidates.add(hostMessage, hostMessage.candidate)
-          else void receiver.addCandidate(receiverIdentity(hostMessage), hostMessage.candidate)
+          else void receiver.addCandidate(hostMessage, hostMessage.candidate)
           return
         }
         const tracked = decodeBrowserTrackedRect(text)
@@ -514,7 +538,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           // APP WebViews sometimes deliver non-protocol text; keep the last good frame.
         }
       }
-      socket.onerror = () => { if (isCurrent()) setStatus('error') }
+      socket.onerror = () => {
+        if (!isCurrent()) return
+        setStatus('error')
+        publishMediaRoute('unavailable')
+      }
       const retryNetwork = (): void => { requestMediaRetry('network-change') }
       const retryVisible = (): void => {
         if (document.visibilityState === 'visible') requestMediaRetry('tab-reactivate')
@@ -534,7 +562,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
           layoutTimerRef.current = undefined
           setStatus('connecting')
-          disposeMedia()
+          disposeMedia('reconnecting')
           readyRef.current = null
           earlyCandidates.clear()
           cleanupMediaListeners()
@@ -699,13 +727,13 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           muted
           autoPlay
           playsInline
-          style={{ display: mediaRoute === 'video' ? 'block' : 'none', position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+          style={{ display: mediaRoute === 'direct-video' ? 'block' : 'none', position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <canvas
           ref={canvasRef}
           className="dcs-managed-browser-canvas"
           tabIndex={-1}
-          style={{ opacity: mediaRoute === 'video' ? 0 : 1, position: 'relative', zIndex: 1 }}
+          style={{ opacity: mediaRoute === 'direct-video' ? 0 : 1, position: 'relative', zIndex: 1 }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -718,8 +746,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, viewportRef.current)} />}
         {children}
       </div>
-      {mediaRoute === 'connecting' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Connecting direct video…</div>}
-      {mediaRoute === 'fallback' && <button className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }} type="button" onClick={() => { requestMediaRetry('explicit') }}>JPEG · Retry video</button>}
+      {mediaRoute === 'direct-video' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Direct video</div>}
+      {mediaRoute === 'reconnecting' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Reconnecting video…</div>}
+      {mediaRoute === 'low-bandwidth-fallback' && <button className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }} type="button" onClick={() => { requestMediaRetry('explicit') }}>Low-bandwidth fallback · Retry video</button>}
+      {mediaRoute === 'unavailable' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Video unavailable</div>}
       <textarea
         ref={inputRef}
         className="dcs-managed-ime"
@@ -752,14 +782,6 @@ function managedProjection(value: unknown): value is ManagedProjection {
 
 function send(socket: WebSocket | null, value: object): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value))
-}
-
-function receiverIdentity(identity: BrowserMediaIdentity): BrowserMediaClientIdentity {
-  return { ownerId: identity.ownerId, layoutRevision: identity.revision, mediaGeneration: identity.mediaGeneration }
-}
-
-function protocolIdentity(identity: BrowserMediaClientIdentity): BrowserMediaIdentity {
-  return { ownerId: identity.ownerId, revision: identity.layoutRevision, mediaGeneration: identity.mediaGeneration }
 }
 
 function rectFrom(start: Point, end: Point): AnnotationRect {

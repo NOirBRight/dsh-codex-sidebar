@@ -1,16 +1,12 @@
 /** Browser-client WebRTC receiver state, independent of React and DOM presentation. */
 
-import type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-webrtc.ts'
+import type { BrowserMediaIdentity, BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
 
-export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-webrtc.ts'
+export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
 
 const MAX_PENDING_RTC_CANDIDATES = 64
 
-export type BrowserMediaClientIdentity = {
-  readonly ownerId: string
-  readonly layoutRevision: number
-  readonly mediaGeneration: number
-}
+export type BrowserMediaClientIdentity = Readonly<BrowserMediaIdentity>
 
 export type BrowserMediaReceiverTrack = {
   readonly kind: string
@@ -260,7 +256,7 @@ export class ManagedBrowserWebRtcReceiver {
 
 function sameIdentity(left: BrowserMediaClientIdentity, right: BrowserMediaClientIdentity): boolean {
   return left.ownerId === right.ownerId
-    && left.layoutRevision === right.layoutRevision
+    && left.revision === right.revision
     && left.mediaGeneration === right.mediaGeneration
 }
 

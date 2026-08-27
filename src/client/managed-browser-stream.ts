@@ -167,10 +167,41 @@ export type DecodedBrowserFrame = BrowserStreamFrameV2
 export type BrowserStreamFrameEncoding = 'binary-v2' | 'json-base64-v2'
 export type BrowserFrameIdentity = Pick<BrowserStreamFrameV2, 'sequence' | 'revision' | 'mediaGeneration'>
 export type BrowserMediaRetryState = { identity: BrowserMediaIdentity; nextRetryAt: number }
+export type BrowserMediaPresentationRoute = 'direct-video' | 'low-bandwidth-fallback' | 'reconnecting' | 'unavailable'
+export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
 
 /** Assemble an exact client decline after direct video cannot present its first frame. */
 export function browserMediaDeclineMessage(identity: BrowserMediaIdentity): Extract<BrowserClientMessage, { type: 'media-decline' }> {
   return { type: 'media-decline', ...identity, reason: 'presentation-failed' }
+}
+
+/** Decline only a local failure that still belongs to the current Host media identity. */
+export function browserMediaDeclineForFailure(
+  failed: BrowserMediaIdentity,
+  current: BrowserMediaIdentity | undefined,
+  reason: BrowserMediaFailureReason | undefined,
+): Extract<BrowserClientMessage, { type: 'media-decline' }> | undefined {
+  if (current === undefined || reason === undefined || reason === 'host-fallback' || !sameMediaIdentity(failed, current)) return undefined
+  return browserMediaDeclineMessage(failed)
+}
+
+/** Project one Host route update without claiming direct video before a decoded frame is presented. */
+export function browserMediaRouteFromHost(
+  message: BrowserMediaRouteMessage,
+  current: BrowserMediaPresentationRoute,
+): BrowserMediaPresentationRoute {
+  if (message.route === 'unavailable') return 'unavailable'
+  if (message.status === 'reconnecting') return 'reconnecting'
+  if (message.route === 'jpeg-fallback') return 'low-bandwidth-fallback'
+  return current === 'direct-video' ? current : 'reconnecting'
+}
+
+/** Project the receiver's presentation-aware route into the user-visible state. */
+export function browserMediaRouteFromReceiver(
+  route: 'connecting' | 'webrtc-direct' | 'jpeg-fallback',
+): BrowserMediaPresentationRoute {
+  if (route === 'connecting') return 'reconnecting'
+  return route === 'webrtc-direct' ? 'direct-video' : 'low-bandwidth-fallback'
 }
 
 /** Rate-limit a receiver-less retry while allowing a new layout/media identity immediately. */

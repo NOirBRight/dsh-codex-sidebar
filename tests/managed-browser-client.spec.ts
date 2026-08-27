@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
@@ -42,6 +42,32 @@ describe('managed Browser stream client', () => {
     expect(browserMediaRetryRequest(first.state, { ...identity, mediaGeneration: 10 }, 'explicit', 1_000, 5_001).message).toEqual({
       type: 'media-retry', ...identity, mediaGeneration: 10, trigger: 'explicit',
     })
+  })
+
+  it('declines every current local presentation failure but never a stale or Host-selected fallback', () => {
+    const current = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    for (const reason of ['negotiation-timeout', 'negotiation-error', 'peer-failed', 'presentation-failed'] as const) {
+      expect(browserMediaDeclineForFailure(current, current, reason)).toEqual({
+        type: 'media-decline', ...current, reason: 'presentation-failed',
+      })
+    }
+    expect(browserMediaDeclineForFailure({ ...current, ownerId: 'stale-owner' }, current, 'negotiation-timeout')).toBeUndefined()
+    expect(browserMediaDeclineForFailure({ ...current, revision: 3 }, current, 'negotiation-error')).toBeUndefined()
+    expect(browserMediaDeclineForFailure({ ...current, mediaGeneration: 8 }, current, 'peer-failed')).toBeUndefined()
+    expect(browserMediaDeclineForFailure(current, undefined, 'presentation-failed')).toBeUndefined()
+    expect(browserMediaDeclineForFailure(current, current, 'host-fallback')).toBeUndefined()
+  })
+
+  it('projects every Host and receiver route into one user-visible media state', () => {
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'webrtc-direct', status: 'active' }, 'reconnecting')).toBe('reconnecting')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'webrtc-direct', status: 'active' }, 'direct-video')).toBe('direct-video')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'reconnecting' }, 'low-bandwidth-fallback')).toBe('reconnecting')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'peer-failed' }, 'direct-video')).toBe('low-bandwidth-fallback')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }, 'reconnecting')).toBe('low-bandwidth-fallback')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'unavailable', status: 'degraded' }, 'direct-video')).toBe('unavailable')
+    expect(browserMediaRouteFromReceiver('connecting')).toBe('reconnecting')
+    expect(browserMediaRouteFromReceiver('webrtc-direct')).toBe('direct-video')
+    expect(browserMediaRouteFromReceiver('jpeg-fallback')).toBe('low-bandwidth-fallback')
   })
 
   it('bounds early Host candidates by the exact owner and drains them in arrival order', () => {

@@ -10,7 +10,7 @@ import {
 
 const IDENTITY: BrowserMediaClientIdentity = {
   ownerId: 'owner-1',
-  layoutRevision: 4,
+  revision: 4,
   mediaGeneration: 7,
 }
 
@@ -238,7 +238,7 @@ describe('managed Browser WebRTC receiver', () => {
     first.track(staleTrack)
     expect(staleTrack.stopCalls).toBe(1)
     expect(events).toHaveLength(eventCount)
-    await expect(receiver.addCandidate({ ...IDENTITY, layoutRevision: 3 }, { candidate: 'wrong-layout' })).resolves.toBe(false)
+    await expect(receiver.addCandidate({ ...IDENTITY, revision: 3 }, { candidate: 'wrong-layout' })).resolves.toBe(false)
     expect(second.candidates).toEqual([])
     second.track(currentTrack)
     expect(events.at(-1)).toEqual({ ...IDENTITY, event: { type: 'video-track', track: currentTrack } })
