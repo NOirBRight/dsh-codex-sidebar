@@ -376,8 +376,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
 
   function projectPages(): Record<string, BrowserState> {
     const out: Record<string, BrowserState> = {}
-    for (const [id, state] of Object.entries(pages)) {
-      out[id] = projectBrowser(state, opts.browser)
+    for (const tab of tabs) {
+      if (tab.kind !== 'Browser') continue
+      out[tab.id] = projectBrowser(pages[tab.id] ?? emptyBrowser(), opts.browser)
     }
     return out
   }

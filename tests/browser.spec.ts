@@ -109,6 +109,17 @@ function session(browser: BrowserPort, opts?: { busy?: () => boolean }) {
 }
 
 describe('Browser seam', () => {
+  it('projects an empty state for a newly opened Browser Tab', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'pick-tool', kind: 'Browser' })
+    const snap = box.snapshot()
+    const tabId = snap.tabs[0]?.id
+
+    expect(tabId).toBeDefined()
+    expect(snap.browser.status).toBe('empty')
+    expect(snap.browsers[tabId ?? '']?.status).toBe('empty')
+  })
+
   it('opens a Browser Tab for a URL, reuses that Tab for the same URL, and leaves paths to Files', () => {
     const box = session(fakeBrowser())
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
