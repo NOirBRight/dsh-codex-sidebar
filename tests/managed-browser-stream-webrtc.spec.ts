@@ -161,13 +161,17 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
 
   it('keeps direct capture independent from an Origin-less Mobile fallback budget and reports route diagnostics', async () => {
     let layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    let now = 1_000
+    let allowFallbackFrame = false
     const captures: Array<{ quality: number; scale: number }> = []
+    const encoders: FakeEncoder[] = []
     const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
     cdp.send = async (method, params) => {
       if (method === 'Page.captureScreenshot') {
         const capture = params as { quality: number; clip: { scale: number } }
         captures.push({ quality: capture.quality, scale: capture.clip.scale })
-        return { data: Buffer.alloc(120 * 1024, 1).toString('base64') }
+        now += 5
+        return { data: Buffer.alloc(allowFallbackFrame ? 90 * 1024 : 120 * 1024, 1).toString('base64') }
       }
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
@@ -181,15 +185,16 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
         return layout
       },
       outline: async () => ({ documentId: 'd1', nodes: [] }), trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
-      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') },
+      mediaPageCount: () => encoders.filter((encoder) => encoder.disposed === 0).length,
     }
-    const encoders: FakeEncoder[] = []
     const stream = new ManagedBrowserStream({
       runtime: runtime as never,
       directVideoCaptureQuality: 88,
       directVideoCaptureMaxScale: 1.25,
       directVideoCaptureMaxRawBytes: 160 * 1024,
       webrtcNegotiationTimeoutMs: 1_000,
+      now: () => now,
       encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
     })
     const server = createServer()
@@ -200,8 +205,16 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'mobile', tabId: 't' }).path)
     let fallbackFrames = 0
     client.on('message', (data) => {
-      const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string }
-      if (message.type === 'frame') fallbackFrames += 1
+      const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as {
+        type?: string; sequence?: number; revision?: number; mediaGeneration?: number
+      }
+      if (message.type === 'frame') {
+        fallbackFrames += 1
+        now += 13
+        client.send(JSON.stringify({
+          type: 'frame-ack', sequence: message.sequence, revision: message.revision, mediaGeneration: message.mediaGeneration,
+        }))
+      }
     })
     try {
       await new Promise<void>((resolve, reject) => {
@@ -213,13 +226,48 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       })
       await vi.waitFor(() => {
         expect(encoders).toHaveLength(1)
-        expect(stream.diagnostics()).toMatchObject({ fallbackBytes: 0, fallbackRecaptures: 3, mediaAttempts: 1 })
+        expect(stream.diagnostics()).toMatchObject({
+          currentViewportRevision: 1,
+          currentMediaGeneration: 1,
+          fallbackBytes: 0,
+          fallbackRecaptures: 3,
+          encodedBytes: 0,
+          routeBudgetDrops: 1,
+          mediaAttempts: 1,
+          activePeers: 1,
+          activeEncoderPages: 1,
+          activeSockets: 1,
+          activeTimers: 1,
+          activeCaptures: 0,
+          captureLatencyMs: { samples: 1, lastMs: 20, maxMs: 20, totalMs: 20 },
+        })
       })
+      allowFallbackFrame = true
+      now += 300
+      cdp.emit('Page.screencastFrame', { data: 'dirty', sessionId: 1 })
+      await vi.waitFor(() => {
+        expect(fallbackFrames).toBe(1)
+        expect(stream.diagnostics()).toMatchObject({
+          fallbackBytes: 90 * 1024,
+          encodedBytes: 90 * 1024,
+          encodeLatencyMs: { samples: 1 },
+          sendLatencyMs: { samples: 1 },
+          fallbackAckEndToEndLatencyMs: { samples: 1, lastMs: 13 },
+        })
+      })
+      now += 300
       encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
       await vi.waitFor(() => { expect(encoders[0]?.frames.length).toBeGreaterThan(0) })
+      now += 7
+      encoders[0]?.signal({
+        type: 'frame-painted', sequence: encoders[0]?.frames.at(-1) ?? 0, width: 1280, height: 800,
+      })
+      await vi.waitFor(() => {
+        expect(stream.diagnostics()).toMatchObject({ encoderPaintLatencyMs: { samples: 1, lastMs: 7 } })
+      })
       expect(captures).toContainEqual({ quality: 88, scale: 1.25 })
       expect(captures.filter((capture) => capture.quality === 88)).toHaveLength(1)
-      expect(fallbackFrames).toBe(0)
+      expect(JSON.stringify(stream.diagnostics())).not.toContain('example.test')
 
       client.send(JSON.stringify({ type: 'input', revision: 99, input: { type: 'tap', x: 10, y: 20 } }))
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
@@ -240,6 +288,96 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(stream.resources()).toMatchObject({ sockets: 1, captures: 0, unackedFrames: 0, peers: 0 })
     } finally {
       client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
+  it('evicts the oldest fallback peer under capacity pressure but never evicts active peers', async () => {
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    const cdps = new Map<string, EventEmitter & { send(method: string): Promise<unknown> }>()
+    const cdpFor = (tabId: string) => {
+      let cdp = cdps.get(tabId)
+      if (cdp !== undefined) return cdp
+      cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+      cdp.send = async (method) => method === 'Page.captureScreenshot'
+        ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+        : method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+      cdps.set(tabId, cdp)
+      return cdp
+    }
+    const runtime = {
+      target: (tab: { tabId: string }) => ({ cdp: cdpFor(tab.tabId), layout }),
+      keyOf: (tab: { sessionId: string; tabId: string }) => tab.sessionId + ':' + tab.tabId,
+      touch: () => {}, acquire: () => () => {}, layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: (tab: { tabId: string }) => ({ tabId: tab.tabId, url: 'about:blank', title: '', documentId: tab.tabId, status: 'ready' }),
+      proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+    }
+    const encoders: FakeEncoder[] = []
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never,
+      maxMediaPeers: 2,
+      encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
+    })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const clients: WebSocket[] = []
+    const connect = async (tabId: string): Promise<Array<Record<string, unknown>>> => {
+      const messages: Array<Record<string, unknown>> = []
+      const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId }).path)
+      clients.push(client)
+      client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: true } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(messages.some((message) => message.type === 'rtc-offer' || message.type === 'media-route')).toBe(true) })
+      return messages
+    }
+    try {
+      const firstMessages = await connect('first')
+      await vi.waitFor(() => { expect(encoders).toHaveLength(1) })
+      const secondMessages = await connect('second')
+      await vi.waitFor(() => { expect(encoders).toHaveLength(2) })
+      expect(firstMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+      expect(secondMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+
+      const thirdMessages = await connect('third')
+      await vi.waitFor(() => {
+        expect(encoders).toHaveLength(3)
+        expect(encoders[0]?.disposed).toBe(1)
+        expect(firstMessages).toContainEqual(expect.objectContaining({
+          type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'local-capacity-evicted',
+        }))
+      })
+      expect(encoders[1]?.disposed).toBe(0)
+      expect(thirdMessages.some((message) => message.type === 'rtc-offer')).toBe(true)
+      encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
+      expect(firstMessages.some((message) => message.type === 'media-route' && message.route === 'webrtc-direct')).toBe(false)
+
+      encoders[1]?.signal({ type: 'connection-state', state: 'connected' })
+      encoders[2]?.signal({ type: 'connection-state', state: 'connected' })
+      const fourthMessages = await connect('fourth')
+      await vi.waitFor(() => {
+        expect(fourthMessages).toContainEqual(expect.objectContaining({
+          type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'local-capacity',
+        }))
+      })
+      expect(encoders).toHaveLength(3)
+      expect(encoders[1]?.disposed).toBe(0)
+      expect(encoders[2]?.disposed).toBe(0)
+      expect(stream.resources().peers).toBe(2)
+    } finally {
+      for (const client of clients) client.close()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => resolve()) })
     }

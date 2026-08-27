@@ -99,6 +99,7 @@ describe('managed Browser Host protocol v2', () => {
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       outline: async () => ({ documentId: 'd1', nodes: [] }), trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      mediaPageCount: () => 0,
     }
     const stream = new ManagedBrowserStream({
       runtime: runtime as never,

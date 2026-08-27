@@ -236,7 +236,16 @@ type BrowserMediaAttempt = {
   candidates: Array<BrowserRtcCandidate | null>
   negotiationTimer: ReturnType<typeof setTimeout> | undefined
   idleTimer: ReturnType<typeof setTimeout> | undefined
+  submittedAt: Map<number, number>
+  capacityOwner: BrowserMediaCapacityOwner
   released: boolean
+}
+
+type BrowserMediaCapacityOwner = {
+  ownerId: string
+  order: number
+  fallback(): boolean
+  evict(): Promise<boolean>
 }
 
 type BrowserTabConnection = {
@@ -260,6 +269,13 @@ export type ManagedBrowserMediaRouteDiagnostic = {
   reason?: string
 }
 
+export type ManagedBrowserLatencyDiagnostic = {
+  samples: number
+  totalMs: number
+  lastMs: number
+  maxMs: number
+}
+
 export type ManagedBrowserStreamDiagnostics = {
   layoutProposals: number
   layoutCommits: number
@@ -267,8 +283,22 @@ export type ManagedBrowserStreamDiagnostics = {
   staleCaptureDrops: number
   fallbackBytes: number
   fallbackRecaptures: number
+  encodedBytes: number
+  routeBudgetDrops: number
   mediaAttempts: number
   mediaFailures: number
+  currentViewportRevision: number | undefined
+  currentMediaGeneration: number | undefined
+  captureLatencyMs: ManagedBrowserLatencyDiagnostic
+  encodeLatencyMs: ManagedBrowserLatencyDiagnostic
+  sendLatencyMs: ManagedBrowserLatencyDiagnostic
+  encoderPaintLatencyMs: ManagedBrowserLatencyDiagnostic
+  fallbackAckEndToEndLatencyMs: ManagedBrowserLatencyDiagnostic
+  activePeers: number
+  activeEncoderPages: number
+  activeCaptures: number
+  activeSockets: number
+  activeTimers: number
   lastMediaRoute: ManagedBrowserMediaRouteDiagnostic | undefined
   mediaRouteReasons: Record<string, number>
 }
@@ -301,6 +331,9 @@ export class ManagedBrowserStream {
   #shutdownTimeoutMs: number
   #encoderFactory: ManagedBrowserWebRtcEncoderFactory
   #peerCount = 0
+  #mediaCapacityOwners = new Map<string, BrowserMediaCapacityOwner>()
+  #mediaCapacityOrder = 0
+  #mediaCapacityTransition = Promise.resolve()
   #diagnostics: ManagedBrowserStreamDiagnostics = {
     layoutProposals: 0,
     layoutCommits: 0,
@@ -308,8 +341,22 @@ export class ManagedBrowserStream {
     staleCaptureDrops: 0,
     fallbackBytes: 0,
     fallbackRecaptures: 0,
+    encodedBytes: 0,
+    routeBudgetDrops: 0,
     mediaAttempts: 0,
     mediaFailures: 0,
+    currentViewportRevision: undefined,
+    currentMediaGeneration: undefined,
+    captureLatencyMs: emptyLatencyDiagnostic(),
+    encodeLatencyMs: emptyLatencyDiagnostic(),
+    sendLatencyMs: emptyLatencyDiagnostic(),
+    encoderPaintLatencyMs: emptyLatencyDiagnostic(),
+    fallbackAckEndToEndLatencyMs: emptyLatencyDiagnostic(),
+    activePeers: 0,
+    activeEncoderPages: 0,
+    activeCaptures: 0,
+    activeSockets: 0,
+    activeTimers: 0,
     lastMediaRoute: undefined,
     mediaRouteReasons: {},
   }
@@ -412,6 +459,16 @@ export class ManagedBrowserStream {
   diagnostics(): ManagedBrowserStreamDiagnostics {
     return {
       ...this.#diagnostics,
+      captureLatencyMs: { ...this.#diagnostics.captureLatencyMs },
+      encodeLatencyMs: { ...this.#diagnostics.encodeLatencyMs },
+      sendLatencyMs: { ...this.#diagnostics.sendLatencyMs },
+      encoderPaintLatencyMs: { ...this.#diagnostics.encoderPaintLatencyMs },
+      fallbackAckEndToEndLatencyMs: { ...this.#diagnostics.fallbackAckEndToEndLatencyMs },
+      activePeers: this.#peerCount,
+      activeEncoderPages: this.#runtime.mediaPageCount(),
+      activeCaptures: this.#captureCount,
+      activeSockets: this.#sockets.size,
+      activeTimers: this.#timerCount,
       lastMediaRoute: this.#diagnostics.lastMediaRoute === undefined ? undefined : { ...this.#diagnostics.lastMediaRoute },
       mediaRouteReasons: { ...this.#diagnostics.mediaRouteReasons },
     }
@@ -440,6 +497,8 @@ export class ManagedBrowserStream {
     this.#sockets.clear()
     this.#tabConnections.clear()
     this.#socketCleanup.clear()
+    this.#mediaCapacityOwners.clear()
+    this.#peerCount = 0
     this.#tasks.clear()
   }
 
@@ -491,7 +550,7 @@ export class ManagedBrowserStream {
     let captureInFlight = false
     let captureOwned = false
     let captureTask: Promise<void> | undefined
-    let unacked: { sequence: number; revision: number; mediaGeneration: number } | undefined
+    let unacked: { sequence: number; revision: number; mediaGeneration: number; sentAt: number } | undefined
     let dirty: { kind: 'activity' | 'passive' } | undefined
     let frameTimer: ReturnType<typeof setTimeout> | undefined
     let sourceAttached = false
@@ -525,6 +584,8 @@ export class ManagedBrowserStream {
       return true
     }
     const sendLayout = (layout: BrowserLayout): void => {
+      this.#diagnostics.currentViewportRevision = layout.revision
+      this.#diagnostics.currentMediaGeneration = layout.mediaGeneration
       const signature = layout.revision + ':' + layout.mediaGeneration
       if (signature === lastLayout || socket.readyState !== WebSocket.OPEN) return
       lastLayout = signature
@@ -543,10 +604,15 @@ export class ManagedBrowserStream {
         encodedSize: capture.encodedSize,
         jpeg: capture.jpeg,
       }
-      socket.send(profile.frameEncoding === 'binary-v2'
+      const encodeStartedAt = this.#now()
+      const payload = profile.frameEncoding === 'binary-v2'
         ? encodeBrowserStreamFrameV2(frame)
-        : encodeBrowserStreamJsonFrameV2(frame))
-      unacked = { sequence, revision: layout.revision, mediaGeneration: layout.mediaGeneration }
+        : encodeBrowserStreamJsonFrameV2(frame)
+      recordLatency(this.#diagnostics.encodeLatencyMs, this.#now() - encodeStartedAt)
+      const sendStartedAt = this.#now()
+      socket.send(payload)
+      recordLatency(this.#diagnostics.sendLatencyMs, this.#now() - sendStartedAt)
+      unacked = { sequence, revision: layout.revision, mediaGeneration: layout.mediaGeneration, sentAt: this.#now() }
       this.#unackedCount += 1
       return true
     }
@@ -587,6 +653,7 @@ export class ManagedBrowserStream {
         return
       }
       if (dirty.kind === 'passive' && !fallbackActivity.takePassive(directVideo)) {
+        this.#diagnostics.routeBudgetDrops += 1
         dirty = undefined
         return
       }
@@ -603,16 +670,19 @@ export class ManagedBrowserStream {
       }
       const captureRoute = directVideo ? 'webrtc-direct' : 'jpeg-fallback'
       const captureProfile = directVideo ? this.#directCaptureProfile : profile
+      const captureStartedAt = this.#now()
       const task = captureBrowserJpegForLayout(cdp, capturedLayout, currentLayout, captureProfile, {
         onCaptureAttempt: (attemptIndex) => {
           if (captureRoute === 'jpeg-fallback' && attemptIndex > 0) this.#diagnostics.fallbackRecaptures += 1
         },
         onStaleDrop: () => { this.#diagnostics.staleCaptureDrops += 1 },
       }).then((capture) => {
+        recordLatency(this.#diagnostics.captureLatencyMs, this.#now() - captureStartedAt)
         if (detached) return
         if (capture === undefined) {
           const current = currentLayout()
           if (current?.revision !== capturedLayout.revision || current.mediaGeneration !== capturedLayout.mediaGeneration) return
+          this.#diagnostics.routeBudgetDrops += 1
           if (captureRoute === 'webrtc-direct') {
             const attempt = mediaAttempt
             if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) {
@@ -626,6 +696,7 @@ export class ManagedBrowserStream {
           }
           return
         }
+        this.#diagnostics.encodedBytes = Math.min(Number.MAX_SAFE_INTEGER, this.#diagnostics.encodedBytes + capture.jpeg.byteLength)
         if (mediaDegraded && socket.readyState === WebSocket.OPEN) {
           mediaDegraded = false
           sendMediaRoute('jpeg-fallback', 'active')
@@ -634,12 +705,20 @@ export class ManagedBrowserStream {
         if (captureRoute === 'webrtc-direct') {
           if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) {
             mediaFrameSequence += 1
-            attempt.encoder.submit({
+            const submitted = attempt.encoder.submit({
               sequence: mediaFrameSequence,
               width: capture.encodedSize.width,
               height: capture.encodedSize.height,
               jpeg: capture.jpeg,
             })
+            if (submitted) {
+              attempt.submittedAt.set(mediaFrameSequence, this.#now())
+              while (attempt.submittedAt.size > 2) {
+                const oldest = attempt.submittedAt.keys().next().value as number | undefined
+                if (oldest === undefined) break
+                attempt.submittedAt.delete(oldest)
+              }
+            }
           }
           return
         }
@@ -676,7 +755,8 @@ export class ManagedBrowserStream {
       clearMediaTimer(attempt, 'idleTimer')
       if (attempt.released) return
       attempt.released = true
-      this.#peerCount -= 1
+      attempt.submittedAt.clear()
+      this.#releaseMediaCapacity(attempt.capacityOwner)
       await attempt.encoder.dispose().catch(() => undefined)
     }
     const sendMediaRoute = (route: 'jpeg-fallback' | 'webrtc-direct', status: 'active' | 'degraded' | 'reconnecting', reason?: string): void => {
@@ -723,53 +803,81 @@ export class ManagedBrowserStream {
         }
         return
       }
+      if (signal.type === 'frame-painted') {
+        const submittedAt = attempt.submittedAt.get(signal.sequence)
+        if (submittedAt !== undefined) {
+          recordLatency(this.#diagnostics.encoderPaintLatencyMs, this.#now() - submittedAt)
+          for (const sequence of attempt.submittedAt.keys()) if (sequence <= signal.sequence) attempt.submittedAt.delete(sequence)
+        }
+        return
+      }
       if (signal.type === 'encoder-error') this.#track(failMediaAttempt(attempt, 'encoder-error'))
     }
     const startMediaAttempt = async (layout: BrowserLayout): Promise<void> => {
       if (detached || !clientWebRtc || this.#preferredMediaRoute === 'jpeg-only' || !sameMediaLayout(currentLayout(), layout)) return
       this.#diagnostics.mediaAttempts += 1
-      if (this.#peerCount >= this.#maxMediaPeers) {
+      let attempt: BrowserMediaAttempt | undefined
+      const capacityOwner = await this.#reserveMediaCapacity((order) => {
+        let owner: BrowserMediaCapacityOwner
+        const encoder = this.#encoderFactory({
+          identity: { ownerId, generation: layout.mediaGeneration },
+          pageFactory: () => this.#runtime.createMediaPage(),
+          stunUrls: this.#stunUrls,
+          width: layout.viewport.width,
+          height: layout.viewport.height,
+          frameRate: this.#directVideoFrameRate,
+          maxBitrate: this.#directVideoMaxBitrate,
+          onSignal: (message) => { if (attempt !== undefined) handleMediaSignal(attempt, message) },
+        })
+        owner = {
+          ownerId,
+          order,
+          fallback: () => attempt !== undefined && !attempt.connected && !attempt.released,
+          evict: async () => {
+            const target = attempt
+            if (target === undefined || mediaAttempt !== target || target.connected || target.released) return false
+            await failMediaAttempt(target, 'local-capacity-evicted')
+            return target.released
+          },
+        }
+        attempt = {
+          layout: { ...layout, viewport: { ...layout.viewport } }, encoder, connected: false,
+          answerStarted: false, answerAccepted: false, inboundCandidateCount: 0, outboundCandidateCount: 0, candidates: [],
+          negotiationTimer: undefined, idleTimer: undefined, submittedAt: new Map(), capacityOwner: owner, released: false,
+        }
+        mediaAttempt = attempt
+        return owner
+      })
+      if (capacityOwner === undefined || attempt === undefined) {
         lastMediaFailureAt = this.#now()
         this.#diagnostics.mediaFailures += 1
         sendMediaRoute('jpeg-fallback', 'degraded', 'local-capacity')
         requestFrame('activity')
         return
       }
-      let attempt: BrowserMediaAttempt
-      const encoder = this.#encoderFactory({
-        identity: { ownerId, generation: layout.mediaGeneration },
-        pageFactory: () => this.#runtime.createMediaPage(),
-        stunUrls: this.#stunUrls,
-        width: layout.viewport.width,
-        height: layout.viewport.height,
-        frameRate: this.#directVideoFrameRate,
-        maxBitrate: this.#directVideoMaxBitrate,
-        onSignal: (message) => { handleMediaSignal(attempt, message) },
-      })
-      attempt = {
-        layout: { ...layout, viewport: { ...layout.viewport } }, encoder, connected: false,
-        answerStarted: false, answerAccepted: false, inboundCandidateCount: 0, outboundCandidateCount: 0, candidates: [],
-        negotiationTimer: undefined, idleTimer: undefined, released: false,
+      if (detached || mediaAttempt !== attempt || !sameMediaLayout(currentLayout(), layout)) {
+        if (mediaAttempt === attempt) mediaAttempt = undefined
+        await releaseMediaAttempt(attempt)
+        return
       }
-      mediaAttempt = attempt
+      const activeAttempt = attempt
       mediaIdleSuspended = false
-      this.#peerCount += 1
       this.#timerCount += 1
-      attempt.negotiationTimer = setTimeout(() => {
-        attempt.negotiationTimer = undefined
+      activeAttempt.negotiationTimer = setTimeout(() => {
+        activeAttempt.negotiationTimer = undefined
         this.#timerCount -= 1
-        this.#track(failMediaAttempt(attempt, 'negotiation-timeout'))
+        this.#track(failMediaAttempt(activeAttempt, 'negotiation-timeout'))
       }, this.#webrtcNegotiationTimeoutMs)
-      attempt.negotiationTimer.unref()
+      activeAttempt.negotiationTimer.unref()
       sendMediaRoute('jpeg-fallback', 'reconnecting')
       try {
-        const offer = await encoder.start()
-        if (mediaAttempt !== attempt || detached || !sameMediaLayout(currentLayout(), layout)) return
+        const offer = await activeAttempt.encoder.start()
+        if (mediaAttempt !== activeAttempt || detached || !sameMediaLayout(currentLayout(), layout)) return
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
           type: 'rtc-offer', ownerId, revision: layout.revision, mediaGeneration: layout.mediaGeneration, description: offer,
         }))
       } catch {
-        await failMediaAttempt(attempt, 'encoder-start-failed')
+        await failMediaAttempt(activeAttempt, 'encoder-start-failed')
       }
     }
     const replaceMediaAttempt = (layout: BrowserLayout): void => {
@@ -943,6 +1051,7 @@ export class ManagedBrowserStream {
           && message.sequence === unacked.sequence
           && message.revision === unacked.revision
           && message.mediaGeneration === unacked.mediaGeneration) {
+          recordLatency(this.#diagnostics.fallbackAckEndToEndLatencyMs, this.#now() - unacked.sentAt)
           unacked = undefined
           this.#unackedCount -= 1
           pump()
@@ -1079,6 +1188,36 @@ export class ManagedBrowserStream {
   #track(task: Promise<void>): void {
     this.#tasks.add(task)
     void task.finally(() => { this.#tasks.delete(task) })
+  }
+
+  async #reserveMediaCapacity(create: (order: number) => BrowserMediaCapacityOwner): Promise<BrowserMediaCapacityOwner | undefined> {
+    const reservation = this.#mediaCapacityTransition.then(async () => {
+      while (this.#peerCount >= this.#maxMediaPeers) {
+        const candidates = [...this.#mediaCapacityOwners.values()]
+          .filter((owner) => owner.fallback())
+          .sort((left, right) => left.order - right.order)
+        let evicted = false
+        for (const candidate of candidates) {
+          if (await candidate.evict()) {
+            evicted = true
+            break
+          }
+        }
+        if (!evicted) return undefined
+      }
+      const owner = create(++this.#mediaCapacityOrder)
+      this.#mediaCapacityOwners.set(owner.ownerId, owner)
+      this.#peerCount += 1
+      return owner
+    })
+    this.#mediaCapacityTransition = reservation.then(() => undefined, () => undefined)
+    return await reservation
+  }
+
+  #releaseMediaCapacity(owner: BrowserMediaCapacityOwner): void {
+    if (this.#mediaCapacityOwners.get(owner.ownerId) !== owner) return
+    this.#mediaCapacityOwners.delete(owner.ownerId)
+    this.#peerCount -= 1
   }
 }
 
@@ -1285,6 +1424,18 @@ function nonNegativeStreamInteger(value: number | undefined, fallback: number, n
   if (value === undefined) return fallback
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('managedBrowser ' + name + ' must be a non-negative safe integer')
   return value
+}
+
+function emptyLatencyDiagnostic(): ManagedBrowserLatencyDiagnostic {
+  return { samples: 0, totalMs: 0, lastMs: 0, maxMs: 0 }
+}
+
+function recordLatency(metric: ManagedBrowserLatencyDiagnostic, elapsedMs: number): void {
+  const sample = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0)
+  metric.samples = Math.min(Number.MAX_SAFE_INTEGER, metric.samples + 1)
+  metric.totalMs = Math.min(Number.MAX_SAFE_INTEGER, metric.totalMs + sample)
+  metric.lastMs = sample
+  metric.maxMs = Math.max(metric.maxMs, sample)
 }
 
 function boundedStreamInteger(value: number | undefined, fallback: number, min: number, max: number, name: string): number {

@@ -91,7 +91,7 @@ phone、tablet、laptop 三个固定预设仍为 `390×844`、`768×1024`、`128
 
 Browser surface 会按用户实际可呈现的 route 显示 `Direct video`、`Low-bandwidth fallback`、`Reconnecting video` 或 `Video unavailable`。Autoplay、decode、缺少 track、首帧、peer 与本地 negotiation 失败只会 decline 精确匹配当前 owner/layout/media generation 的媒体，Host 因而能恢复 JPEG，旧 generation 不会中断当前 route。
 
-`ManagedBrowserStream.diagnostics()` 提供累计 layout proposal/commit、stale input/capture、fallback byte/recapture、media attempt/failure 计数以及最近一次 route reason。`resources()` 仍只返回当前 socket、timer、capture、未确认 frame 和 peer 的资源持有数量。
+`ManagedBrowserStream.diagnostics()` 提供不随页面内容增长的计数、仪表和延迟汇总，不记录页面 URL 或内容。它包含最近 viewport revision/media generation、capture、fallback 编码/发送、编码器 Canvas paint、fallback 端到端 ACK 延迟、编码字节与 route budget drop、媒体结果，以及当前 peer、encoder Page、capture、socket 和 timer 数量。`resources()` 仍保持既有 socket、timer、capture、未确认 frame 和 peer 字段不变。peer 容量满时会先释放最老且仍处于 fallback 协商阶段的 owner；活跃直连 peer 不会因容量被逐出，没有安全候选时新请求以 `local-capacity` 回退。
 
 以上数值均为默认值。`mediaIdleTimeoutMs` 会释放无活动的直连视频 peer，但保留目标 Page；后续交互可在重试冷却期结束后重新协商。当文档或 Browser surface 变为隐藏时，`mediaHideGraceMs` 会在短暂恢复窗口内保留控制连接。到期前恢复可取消回收；到期后会关闭控制连接并释放对应 peer 和 encoder，但不会关闭目标 Page。插件关闭时允许 stream socket 和已启动任务在 `streamShutdownTimeoutMs` 内安全结束；超时后会 terminate 不响应的 socket，并停止保留未结束的任务记账。
 
