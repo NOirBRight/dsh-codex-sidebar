@@ -46,6 +46,11 @@ type EffectContext = {
     effect: (callback: () => void | (() => void), label?: string) => void;
 };
 type HostContext = EffectContext & {
+    on: (name: 'session/disposed', listener: (session: {
+        id: string;
+    }) => void, options: {
+        global: true;
+    }) => () => void;
     inject: (deps: readonly string[], callback: (ctx: EffectContext & {
         connection?: {
             rpc: RpcHandle;

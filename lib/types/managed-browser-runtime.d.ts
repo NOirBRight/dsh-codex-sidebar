@@ -62,6 +62,12 @@ export type ManagedBrowserConfig = {
     directVideoFrameRate?: number;
     /** Maximum direct-video sender bitrate in bits per second. */
     directVideoMaxBitrate?: number;
+    /** Initial JPEG quality used only to feed the direct-video encoder. */
+    directVideoCaptureQuality?: number;
+    /** Maximum encoded-to-CSS pixel scale used only to feed the direct-video encoder. */
+    directVideoCaptureMaxScale?: number;
+    /** Raw JPEG ceiling used only between the target Page and direct-video encoder. */
+    directVideoCaptureMaxRawBytes?: number;
     /** Dispose an inactive direct-video peer after this many milliseconds. */
     mediaIdleTimeoutMs?: number;
     /** Keep the Browser control connection alive this long after its surface becomes hidden. */

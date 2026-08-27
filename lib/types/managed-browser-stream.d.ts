@@ -14,9 +14,12 @@ export declare const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250;
 export declare const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4;
 export declare const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES: number;
 export declare const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES: number;
+export declare const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_RAW_BYTES: number;
 export declare const MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES = 20;
 export declare const MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES = 4;
 export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
+export declare const MANAGED_BROWSER_DIRECT_CAPTURE_QUALITY = 80;
+export declare const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_SCALE = 1.5;
 export declare const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65;
 export declare const MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS: number;
 export type BrowserStreamTransportProfile = {
@@ -42,7 +45,15 @@ export type BrowserStreamProfileConfig = {
     mobileScreencastEveryNthFrame?: number | undefined;
     mobileJpegInteractionBurstFrames?: number | undefined;
 };
-export declare function browserStreamTransportProfile(origin: string | undefined, config?: BrowserStreamProfileConfig): BrowserStreamTransportProfile;
+export type BrowserDirectCaptureProfileConfig = {
+    directVideoCaptureQuality?: number | undefined;
+    directVideoCaptureMaxScale?: number | undefined;
+    directVideoCaptureMaxRawBytes?: number | undefined;
+};
+export type BrowserDirectCaptureProfile = Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>;
+/** Resolve the encoder capture independently from the socket's fallback transport. */
+export declare function browserDirectCaptureProfile(config?: BrowserDirectCaptureProfileConfig): BrowserDirectCaptureProfile;
+export declare function browserStreamTransportProfile(route: 'desktop' | 'mobile', config?: BrowserStreamProfileConfig): BrowserStreamTransportProfile;
 /** Calculates the next capture delay without allowing priority requests to bypass the route FPS ceiling. */
 export declare function browserStreamCaptureDelay(lastCapturedAt: number | undefined, now: number, frameIntervalMs: number): number;
 /** Bounds passive screencast-driven fallback frames after explicit Browser activity. */
@@ -92,6 +103,9 @@ export type ManagedBrowserStreamOptions = {
     maxMediaPeers?: number;
     directVideoFrameRate?: number;
     directVideoMaxBitrate?: number;
+    directVideoCaptureQuality?: number;
+    directVideoCaptureMaxScale?: number;
+    directVideoCaptureMaxRawBytes?: number;
     mediaIdleTimeoutMs?: number;
     mediaHideGraceMs?: number;
     shutdownTimeoutMs?: number;
@@ -113,6 +127,23 @@ export type ManagedBrowserStreamResources = {
     unackedFrames: number;
     peers: number;
 };
+export type ManagedBrowserMediaRouteDiagnostic = {
+    route: 'jpeg-fallback' | 'webrtc-direct';
+    status: 'active' | 'degraded' | 'reconnecting';
+    reason?: string;
+};
+export type ManagedBrowserStreamDiagnostics = {
+    layoutProposals: number;
+    layoutCommits: number;
+    staleInputs: number;
+    staleCaptureDrops: number;
+    fallbackBytes: number;
+    fallbackRecaptures: number;
+    mediaAttempts: number;
+    mediaFailures: number;
+    lastMediaRoute: ManagedBrowserMediaRouteDiagnostic | undefined;
+    mediaRouteReasons: Record<string, number>;
+};
 export declare class ManagedBrowserStream {
     #private;
     constructor(opts: ManagedBrowserStreamOptions);
@@ -122,6 +153,8 @@ export declare class ManagedBrowserStream {
     closeTab(tab: ManagedTabKey): void;
     closeSession(sessionId: string): void;
     resources(): ManagedBrowserStreamResources;
+    /** Return cumulative protocol/media counters without changing owned-resource accounting. */
+    diagnostics(): ManagedBrowserStreamDiagnostics;
     consume(ticket: string): ManagedTabKey | undefined;
 }
 export declare function browserStreamVisualViewportOrigin(value: unknown): {
@@ -134,10 +167,14 @@ export type BrowserJpegCapture = {
     quality: number;
     scale: number;
 };
+export type BrowserJpegCaptureObserver = {
+    onCaptureAttempt?: (attemptIndex: number) => void;
+    onStaleDrop?: () => void;
+};
 /** Capture only while the supplied committed layout remains current. */
-export declare function captureBrowserJpegForLayout(cdp: ManagedCdpSession, layout: BrowserLayout, currentLayout: () => BrowserLayout | undefined, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>): Promise<BrowserJpegCapture | undefined>;
+export declare function captureBrowserJpegForLayout(cdp: ManagedCdpSession, layout: BrowserLayout, currentLayout: () => BrowserLayout | undefined, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>, observer?: BrowserJpegCaptureObserver): Promise<BrowserJpegCapture | undefined>;
 /** Capture the committed CSS viewport within one route's raw JPEG budget. */
-export declare function captureBrowserJpegWithinBudget(cdp: ManagedCdpSession, viewport: BrowserSize, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>): Promise<BrowserJpegCapture | undefined>;
+export declare function captureBrowserJpegWithinBudget(cdp: ManagedCdpSession, viewport: BrowserSize, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>, observer?: Pick<BrowserJpegCaptureObserver, 'onCaptureAttempt'>): Promise<BrowserJpegCapture | undefined>;
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;
