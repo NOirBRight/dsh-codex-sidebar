@@ -57,6 +57,9 @@ export class SidebarController {
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
   #pathTakeover = false
+  #urlClicks = false
+  #layoutReveal = false
+  #revealing = false
   #pendingCollapsed = new Map<string, boolean>()
   /** This client's details-track chrome. Host `collapsed` is not applied here. */
   #chromeCollapsed = new Map<string, boolean>()
@@ -204,6 +207,7 @@ export class SidebarController {
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
       if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
       if (toggle) this.#pendingCollapsed.delete(sessionId)
+      else if (intentRevealsSidebar(intent)) this.#writeChrome(sessionId, false)
       else this.#writeChrome(sessionId, reply.snapshot.collapsed)
       this.#hostCollapsed.set(sessionId, reply.snapshot.collapsed)
       const applied = this.#put(reply.snapshot)
@@ -274,6 +278,8 @@ export class SidebarController {
   }
 
   installPathTakeover(): void {
+    this.#installUrlClicks()
+    this.#installLayoutReveal()
     if (this.#pathTakeover) return
     const workspaces = this.#ctx.workspaces
     if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
@@ -295,7 +301,7 @@ export class SidebarController {
       // Keyboard activation has no pointerdown; capture the row before the host click handler runs.
       document.addEventListener('click', (event) => { captureToolContext(event.target) }, true)
     }
-    workspaces.openPath = async (path: string): Promise<void> => {
+    const patched = async (path: string): Promise<void> => {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
       if (sessionId === undefined) {
         await original(path)
@@ -320,11 +326,43 @@ export class SidebarController {
         ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
       })
     }
-    this.#installUrlClicks()
+    try {
+      workspaces.openPath = patched
+    } catch {
+      try {
+        Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
+      } catch {
+        // URL clicks still take over http(s) links; file rows keep the Host opener.
+      }
+    }
+  }
+
+  #installLayoutReveal(): void {
+    if (this.#layoutReveal) return
+    const layout = this.#layoutFace() as ILayout & { openDetails?: () => void }
+    if (typeof layout.openDetails !== 'function') return
+    this.#layoutReveal = true
+    const original = layout.openDetails.bind(layout)
+    const wrapped = (): void => {
+      original()
+      if (this.#revealing) return
+      const current = this.#ctx.sessions.list.getSnapshot().current
+      if (current !== undefined) this.#revealLocal(String(current))
+    }
+    try {
+      layout.openDetails = wrapped
+    } catch {
+      try {
+        Object.defineProperty(layout, 'openDetails', { value: wrapped, writable: true, configurable: true })
+      } catch {
+        this.#layoutReveal = false
+      }
+    }
   }
 
   #installUrlClicks(): void {
-    if (typeof document === 'undefined') return
+    if (this.#urlClicks || typeof document === 'undefined') return
+    this.#urlClicks = true
     document.addEventListener('click', (event) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const raw = event.target
@@ -402,15 +440,24 @@ export class SidebarController {
   }
 
   #revealLocal(sessionId: string): void {
-    const snapshot = this.snap(sessionId)
-    if (snapshot?.collapsed === false) {
+    if (this.#revealing) {
       this.#applyTrack(false)
       return
     }
-    this.#writeChrome(sessionId, false)
-    this.#noteCollapsed(sessionId, false)
-    this.#applyTrack(false)
-    if (snapshot !== undefined) this.#put({ ...snapshot, collapsed: false })
+    this.#revealing = true
+    try {
+      const snapshot = this.snap(sessionId)
+      if (snapshot?.collapsed === false) {
+        this.#applyTrack(false)
+        return
+      }
+      this.#writeChrome(sessionId, false)
+      this.#noteCollapsed(sessionId, false)
+      this.#applyTrack(false)
+      if (snapshot !== undefined) this.#put({ ...snapshot, collapsed: false })
+    } finally {
+      this.#revealing = false
+    }
   }
 
   /** Close this client's details track without collapsing other surfaces. */

@@ -92,7 +92,6 @@ function usePinFrameColumns(active: boolean, collapsed: boolean | undefined): vo
         unsub()
         observer.disconnect()
         resize.disconnect()
-        clearDetailsTrackStyle(frame)
       }
     }
     return () => { unsub() }

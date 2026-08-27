@@ -360,6 +360,51 @@ describe('annotation effect prompts', () => {
     expect(controller.snap('sess-a')?.collapsed).toBe(false)
   })
 
+  it('reveals this client when the host layout opens details', async () => {
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: { load: () => undefined, save: () => undefined },
+      isBusy: () => false,
+    })
+    const session = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    const openDetails = vi.fn()
+    const layout = { openDetails, closeDetails: vi.fn() }
+    const controller = new SidebarController({
+      ...controllerContext(session, async (_channel: string, endpoint: string) => {
+        if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+        return { ok: false }
+      }),
+      layout,
+    } as never)
+    await controller.refresh('sess-a')
+    expect(controller.snap('sess-a')?.collapsed).toBe(true)
+    controller.installPathTakeover()
+    layout.openDetails()
+    expect(openDetails).toHaveBeenCalled()
+    expect(controller.snap('sess-a')?.collapsed).toBe(false)
+  })
+
+  it('still intercepts layout.details and transcript URLs when openPath is missing', () => {
+    const openDetails = vi.fn()
+    const layout = { openDetails, closeDetails: vi.fn() }
+    const session = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    const controller = new SidebarController({
+      ...controllerContext(session, async () => ({ ok: false })),
+      layout,
+      workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
+    } as never)
+    expect(() => { controller.installPathTakeover() }).not.toThrow()
+    layout.openDetails()
+    expect(openDetails).toHaveBeenCalled()
+  })
+
   it('still opens this client when it opens a path itself', async () => {
     const box = createSidebarSession({
       sessionId: 'sess-a',
