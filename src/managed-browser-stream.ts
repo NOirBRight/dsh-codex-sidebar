@@ -610,8 +610,19 @@ export class ManagedBrowserStream {
         : encodeBrowserStreamJsonFrameV2(frame)
       recordLatency(this.#diagnostics.encodeLatencyMs, this.#now() - encodeStartedAt)
       const sendStartedAt = this.#now()
-      socket.send(payload)
-      recordLatency(this.#diagnostics.sendLatencyMs, this.#now() - sendStartedAt)
+      try {
+        socket.send(payload, (error) => {
+          if (detached || this.#tabConnections.get(tabKey) !== connection) return
+          // ws can report a successful flush as null even though @types/ws declares only Error | undefined.
+          if (error != null) {
+            socket.close(1011, 'Browser frame send failed')
+            return
+          }
+          recordLatency(this.#diagnostics.sendLatencyMs, this.#now() - sendStartedAt)
+        })
+      } catch {
+        return false
+      }
       unacked = { sequence, revision: layout.revision, mediaGeneration: layout.mediaGeneration, sentAt: this.#now() }
       this.#unackedCount += 1
       return true

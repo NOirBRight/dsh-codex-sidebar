@@ -6,6 +6,46 @@ import { ManagedBrowserStream, type ManagedBrowserWebRtcEncoderLike } from '../s
 import type { BrowserLayout } from '../src/managed-browser-protocol.ts'
 import type { ManagedBrowserWebRtcEncoderOptions } from '../src/managed-browser-webrtc.ts'
 
+type SocketSendData = Parameters<WebSocket['send']>[0]
+type SocketSendOptions = Parameters<WebSocket['send']>[1]
+type SocketSendCallback = NonNullable<Parameters<WebSocket['send']>[2]>
+
+function deferFallbackFrameSendCallbacks(): {
+  completions: Array<(error?: Error) => void>
+  restore(): void
+} {
+  const original = WebSocket.prototype.send
+  const completions: Array<(error?: Error) => void> = []
+  const replacement = function (
+    this: WebSocket,
+    data: SocketSendData,
+    optionsOrCallback?: SocketSendOptions | SocketSendCallback,
+    callback?: SocketSendCallback,
+  ): void {
+    const completion = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback
+    let fallbackFrame = false
+    if (typeof data === 'string') {
+      try { fallbackFrame = (JSON.parse(data) as { type?: unknown }).type === 'frame' } catch { fallbackFrame = false }
+    }
+    if (!fallbackFrame || completion === undefined) {
+      if (typeof optionsOrCallback === 'function') original.call(this, data, optionsOrCallback)
+      else if (optionsOrCallback === undefined) original.call(this, data)
+      else original.call(this, data, optionsOrCallback, callback)
+      return
+    }
+    const delayed: SocketSendCallback = () => {
+      completions.push((error) => { completion(error) })
+    }
+    if (typeof optionsOrCallback === 'function') original.call(this, data, delayed)
+    else original.call(this, data, optionsOrCallback, delayed)
+  }
+  WebSocket.prototype.send = replacement as WebSocket['send']
+  return {
+    completions,
+    restore() { WebSocket.prototype.send = original },
+  }
+}
+
 class FakeEncoder implements ManagedBrowserWebRtcEncoderLike {
   readonly options: ManagedBrowserWebRtcEncoderOptions
   answers: unknown[] = []
@@ -165,6 +205,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     let allowFallbackFrame = false
     const captures: Array<{ quality: number; scale: number }> = []
     const encoders: FakeEncoder[] = []
+    const deferredSends = deferFallbackFrameSendCallbacks()
     const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
     cdp.send = async (method, params) => {
       if (method === 'Page.captureScreenshot') {
@@ -251,9 +292,15 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
           fallbackBytes: 90 * 1024,
           encodedBytes: 90 * 1024,
           encodeLatencyMs: { samples: 1 },
-          sendLatencyMs: { samples: 1 },
+          sendLatencyMs: { samples: 0 },
           fallbackAckEndToEndLatencyMs: { samples: 1, lastMs: 13 },
         })
+      })
+      await vi.waitFor(() => { expect(deferredSends.completions).toHaveLength(1) })
+      now += 9
+      deferredSends.completions.shift()?.()
+      await vi.waitFor(() => {
+        expect(stream.diagnostics()).toMatchObject({ sendLatencyMs: { samples: 1, lastMs: 22 } })
       })
       now += 300
       encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
@@ -270,8 +317,10 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(JSON.stringify(stream.diagnostics())).not.toContain('example.test')
 
       client.send(JSON.stringify({ type: 'input', revision: 99, input: { type: 'tap', x: 10, y: 20 } }))
+      now += 300
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
       await vi.waitFor(() => { expect(encoders).toHaveLength(2) })
+      now += 300
       encoders[1]?.signal({ type: 'connection-state', state: 'failed' })
       await vi.waitFor(() => {
         expect(stream.diagnostics()).toMatchObject({
@@ -286,10 +335,26 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       })
       expect(Object.keys(stream.resources()).sort()).toEqual(['captures', 'peers', 'sockets', 'timers', 'unackedFrames'])
       expect(stream.resources()).toMatchObject({ sockets: 1, captures: 0, unackedFrames: 0, peers: 0 })
+      await vi.waitFor(() => {
+        expect(fallbackFrames).toBeGreaterThanOrEqual(2)
+        expect(deferredSends.completions).toHaveLength(1)
+      })
+      const failedCompletion = deferredSends.completions.shift()
+      const sendSamples = stream.diagnostics().sendLatencyMs.samples
+      failedCompletion?.(new Error('send failure'))
+      await vi.waitFor(() => {
+        expect(stream.resources()).toEqual({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0, peers: 0 })
+      })
+      now += 17
+      failedCompletion?.()
+      await new Promise<void>((resolve) => { setImmediate(resolve) })
+      expect(stream.diagnostics().sendLatencyMs.samples).toBe(sendSamples)
+      expect(stream.resources()).toEqual({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0, peers: 0 })
     } finally {
       client.close()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => resolve()) })
+      deferredSends.restore()
     }
   })
 
