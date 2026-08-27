@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
-import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer } from './managed-browser-webrtc-dom.ts'
+import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
 import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 import type { BrowserDevice } from '../browser.ts'
@@ -416,16 +416,20 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 send(socket, { type: 'rtc-candidate', ownerId: event.ownerId, revision: event.revision, mediaGeneration: event.mediaGeneration, candidate: event.event.candidate })
               } else if (event.event.type === 'video-track') {
                 const track = event.event.track
-                void surface.present(track).then((size) => {
-                  if (receiverRef.current !== receiver || size === undefined) {
-                    if (receiverRef.current === receiver && size === undefined) {
-                      receiver.useFallback('presentation-failed')
-                    }
-                    return
-                  }
-                  videoSize = size
-                  receiver.markFrameReady(identity, track)
-                })
+                void handleBrowserVideoPresentation(
+                  surface.present(track),
+                  () => {
+                    const current = currentMediaIdentity()
+                    return receiverRef.current === receiver && isCurrent() && current !== undefined
+                      && current.ownerId === identity.ownerId && current.revision === identity.revision
+                      && current.mediaGeneration === identity.mediaGeneration
+                  },
+                  (size) => {
+                    videoSize = size
+                    receiver.markFrameReady(identity, track)
+                  },
+                  () => { receiver.useFallback('presentation-failed') },
+                )
               } else if (event.event.type === 'generation-ready') {
                 const current = layoutRef.current?.snapshot().committed
                 if (current === undefined || videoSize === undefined) return

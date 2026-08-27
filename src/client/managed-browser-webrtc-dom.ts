@@ -47,6 +47,26 @@ type PendingPresentation = {
   ready(): void
 }
 
+type PresentedVideoSize = { width: number; height: number }
+
+/** Settle every video presentation outcome only while its media identity remains current. */
+export async function handleBrowserVideoPresentation(
+  presentation: Promise<PresentedVideoSize | undefined>,
+  isCurrent: () => boolean,
+  onReady: (size: PresentedVideoSize) => void,
+  onUnavailable: () => void,
+): Promise<void> {
+  let size: PresentedVideoSize | undefined
+  try {
+    size = await presentation
+  } catch {
+    size = undefined
+  }
+  if (!isCurrent()) return
+  if (size === undefined) onUnavailable()
+  else onReady(size)
+}
+
 /** Owns one video element attachment and resolves only after its first decoded frame. */
 export class BrowserVideoSurface {
   #video: VideoLike
@@ -61,7 +81,7 @@ export class BrowserVideoSurface {
     this.#timeoutMs = timeoutMs
   }
 
-  async present(track: BrowserMediaReceiverTrack): Promise<{ width: number; height: number } | undefined> {
+  async present(track: BrowserMediaReceiverTrack): Promise<PresentedVideoSize | undefined> {
     this.clear()
     const video = this.#video
     video.muted = true

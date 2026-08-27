@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BrowserVideoSurface, browserWebRtcVideoAvailable } from '../src/client/managed-browser-webrtc-dom.ts'
+import { BrowserVideoSurface, browserWebRtcVideoAvailable, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
 
 class FakeVideo {
   muted = false
   autoplay = false
   playsInline = false
-  srcObject: unknown = null
+  #srcObject: unknown = null
+  srcObjectError: Error | undefined
   readyState = 0
   videoWidth = 0
   videoHeight = 0
@@ -14,6 +15,11 @@ class FakeVideo {
   listeners = new Map<string, Set<() => void>>()
   frame: (() => void) | undefined
 
+  get srcObject(): unknown { return this.#srcObject }
+  set srcObject(value: unknown) {
+    if (value !== null && this.srcObjectError !== undefined) throw this.srcObjectError
+    this.#srcObject = value
+  }
   play(): Promise<void> { return this.playResult }
   pause(): void { this.pauseCalls += 1 }
   addEventListener(type: string, listener: () => void): void { (this.listeners.get(type) ?? this.listeners.set(type, new Set()).get(type))!.add(listener) }
@@ -63,5 +69,29 @@ describe('managed Browser WebRTC DOM adapter', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('falls back when MediaStream creation or srcObject attachment rejects presentation', async () => {
+    const track = { kind: 'video', stop() {} }
+    const ready = vi.fn()
+    const fallback = vi.fn()
+    const createStreamFailure = new BrowserVideoSurface(new FakeVideo() as never, () => { throw new Error('MediaStream unavailable') })
+    await handleBrowserVideoPresentation(createStreamFailure.present(track), () => true, ready, fallback)
+
+    const attachmentFailure = new FakeVideo()
+    attachmentFailure.srcObjectError = new Error('srcObject rejected')
+    const attachSurface = new BrowserVideoSurface(attachmentFailure as never, () => ({}))
+    await handleBrowserVideoPresentation(attachSurface.present(track), () => true, ready, fallback)
+
+    expect(ready).not.toHaveBeenCalled()
+    expect(fallback).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a rejected presentation after its media identity becomes stale', async () => {
+    const ready = vi.fn()
+    const fallback = vi.fn()
+    await handleBrowserVideoPresentation(Promise.reject(new Error('stale present')), () => false, ready, fallback)
+    expect(ready).not.toHaveBeenCalled()
+    expect(fallback).not.toHaveBeenCalled()
   })
 })
