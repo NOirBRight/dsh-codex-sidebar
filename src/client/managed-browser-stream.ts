@@ -1,7 +1,48 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+
+const MAX_PENDING_RTC_CANDIDATES = 64
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
+}
+
+/** Buffers bounded Host ICE candidates only for the current owner and media generation. */
+export class BrowserRtcCandidateBuffer {
+  #identity: BrowserMediaIdentity | undefined
+  #candidates: Array<BrowserRtcCandidate | null> = []
+
+  /** Select the authoritative signaling identity and discard candidates from an older generation. */
+  setIdentity(identity: BrowserMediaIdentity): void {
+    if (this.#identity !== undefined && sameMediaIdentity(this.#identity, identity)) return
+    this.#identity = { ...identity }
+    this.#candidates = []
+  }
+
+  /** Add one early candidate when it belongs to the selected identity and capacity remains. */
+  add(identity: BrowserMediaIdentity, candidate: BrowserRtcCandidate | null): boolean {
+    if (this.#identity === undefined || !sameMediaIdentity(this.#identity, identity)
+      || this.#candidates.length >= MAX_PENDING_RTC_CANDIDATES) return false
+    this.#candidates.push(candidate)
+    return true
+  }
+
+  /** Remove all queued candidates for an exact offer in their original arrival order. */
+  drain(identity: BrowserMediaIdentity): Array<BrowserRtcCandidate | null> {
+    if (this.#identity === undefined || !sameMediaIdentity(this.#identity, identity)) return []
+    return this.#candidates.splice(0)
+  }
+
+  /** Discard the selected identity and every queued candidate. */
+  clear(): void {
+    this.#identity = undefined
+    this.#candidates = []
+  }
+}
+
+function sameMediaIdentity(left: BrowserMediaIdentity, right: BrowserMediaIdentity): boolean {
+  return left.ownerId === right.ownerId
+    && left.revision === right.revision
+    && left.mediaGeneration === right.mediaGeneration
 }
 
 /** Delays disconnecting an already-active Browser stream while its surface is hidden. */

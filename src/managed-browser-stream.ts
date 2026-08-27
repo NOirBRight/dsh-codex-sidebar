@@ -216,6 +216,11 @@ type BrowserMediaAttempt = {
   released: boolean
 }
 
+type BrowserTabConnection = {
+  socket: WebSocket
+  cleanup(): Promise<void>
+}
+
 export type { BrowserInput } from './managed-browser-protocol.ts'
 
 export type ManagedBrowserStreamResources = {
@@ -234,7 +239,7 @@ export class ManagedBrowserStream {
   #tickets = new Map<string, StreamTicket>()
   #server = new WebSocketServer({ noServer: true })
   #sockets = new Set<WebSocket>()
-  #tabSockets = new Map<string, WebSocket>()
+  #tabConnections = new Map<string, BrowserTabConnection>()
   #socketCleanup = new Map<WebSocket, () => Promise<void>>()
   #timerCount = 0
   #captureCount = 0
@@ -324,11 +329,13 @@ export class ManagedBrowserStream {
   }
 
   closeTab(tab: ManagedTabKey): void {
-    this.#tabSockets.get(this.#runtime.keyOf(tab))?.close(1000, 'Browser Tab closed')
+    this.#tabConnections.get(this.#runtime.keyOf(tab))?.socket.close(1000, 'Browser Tab closed')
   }
 
   closeSession(sessionId: string): void {
-    for (const [key, socket] of this.#tabSockets) if (key.startsWith(sessionId + ':')) socket.close(1000, 'Browser session disposed')
+    for (const [key, connection] of this.#tabConnections) {
+      if (key.startsWith(sessionId + ':')) connection.socket.close(1000, 'Browser session disposed')
+    }
   }
 
   resources(): ManagedBrowserStreamResources {
@@ -362,7 +369,7 @@ export class ManagedBrowserStream {
     await Promise.race([this.#drainTasks(), deadline])
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
     this.#sockets.clear()
-    this.#tabSockets.clear()
+    this.#tabConnections.clear()
     this.#socketCleanup.clear()
     this.#tasks.clear()
   }
@@ -396,17 +403,25 @@ export class ManagedBrowserStream {
   ): Promise<void> {
     const cdp = target.cdp
     const tabKey = this.#runtime.keyOf(tab)
-    const previous = this.#tabSockets.get(tabKey)
-    if (previous !== undefined && previous.readyState === WebSocket.OPEN) previous.close(4001, 'Replaced by a newer stream')
-    this.#tabSockets.set(tabKey, socket)
+    const previous = this.#tabConnections.get(tabKey)
+    let cleanupPromise: Promise<void> | undefined
+    const connection: BrowserTabConnection = {
+      socket,
+      cleanup: () => cleanupPromise ??= detach(),
+    }
+    this.#tabConnections.set(tabKey, connection)
+    if (previous !== undefined && previous.socket.readyState !== WebSocket.CLOSED) {
+      previous.socket.close(4001, 'Replaced by a newer stream')
+    }
+    const previousCleanup = previous?.cleanup() ?? Promise.resolve()
     this.#sockets.add(socket)
-    this.#runtime.touch(tab)
     let sequence = 0
     let lastFrameAt: number | undefined
     let lastProjection = ''
     let lastLayout = ''
     let captureInFlight = false
     let captureOwned = false
+    let captureTask: Promise<void> | undefined
     let unacked: { sequence: number; revision: number; mediaGeneration: number } | undefined
     let dirty: { kind: 'activity' | 'passive' } | undefined
     let frameTimer: ReturnType<typeof setTimeout> | undefined
@@ -424,10 +439,12 @@ export class ManagedBrowserStream {
     let mediaIdleSuspended = false
     let mediaStarted = false
     let mediaTransition = Promise.resolve()
+    let activated = false
+    let startTask: Promise<void> | undefined
     let noteMediaActivity = (): void => {}
     const fallbackActivity = new BrowserFallbackActivityBudget(profile.interactionBurstFrames)
     const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
-    const releaseLease = this.#runtime.acquire(tab)
+    let releaseLease: (() => void) | undefined
     const sendProjection = (): boolean => {
       if (socket.readyState !== WebSocket.OPEN) return false
       const projection = this.#runtime.projection(tab)
@@ -545,10 +562,12 @@ export class ManagedBrowserStream {
           dirty = { kind: 'activity' }
         }
       }).finally(() => {
+        if (captureTask === task) captureTask = undefined
         captureInFlight = false
         releaseCapture()
         pump()
       })
+      captureTask = task
       this.#track(task)
     }
     const requestFrame = (kind: 'activity' | 'passive'): void => {
@@ -746,7 +765,7 @@ export class ManagedBrowserStream {
       if (sourceAttached) cdp.off('Page.screencastFrame', onFrame)
       this.#sockets.delete(socket)
       this.#socketCleanup.delete(socket)
-      if (this.#tabSockets.get(tabKey) === socket) this.#tabSockets.delete(tabKey)
+      if (this.#tabConnections.get(tabKey) === connection) this.#tabConnections.delete(tabKey)
       dirty = undefined
       if (unacked !== undefined) this.#unackedCount -= 1
       unacked = undefined
@@ -754,12 +773,13 @@ export class ManagedBrowserStream {
       releaseCapture()
       const attempt = mediaAttempt
       mediaAttempt = undefined
-      releaseLease()
+      releaseLease?.()
+      releaseLease = undefined
       const releaseMedia = attempt === undefined ? Promise.resolve() : releaseMediaAttempt(attempt)
       const stopScreencast = sourceAttached
         ? cdp.send('Page.stopScreencast').then(() => undefined).catch(() => undefined)
         : Promise.resolve()
-      await Promise.all([mediaTransition, releaseMedia, stopScreencast])
+      await Promise.all([previousCleanup, mediaTransition, releaseMedia, stopScreencast, captureTask, startTask])
     }
     const start = async (): Promise<void> => {
       socket.send(JSON.stringify({
@@ -816,7 +836,7 @@ export class ManagedBrowserStream {
         clientWebRtc = hello.media.webrtcVideo
         handshaken = true
         clearHelloTimer()
-        void start()
+        this.#track(activate())
         return
       }
       const message = decodeBrowserClientMessage(raw)
@@ -882,9 +902,22 @@ export class ManagedBrowserStream {
         set latest(value: number) { latestProposalSequence = value },
       }).catch(() => undefined)
     })
-    this.#socketCleanup.set(socket, detach)
-    socket.once('close', () => { this.#track(detach()) })
-    socket.once('error', () => { this.#track(detach()) })
+    const activate = async (): Promise<void> => {
+      await previousCleanup
+      if (detached || this.#tabConnections.get(tabKey) !== connection || socket.readyState !== WebSocket.OPEN) return
+      if (!activated) {
+        activated = true
+        releaseLease = this.#runtime.acquire(tab)
+        this.#runtime.touch(tab)
+      }
+      if (!handshaken || startTask !== undefined) return
+      startTask = start()
+      await startTask
+    }
+    this.#socketCleanup.set(socket, connection.cleanup)
+    socket.once('close', () => { this.#track(connection.cleanup()) })
+    socket.once('error', () => { this.#track(connection.cleanup()) })
+    this.#track(activate())
   }
 
   async #onMessage(

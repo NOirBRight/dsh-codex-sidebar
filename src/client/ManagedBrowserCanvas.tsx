@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver, type BrowserMediaClientIdentity } from '../managed-browser-webrtc-client.ts'
@@ -210,6 +210,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     let connectionGeneration = 0
     let cleanupMediaListeners = (): void => {}
     let latest: { frame: BrowserStreamFrameV2; socket: WebSocket; generation: number } | undefined
+    const earlyCandidates = new BrowserRtcCandidateBuffer()
 
     if (!visible) {
       setStatus('connecting')
@@ -286,6 +287,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         return
       }
       const socket = new WebSocket(browserWebSocketUrl(ticket.path))
+      earlyCandidates.clear()
       const generation = ++connectionGeneration
       socket.binaryType = 'arraybuffer'
       socketRef.current = socket
@@ -348,6 +350,13 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           if (layoutRef.current?.acceptCommit(layoutCommit.layout)) {
             inputQueueRef.current?.cancel()
             disposeMedia()
+            const ready = readyRef.current
+            if (ready === null) earlyCandidates.clear()
+            else earlyCandidates.setIdentity({
+              ownerId: ready.ownerId,
+              revision: layoutCommit.layout.revision,
+              mediaGeneration: layoutCommit.layout.mediaGeneration,
+            })
           }
           return
         }
@@ -369,6 +378,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           if (ready === null || videoRef.current === null || hostMessage.ownerId !== ready.ownerId
             || committed?.revision !== hostMessage.revision || committed.mediaGeneration !== hostMessage.mediaGeneration) return
           disposeMedia()
+          earlyCandidates.setIdentity(hostMessage)
           const identity = receiverIdentity(hostMessage)
           const surface = new BrowserVideoSurface(videoRef.current, undefined, ready.media.negotiationTimeoutMs)
           videoSurfaceRef.current = surface
@@ -427,6 +437,13 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
             disposeMedia('fallback')
             return
           }
+          const pendingCandidates = earlyCandidates.drain(hostMessage)
+          void (async () => {
+            for (const candidate of pendingCandidates) {
+              if (receiverRef.current !== receiver || !isCurrent()) return
+              await receiver.addCandidate(identity, candidate)
+            }
+          })()
           void negotiation.then((answer) => {
             if (answer !== undefined && receiverRef.current === receiver && isCurrent()) {
               send(socket, { type: 'rtc-answer', ...protocolIdentity(identity), description: answer })
@@ -435,7 +452,15 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           return
         }
         if (hostMessage?.type === 'rtc-candidate') {
-          void receiverRef.current?.addCandidate(receiverIdentity(hostMessage), hostMessage.candidate)
+          const ready = readyRef.current
+          const committed = layoutRef.current?.snapshot().committed
+          if (ready === null || hostMessage.ownerId !== ready.ownerId || committed?.revision !== hostMessage.revision
+            || committed.mediaGeneration !== hostMessage.mediaGeneration) return
+          const identity = { ownerId: ready.ownerId, revision: committed.revision, mediaGeneration: committed.mediaGeneration }
+          earlyCandidates.setIdentity(identity)
+          const receiver = receiverRef.current
+          if (receiver === null) earlyCandidates.add(hostMessage, hostMessage.candidate)
+          else void receiver.addCandidate(receiverIdentity(hostMessage), hostMessage.candidate)
           return
         }
         const tracked = decodeBrowserTrackedRect(text)
@@ -469,6 +494,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 hysteresisPx: ready.layoutPolicy.hysteresisPx,
                 viewportLimits: { min: ready.layoutPolicy.minViewport, max: ready.layoutPolicy.maxViewport },
               })
+              earlyCandidates.clear()
               observeContainer()
               sendLayoutProposal(layoutRef.current.selectMode(deviceRef.current, performance.now()), socket)
               armLayoutTimer()
@@ -510,6 +536,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           setStatus('connecting')
           disposeMedia()
           readyRef.current = null
+          earlyCandidates.clear()
           cleanupMediaListeners()
         }
         if (wasCurrent && !stopped) reconnect = setTimeout(() => { void connect() }, Math.min(2000, 250 * 2 ** attempt++))
@@ -524,6 +551,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       layoutTimerRef.current = undefined
       layoutRef.current = null
       readyRef.current = null
+      earlyCandidates.clear()
       disposeMedia()
       cleanupMediaListeners()
       socketRef.current?.close(1000, 'Browser surface hidden')

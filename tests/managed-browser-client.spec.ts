@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineMessage, browserMediaRetryRequest, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
@@ -42,6 +42,32 @@ describe('managed Browser stream client', () => {
     expect(browserMediaRetryRequest(first.state, { ...identity, mediaGeneration: 10 }, 'explicit', 1_000, 5_001).message).toEqual({
       type: 'media-retry', ...identity, mediaGeneration: 10, trigger: 'explicit',
     })
+  })
+
+  it('bounds early Host candidates by the exact owner and drains them in arrival order', () => {
+    const current = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    const next = { ...current, revision: 5, mediaGeneration: 10 }
+    const candidates = new BrowserRtcCandidateBuffer()
+    candidates.setIdentity(current)
+
+    expect(candidates.add({ ...current, ownerId: 'stale-owner' }, { candidate: 'stale-owner' })).toBe(false)
+    expect(candidates.add({ ...current, revision: 3 }, { candidate: 'stale-layout' })).toBe(false)
+    for (let index = 0; index < 64; index += 1) {
+      expect(candidates.add(current, { candidate: 'candidate:' + index })).toBe(true)
+    }
+    expect(candidates.add(current, { candidate: 'overflow' })).toBe(false)
+
+    candidates.setIdentity(next)
+    expect(candidates.drain(current)).toEqual([])
+    expect(candidates.add(next, { candidate: 'next:1' })).toBe(true)
+    expect(candidates.add(next, null)).toBe(true)
+    expect(candidates.drain(next)).toEqual([{ candidate: 'next:1' }, null])
+    expect(candidates.drain(next)).toEqual([])
+
+    expect(candidates.add(next, { candidate: 'closed' })).toBe(true)
+    candidates.clear()
+    expect(candidates.drain(next)).toEqual([])
+    expect(candidates.add(next, { candidate: 'after-close' })).toBe(false)
   })
 
   it('keeps laptop geometry authoritative while delayed and mismatched JPEG metadata alternates', () => {

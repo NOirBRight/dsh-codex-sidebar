@@ -12,13 +12,14 @@ class FakeEncoder implements ManagedBrowserWebRtcEncoderLike {
   candidates: unknown[] = []
   frames: number[] = []
   disposed = 0
+  disposeGate: Promise<void> | undefined
 
   constructor(options: ManagedBrowserWebRtcEncoderOptions) { this.options = options }
   async start() { return { type: 'offer' as const, sdp: 'offer-' + this.options.identity.generation } }
   async acceptAnswer(value: unknown) { this.answers.push(value) }
   async addCandidate(value: unknown) { this.candidates.push(value) }
   submit(frame: { sequence: number }) { this.frames.push(frame.sequence); return true }
-  async dispose() { this.disposed += 1 }
+  async dispose() { this.disposed += 1; await this.disposeGate }
   signal(signal: Parameters<NonNullable<ManagedBrowserWebRtcEncoderOptions['onSignal']>>[0]['signal']) {
     this.options.onSignal?.({ ...this.options.identity, signal })
   }
@@ -37,6 +38,96 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, mediaHideGraceMs: -1 })).toThrow('mediaHideGraceMs')
     expect(() => new ManagedBrowserStream({ runtime, shutdownTimeoutMs: 0 })).toThrow('shutdownTimeoutMs')
+  })
+
+  it('waits for the exact previous owner to detach before activating its replacement', async () => {
+    const layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    let releaseEncoder: (() => void) | undefined
+    let releaseScreencast: (() => void) | undefined
+    const encoderGate = new Promise<void>((resolve) => { releaseEncoder = resolve })
+    const screencastGate = new Promise<void>((resolve) => { releaseScreencast = resolve })
+    let starts = 0
+    let stops = 0
+    let acquisitions = 0
+    let releases = 0
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method) => {
+      if (method === 'Page.startScreencast') { starts += 1; return {} }
+      if (method === 'Page.stopScreencast') { stops += 1; await screencastGate; return {} }
+      if (method === 'Page.captureScreenshot') return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: 0 } }
+      return {}
+    }
+    const runtime = {
+      target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {},
+      acquire: () => { acquisitions += 1; return () => { releases += 1 } },
+      layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+    }
+    const encoders: FakeEncoder[] = []
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never,
+      encoderFactory: (options) => { const encoder = new FakeEncoder(options); encoders.push(encoder); return encoder },
+    })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const connect = async (): Promise<{ client: WebSocket; messages: Array<Record<string, unknown>> }> => {
+      const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+      const messages: Array<Record<string, unknown>> = []
+      client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: true } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      return { client, messages }
+    }
+    const first = await connect()
+    let second: Awaited<ReturnType<typeof connect>> | undefined
+    try {
+      await vi.waitFor(() => { expect(encoders).toHaveLength(1); expect(starts).toBe(1); expect(acquisitions).toBe(1) })
+      encoders[0]!.disposeGate = encoderGate
+
+      second = await connect()
+      await vi.waitFor(() => { expect(encoders[0]?.disposed).toBe(1); expect(stops).toBe(1) })
+      expect(second.messages).toEqual([])
+      expect(encoders).toHaveLength(1)
+      expect(acquisitions).toBe(1)
+      expect(releases).toBe(1)
+
+      releaseEncoder?.()
+      await new Promise<void>((resolve) => { setImmediate(resolve) })
+      expect(second.messages).toEqual([])
+      expect(encoders).toHaveLength(1)
+      expect(acquisitions).toBe(1)
+
+      releaseScreencast?.()
+      await vi.waitFor(() => {
+        expect(second?.messages.some((message) => message.type === 'ready')).toBe(true)
+        expect(encoders).toHaveLength(2)
+        expect(starts).toBe(2)
+        expect(acquisitions).toBe(2)
+      })
+
+      stream.closeTab({ sessionId: 's', tabId: 't' })
+      await vi.waitFor(() => { expect(second?.client.readyState).toBe(WebSocket.CLOSED) })
+    } finally {
+      first.client.close()
+      second?.client.close()
+      releaseEncoder?.()
+      releaseScreencast?.()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
   })
 
   it('gates signaling by owner/layout and rotates one encoder per media generation', async () => {
