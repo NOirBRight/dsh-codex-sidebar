@@ -2,7 +2,7 @@
 
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
 import { createHostBrowser } from './host-browser.ts'
-import { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
+import { ManagedBrowserRuntime, type ManagedBrowserConfig } from './managed-browser-runtime.ts'
 import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
 import { ManagedBrowserStream, MANAGED_BROWSER_STREAM_PATH } from './managed-browser-stream.ts'
 import { createManagedBrowserDriveService } from './host-browser-tools.ts'
@@ -32,6 +32,10 @@ export { formatDelivery, formatEvidenceSend, formatHumanSend, formatSend } from 
 
 export const name = 'dsh-codex-sidebar'
 export const inject = ['connection']
+
+export interface Config {
+  managedBrowser?: ManagedBrowserConfig
+}
 
 type RpcHandle = {
   handle: (
@@ -82,13 +86,13 @@ function agentCwd(agent: unknown): string | undefined {
   return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined
 }
 
-export function apply(ctx: HostContext): void {
+export function apply(ctx: HostContext, config: Config = {}): void {
   const filesBySession = new Map<string, FilesPort>()
   const annotationSend = new AnnotationSendStore()
   let agentLive = (_id: string): boolean => false
   let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
-  const managedBrowser = new ManagedBrowserRuntime()
+  const managedBrowser = new ManagedBrowserRuntime(config.managedBrowser)
   const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()

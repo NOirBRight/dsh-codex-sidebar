@@ -6,6 +6,7 @@ import {
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
   browserStreamTransportProfile,
+  browserStreamVisualViewportOrigin,
   decodeBrowserStreamFrame,
   dispatchBrowserInput,
   encodeBrowserStreamFrame,
@@ -18,7 +19,7 @@ import {
 } from '../src/managed-browser-stream.ts'
 
 describe('managed browser stream protocol', () => {
-  it('sends ready before a stalled screencast startup can hold the Mobile UI on Connecting', async () => {
+  it('requires hello before ready and advertises the Mobile frame protocol before stalled CDP startup', async () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => {
       if (method === 'Page.startScreencast') return await new Promise(() => {})
@@ -39,6 +40,20 @@ describe('managed browser stream protocol', () => {
     const ticket = stream.issue({ sessionId: 's', tabId: 't' })
     const client = new WebSocket('ws://127.0.0.1:' + address.port + ticket.path)
     try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 25)
+        client.once('message', () => {
+          clearTimeout(timer)
+          reject(new Error('host sent before client hello'))
+        })
+        client.once('error', reject)
+      })
+      client.send(JSON.stringify({
+        type: 'hello',
+        version: MANAGED_BROWSER_STREAM_VERSION,
+        frameEncodings: ['binary-v1', 'json-base64-v1'],
+        flowControl: ['frame-ack-v1'],
+      }))
       const first = await Promise.race([
         new Promise<string>((resolve, reject) => {
           client.once('message', (data) => { resolve(Buffer.from(data as Buffer).toString('utf8')) })
@@ -46,7 +61,12 @@ describe('managed browser stream protocol', () => {
         }),
         new Promise<string>((_resolve, reject) => { setTimeout(() => { reject(new Error('ready timeout')) }, 100) }),
       ])
-      expect(JSON.parse(first)).toMatchObject({ type: 'ready' })
+      expect(JSON.parse(first)).toMatchObject({
+        type: 'ready',
+        version: MANAGED_BROWSER_STREAM_VERSION,
+        frameEncoding: 'json-base64-v1',
+        flowControl: 'frame-ack-v1',
+      })
     } finally {
       client.close()
       await stream.dispose()
@@ -54,11 +74,53 @@ describe('managed browser stream protocol', () => {
     }
   })
 
-  it('accepts Mobile tunnel binary JSON and sends a fresh frame after tap', async () => {
+  it('fails closed when the client does not send hello within the handshake deadline', async () => {
+    const cdp = new EventEmitter() as EventEmitter & { send(): Promise<unknown> }
+    cdp.send = async () => ({})
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 's:t',
+      touch: () => {},
+      projection: () => undefined,
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, handshakeTimeoutMs: 20 })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+    try {
+      const closed = await Promise.race([
+        new Promise<{ code: number; reason: string }>((resolve, reject) => {
+          client.once('close', (code, reason) => { resolve({ code, reason: reason.toString() }) })
+          client.once('error', reject)
+        }),
+        new Promise<{ code: number; reason: string }>((_resolve, reject) => {
+          setTimeout(() => { reject(new Error('host did not enforce hello timeout')) }, 200)
+        }),
+      ])
+      expect(closed).toEqual({ code: 1008, reason: 'Browser stream hello timeout' })
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('accepts Mobile binary input and captures the visual viewport after scroll', async () => {
     const jpeg = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64')
-    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
-    cdp.send = async (method: string) => {
-      if (method === 'Page.captureScreenshot') return { data: jpeg }
+    const clips: Array<{ x?: number; y?: number }> = []
+    let scrollY = 0
+    let now = 1_000
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseWheel') scrollY += Number(params.deltaY ?? 0)
+      if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: scrollY } }
+      if (method === 'Page.captureScreenshot') {
+        clips.push((params?.clip ?? {}) as { x?: number; y?: number })
+        return { data: jpeg }
+      }
       return {}
     }
     const runtime = {
@@ -67,7 +129,7 @@ describe('managed browser stream protocol', () => {
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
-    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, now: () => now })
     const server = createServer()
     server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
     await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
@@ -81,15 +143,185 @@ describe('managed browser stream protocol', () => {
       if (message.type === 'frame') frames.push(message)
     })
     try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(1) })
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
       // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
       client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'tap', x: 120, y: 240 } })))
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(2) })
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2 }))
+      now += 300
+      client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'wheel', x: 120, y: 240, deltaX: 0, deltaY: 360 } })))
+      await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(3) })
+      expect(clips.at(-1)).toMatchObject({ x: 0, y: 360 })
     } finally {
       client.close()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
     }
+  })
+
+  it('uses binary v1 frames for Desktop Origin connections', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 3, 4, 0xff, 0xd9]).toString('base64')
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 'desktop:tab',
+      touch: () => {},
+      projection: () => undefined,
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const origin = 'http://127.0.0.1:' + address.port
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'desktop', tabId: 'tab' }).path, { headers: { origin } })
+    try {
+      const messages: Array<{ data: WebSocket.RawData; isBinary: boolean }> = []
+      client.on('message', (data, isBinary) => { messages.push({ data, isBinary }) })
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(messages.some((message) => message.isBinary)).toBe(true) })
+      const ready = messages.find((message) => !message.isBinary)
+      expect(JSON.parse(Buffer.from(ready?.data as Buffer).toString('utf8'))).toMatchObject({ frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' })
+      const binary = messages.find((message) => message.isBinary)
+      expect(decodeBrowserStreamFrame(binary?.data as Buffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 3, 4, 0xff, 0xd9]))
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('holds one capture and one unacked frame while retaining the latest dirty request', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 5, 6, 0xff, 0xd9]).toString('base64')
+    const captures: Array<() => void> = []
+    const clips: Array<{ width?: number; height?: number }> = []
+    const sourceAcks: number[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Page.screencastFrameAck') sourceAcks.push(Number(params?.sessionId))
+      if (method === 'Page.captureScreenshot') {
+        clips.push((params?.clip ?? {}) as { width?: number; height?: number })
+        return await new Promise((resolve) => { captures.push(() => { resolve({ data: jpeg }) }) })
+      }
+      return {}
+    }
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 'flow:tab',
+      touch: () => {},
+      projection: () => undefined,
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'flow', tabId: 'tab' }).path)
+    const frames: number[] = []
+    client.on('message', (data, isBinary) => {
+      if (isBinary) return
+      const value = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string; sequence?: number }
+      if (value.type === 'frame' && typeof value.sequence === 'number') frames.push(value.sequence)
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(captures).toHaveLength(1) })
+      cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 11, metadata: { deviceWidth: 640, deviceHeight: 480 } })
+      cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 12, metadata: { deviceWidth: 800, deviceHeight: 600 } })
+      expect(sourceAcks).toEqual([11, 12])
+      expect(captures).toHaveLength(1)
+      captures.shift()?.()
+      await vi.waitFor(() => { expect(frames).toEqual([1]) })
+      await new Promise((resolve) => { setTimeout(resolve, 120) })
+      expect(captures).toHaveLength(0)
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 0 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2 }))
+      await new Promise((resolve) => { setTimeout(resolve, 25) })
+      expect(captures).toHaveLength(0)
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      await vi.waitFor(() => { expect(captures).toHaveLength(1) })
+      expect(clips.at(-1)).toMatchObject({ width: 800, height: 600 })
+      captures.shift()?.()
+      await vi.waitFor(() => { expect(frames).toEqual([1, 2]) })
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      await new Promise((resolve) => { setTimeout(resolve, 25) })
+      expect(captures).toHaveLength(0)
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('sends the final throttled dirty frame from a timer without another source event', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 7, 8, 0xff, 0xd9]).toString('base64')
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
+      keyOf: () => 'timer:tab',
+      touch: () => {},
+      projection: () => undefined,
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'timer', tabId: 'tab' }).path)
+    const frames: number[] = []
+    client.on('message', (data, isBinary) => {
+      if (isBinary) return
+      const value = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string; sequence?: number }
+      if (value.type === 'frame' && typeof value.sequence === 'number') frames.push(value.sequence)
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(frames).toEqual([1]) })
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 9, metadata: { deviceWidth: 640, deviceHeight: 480 } })
+      await vi.waitFor(() => { expect(frames).toEqual([1, 2]) }, { timeout: 500 })
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('reads finite visual viewport coordinates for screenshot clips', () => {
+    expect(browserStreamVisualViewportOrigin({ visualViewport: { pageX: 12, pageY: 360 } })).toEqual({ x: 12, y: 360 })
+    expect(browserStreamVisualViewportOrigin({ visualViewport: { pageX: Number.NaN, pageY: 'bad' } })).toEqual({ x: 0, y: 0 })
+    expect(browserStreamVisualViewportOrigin(undefined)).toEqual({ x: 0, y: 0 })
   })
 
   it('encodes JPEG frames as JSON text so DSH Mobile can tunnel them', () => {
@@ -132,7 +364,7 @@ describe('managed browser stream protocol', () => {
     expect(() => decodeBrowserStreamFrame(new Uint8Array(16))).toThrow('shorter than its header')
   })
 
-  it('caps screencast below a full 20fps capture loop', () => {
+  it('keeps Desktop capture at no more than 10 FPS', () => {
     expect(MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS).toBeGreaterThanOrEqual(100)
     expect(MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME).toBeGreaterThanOrEqual(2)
   })

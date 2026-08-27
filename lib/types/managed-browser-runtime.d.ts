@@ -2,6 +2,7 @@
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts';
 export declare const MANAGED_BROWSER_MAX_LIVE_PAGES = 3;
 export declare const MANAGED_BROWSER_IDLE_MS = 120000;
+export declare const MANAGED_BROWSER_CACHE_BUDGET_BYTES: number;
 export declare const PLAYWRIGHT_IGNORE_DEFAULT_ARGS: string[];
 export type ManagedTabKey = {
     sessionId: string;
@@ -11,6 +12,8 @@ export type ManagedBrowserConfig = {
     executablePath?: string;
     profileDir?: string;
     headless?: boolean;
+    /** Maximum total bytes retained in allowlisted Chromium-derived cache directories. */
+    cacheBudgetBytes?: number;
 };
 export type ManagedBrowserStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed';
 export type ManagedBrowserProjection = {
@@ -123,6 +126,7 @@ type LaunchContext = (profileDir: string, opts: {
     };
     deviceScaleFactor: number;
     ignoreDefaultArgs: string[];
+    args: string[];
 }) => Promise<ContextLike>;
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     launch?: LaunchContext;
@@ -131,6 +135,8 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     now?: () => number;
     maxLivePages?: number;
     idleMs?: number;
+    onWarning?: (message: string) => void;
+    cleanupDerivedCaches?: (profileDir: string, budgetBytes: number) => Promise<void>;
 };
 export declare class ManagedBrowserRuntime {
     #private;

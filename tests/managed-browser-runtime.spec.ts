@@ -1,8 +1,8 @@
-import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { findBrowserExecutable, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -233,12 +233,14 @@ describe('ManagedBrowserRuntime', () => {
   it('keeps Chromium font shared memory on /dev/shm and uses a dense viewport', async () => {
     let ignored: string[] | undefined
     let scale: number | undefined
+    let args: string[] | undefined
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-shm-' + Math.random().toString(36).slice(2),
       launch: async (_profileDir, options) => {
         ignored = (options as { ignoreDefaultArgs?: string[] }).ignoreDefaultArgs
         scale = (options as { deviceScaleFactor?: number }).deviceScaleFactor
+        args = (options as { args?: string[] }).args
         return {
           async newPage() { return new FakePage() },
           async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
@@ -253,7 +255,136 @@ describe('ManagedBrowserRuntime', () => {
     expect(ignored).toContain('--disable-backgrounding-occluded-windows')
     expect(ignored).toContain('--disable-renderer-backgrounding')
     expect(scale).toBe(2)
+    expect(MANAGED_BROWSER_CACHE_BUDGET_BYTES).toBe(256 * 1024 * 1024)
+    expect(args).toContain('--disk-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
+    expect(args).toContain('--media-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
     await runtime.dispose()
+  })
+
+  it('removes only allowlisted derived caches over budget before launch without following symlinks', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-budget-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dcs-cache-outside-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await mkdir(join(profileDir, 'Default', 'Code Cache'), { recursive: true })
+    await mkdir(join(profileDir, 'Default', 'Local Storage'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    await writeFile(join(profileDir, 'Default', 'Code Cache', 'code'), 'abcdefgh')
+    await writeFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'storage')
+    await writeFile(join(profileDir, 'Default', 'Cookies'), 'cookie')
+    await writeFile(join(outside, 'keep'), 'outside')
+    await symlink(outside, join(profileDir, 'GPUCache'))
+    let cacheAtLaunch = true
+    let storageAtLaunch = false
+    let cookieAtLaunch = false
+    let symlinkAtLaunch = false
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 10,
+      launch: async () => {
+        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
+        storageAtLaunch = await readFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'utf8').then((value) => value === 'storage', () => false)
+        cookieAtLaunch = await readFile(join(profileDir, 'Default', 'Cookies'), 'utf8').then((value) => value === 'cookie', () => false)
+        symlinkAtLaunch = await lstat(join(profileDir, 'GPUCache')).then((value) => value.isSymbolicLink(), () => false)
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() {},
+        }
+      },
+    })
+    await runtime.ensure({ sessionId: 'cache', tabId: 'tab' }, 'https://example.com')
+    expect(cacheAtLaunch).toBe(false)
+    expect(storageAtLaunch).toBe(true)
+    expect(cookieAtLaunch).toBe(true)
+    expect(symlinkAtLaunch).toBe(true)
+    await expect(readFile(join(outside, 'keep'), 'utf8')).resolves.toBe('outside')
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  })
+
+  it('does not clean derived caches while the Chromium singleton is live', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-live-cache-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
+    let cacheAtLaunch = false
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => {
+        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() {},
+        }
+      },
+    })
+    await runtime.ensure({ sessionId: 'live-cache', tabId: 'tab' }, 'https://example.com')
+    expect(cacheAtLaunch).toBe(true)
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('does not clean caches when singleton ownership cannot be proven stale', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-opaque-singleton-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    await writeFile(join(profileDir, 'SingletonLock'), 'opaque owner')
+    let cacheAtLaunch = false
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => {
+        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() {},
+        }
+      },
+    })
+    await runtime.ensure({ sessionId: 'opaque-cache', tabId: 'tab' }, 'https://example.com')
+    expect(cacheAtLaunch).toBe(true)
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('warns and continues launching when derived-cache cleanup fails', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-warning-'))
+    const warnings: string[] = []
+    let launched = false
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      onWarning: (message) => { warnings.push(message) },
+      cleanupDerivedCaches: async () => { throw new Error('read-only cache') },
+      launch: async () => {
+        launched = true
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() {},
+        }
+      },
+    })
+    try {
+      await runtime.ensure({ sessionId: 'cache-warning', tabId: 'tab' }, 'https://example.com')
+      expect(launched).toBe(true)
+      expect(warnings).toEqual([expect.stringContaining('cache cleanup failed')])
+      await runtime.dispose()
+    } finally {
+      await rm(profileDir, { recursive: true, force: true })
+    }
   })
 
   it('keeps the stream target while a public page is still navigating', async () => {
