@@ -57,7 +57,7 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Conf
       cacheBudgetBytes: 268435456
 ```
 
-Before Chromium launches, the plugin removes only allowlisted cache directories when their total exceeds the budget and no live Chromium singleton owns the profile. Cookies and site storage are preserved; cleanup failures warn and launch continues.
+Before Chromium launches, a profile lease serializes initialization across Host processes. The plugin removes only allowlisted cache directories when their total exceeds the budget, rechecking that no Chromium singleton appeared before each deletion. A live or unverifiable singleton prevents a competing launch. Cookies and site storage are preserved; cleanup failures warn and launch continues when the profile remains unowned.
 
 ## Local install
 

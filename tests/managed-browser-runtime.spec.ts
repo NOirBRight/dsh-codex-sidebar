@@ -1,8 +1,8 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { cleanupDerivedChromiumCaches, findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -305,17 +305,19 @@ describe('ManagedBrowserRuntime', () => {
     await rm(outside, { recursive: true, force: true })
   })
 
-  it('does not clean derived caches while the Chromium singleton is live', async () => {
+  it('does not clean or launch while another Chromium singleton is live', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'dcs-live-cache-'))
     await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
     await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
     await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
     let cacheAtLaunch = false
+    let launched = false
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir,
       cacheBudgetBytes: 1,
       launch: async () => {
+        launched = true
         cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
         return {
           async newPage() { return new FakePage() },
@@ -325,9 +327,61 @@ describe('ManagedBrowserRuntime', () => {
         }
       },
     })
-    await runtime.ensure({ sessionId: 'live-cache', tabId: 'tab' }, 'https://example.com')
-    expect(cacheAtLaunch).toBe(true)
+    await expect(runtime.ensure({ sessionId: 'live-cache', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
+    expect(launched).toBe(false)
+    expect(cacheAtLaunch).toBe(false)
+    await expect(readFile(join(profileDir, 'Default', 'Cache', 'data'), 'utf8')).resolves.toBe('12345678')
     await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('serializes initialization and launch for concurrent runtimes sharing one profile', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-profile-lease-'))
+    let launchCalls = 0
+    let activeLaunches = 0
+    let maxActiveLaunches = 0
+    let releaseFirst: (() => void) | undefined
+    const launch = async () => {
+      launchCalls += 1
+      activeLaunches += 1
+      maxActiveLaunches = Math.max(maxActiveLaunches, activeLaunches)
+      if (launchCalls === 1) await new Promise<void>((resolve) => { releaseFirst = resolve })
+      activeLaunches -= 1
+      return {
+        async newPage() { return new FakePage() },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }
+    }
+    const first = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, launch })
+    const second = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, launch })
+    const firstEnsure = first.ensure({ sessionId: 'lease', tabId: 'first' }, 'https://one.example')
+    await vi.waitFor(() => { expect(launchCalls).toBe(1) })
+    const secondEnsure = second.ensure({ sessionId: 'lease', tabId: 'second' }, 'https://two.example')
+    await new Promise((resolve) => { setTimeout(resolve, 50) })
+    const callsBeforeRelease = launchCalls
+    releaseFirst?.()
+    await Promise.all([firstEnsure, secondEnsure])
+    expect(callsBeforeRelease).toBe(1)
+    expect(maxActiveLaunches).toBe(1)
+    await Promise.all([first.dispose(), second.dispose()])
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('revalidates singleton state after cache traversal and before deletion', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-race-'))
+    const cacheDir = join(profileDir, 'Default', 'Cache')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '12345678')
+    let revalidated = 0
+    await cleanupDerivedChromiumCaches(profileDir, 1, async () => {
+      revalidated += 1
+      await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
+      return false
+    })
+    expect(revalidated).toBe(1)
+    await expect(readFile(join(cacheDir, 'data'), 'utf8')).resolves.toBe('12345678')
     await rm(profileDir, { recursive: true, force: true })
   })
 
@@ -336,13 +390,13 @@ describe('ManagedBrowserRuntime', () => {
     await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
     await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
     await writeFile(join(profileDir, 'SingletonLock'), 'opaque owner')
-    let cacheAtLaunch = false
+    let launched = false
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir,
       cacheBudgetBytes: 1,
       launch: async () => {
-        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
+        launched = true
         return {
           async newPage() { return new FakePage() },
           async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
@@ -351,8 +405,9 @@ describe('ManagedBrowserRuntime', () => {
         }
       },
     })
-    await runtime.ensure({ sessionId: 'opaque-cache', tabId: 'tab' }, 'https://example.com')
-    expect(cacheAtLaunch).toBe(true)
+    await expect(runtime.ensure({ sessionId: 'opaque-cache', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
+    expect(launched).toBe(false)
+    await expect(readFile(join(profileDir, 'Default', 'Cache', 'data'), 'utf8')).resolves.toBe('12345678')
     await runtime.dispose()
     await rm(profileDir, { recursive: true, force: true })
   })

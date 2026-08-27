@@ -57,7 +57,7 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
       cacheBudgetBytes: 268435456
 ```
 
-Chromium 启动前，插件只会在没有存活 Chromium 单例且白名单缓存目录总量超过预算时清理这些目录。Cookie 和站点存储会保留；清理失败只记录警告，不阻止启动。
+Chromium 启动前，配置文件租约会串行化多个 Host 进程的初始化。白名单缓存目录总量超过预算时，插件会在删除每个目录前重新确认没有 Chromium 单例；存活或无法验证的单例会阻止竞争启动。Cookie 和站点存储会保留；如果配置文件仍无所有者，清理失败只记录警告，不阻止启动。
 
 ## 本地安装
 

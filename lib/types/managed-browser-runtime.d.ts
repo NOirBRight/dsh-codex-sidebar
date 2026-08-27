@@ -128,6 +128,7 @@ type LaunchContext = (profileDir: string, opts: {
     ignoreDefaultArgs: string[];
     args: string[];
 }) => Promise<ContextLike>;
+type CacheCleanup = (profileDir: string, budgetBytes: number, mayDelete: () => Promise<boolean>) => Promise<void>;
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     launch?: LaunchContext;
     onProjection?: (projection: ManagedBrowserProjection) => void;
@@ -136,7 +137,8 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     maxLivePages?: number;
     idleMs?: number;
     onWarning?: (message: string) => void;
-    cleanupDerivedCaches?: (profileDir: string, budgetBytes: number) => Promise<void>;
+    cleanupDerivedCaches?: CacheCleanup;
+    profileLeaseTimeoutMs?: number;
 };
 export declare class ManagedBrowserRuntime {
     #private;
@@ -170,5 +172,13 @@ export declare class ManagedBrowserRuntime {
 }
 export declare function findBrowserExecutable(explicit?: string): Promise<string>;
 export declare function installedPlaywrightChromiumCandidates(cacheRoot: string): Promise<string[]>;
+/**
+ * Remove only allowlisted derived caches after a caller-supplied ownership recheck.
+ * @param profileDir Chromium user-data directory.
+ * @param budgetBytes Maximum aggregate bytes allowed for derived caches.
+ * @param mayDelete Revalidation performed immediately before each directory removal.
+ * @returns A promise that settles after eligible cache directories are inspected and removed.
+ */
+export declare function cleanupDerivedChromiumCaches(profileDir: string, budgetBytes: number, mayDelete: () => Promise<boolean>): Promise<void>;
 export {};
 //# sourceMappingURL=managed-browser-runtime.d.ts.map

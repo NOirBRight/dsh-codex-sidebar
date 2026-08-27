@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acknowledgeBrowserFrameAfterPaint, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
@@ -19,20 +19,26 @@ describe('managed Browser stream client', () => {
 
   it('ACKs only after Canvas paint settles and also ACKs a decode failure', async () => {
     const events: string[] = []
-    let finish: (() => void) | undefined
-    const painting = acknowledgeBrowserFrameAfterPaint(
+    let finish: ((value: string) => void) | undefined
+    const painting = paintBrowserFrameForConnection(
       7,
-      () => new Promise<void>((resolve) => { finish = () => { events.push('paint'); resolve() } }),
+      () => new Promise<string>((resolve) => { finish = resolve }),
+      () => true,
+      (value) => { events.push('paint:' + value) },
+      (value) => { events.push('dispose:' + value) },
       (sequence) => { events.push('ack:' + sequence) },
     )
     expect(events).toEqual([])
-    finish?.()
+    finish?.('bitmap')
     await painting
-    expect(events).toEqual(['paint', 'ack:7'])
+    expect(events).toEqual(['paint:bitmap', 'dispose:bitmap', 'ack:7'])
 
-    await expect(acknowledgeBrowserFrameAfterPaint(
+    await expect(paintBrowserFrameForConnection(
       8,
       async () => { throw new Error('bad jpeg') },
+      () => true,
+      () => { throw new Error('must not paint') },
+      () => { throw new Error('must not dispose') },
       (sequence) => { events.push('ack:' + sequence) },
     )).rejects.toThrow('bad jpeg')
     expect(events.at(-1)).toBe('ack:8')
@@ -40,6 +46,35 @@ describe('managed Browser stream client', () => {
     new DataView(truncated).setUint32(1, 9)
     expect(browserBinaryFrameSequence(truncated)).toBe(9)
     expect(browserJsonFrameSequence('{"type":"frame","sequence":10,"jpeg":"bad"}')).toBe(10)
+  })
+
+  it('drops a delayed decode after reconnect without painting or ACKing the new socket', async () => {
+    const oldAcks: number[] = []
+    const newAcks: number[] = []
+    const paints: string[] = []
+    const disposals: string[] = []
+    let activeConnection = 'old'
+    let finishDecode: ((value: string) => void) | undefined
+    const work = paintBrowserFrameForConnection(
+      11,
+      () => new Promise<string>((resolve) => { finishDecode = resolve }),
+      () => activeConnection === 'old',
+      (value) => { paints.push(value) },
+      (value) => { disposals.push(value) },
+      (sequence) => {
+        if (activeConnection === 'old') oldAcks.push(sequence)
+        else newAcks.push(sequence)
+      },
+    )
+
+    activeConnection = 'new'
+    finishDecode?.('old bitmap')
+    await work
+
+    expect(paints).toEqual([])
+    expect(disposals).toEqual(['old bitmap'])
+    expect(oldAcks).toEqual([])
+    expect(newAcks).toEqual([])
   })
 
   it('letterboxes a desktop JPEG into a phone sidebar without stretching', () => {

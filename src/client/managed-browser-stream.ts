@@ -83,16 +83,33 @@ export function browserStreamReady(value: string): { frameEncoding: BrowserStrea
   }
 }
 
-/** Release Host backpressure after either a completed paint or a failed JPEG decode. */
-export async function acknowledgeBrowserFrameAfterPaint(
+/**
+ * Decode and paint one frame only while its originating connection remains current.
+ * @param sequence Host frame sequence to acknowledge.
+ * @param decode Deferred frame decoder.
+ * @param isCurrent Whether the originating socket generation is still active.
+ * @param paint Synchronous Canvas paint operation.
+ * @param dispose Decoded-frame resource disposer.
+ * @param acknowledge ACK sender bound to the originating socket.
+ * @returns A promise that settles after decode, optional paint, disposal, and optional ACK.
+ */
+export async function paintBrowserFrameForConnection<T>(
   sequence: number,
-  paint: () => Promise<void>,
+  decode: () => Promise<T>,
+  isCurrent: () => boolean,
+  paint: (decoded: T) => void,
+  dispose: (decoded: T) => void,
   acknowledge: (sequence: number) => void,
 ): Promise<void> {
+  let disposeDecoded: (() => void) | undefined
   try {
-    await paint()
+    const decoded = await decode()
+    disposeDecoded = () => { dispose(decoded) }
+    if (!isCurrent()) return
+    paint(decoded)
   } finally {
-    acknowledge(sequence)
+    disposeDecoded?.()
+    if (isCurrent()) acknowledge(sequence)
   }
 }
 

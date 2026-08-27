@@ -1,7 +1,8 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 
+import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, readlink, readdir, rm, unlink } from 'node:fs/promises'
+import { access, lstat, mkdir, readFile, readlink, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
@@ -119,6 +120,12 @@ type LaunchContext = (profileDir: string, opts: {
   args: string[]
 }) => Promise<ContextLike>
 
+type CacheCleanup = (
+  profileDir: string,
+  budgetBytes: number,
+  mayDelete: () => Promise<boolean>,
+) => Promise<void>
+
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   launch?: LaunchContext
   onProjection?: (projection: ManagedBrowserProjection) => void
@@ -127,7 +134,8 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   maxLivePages?: number
   idleMs?: number
   onWarning?: (message: string) => void
-  cleanupDerivedCaches?: (profileDir: string, budgetBytes: number) => Promise<void>
+  cleanupDerivedCaches?: CacheCleanup
+  profileLeaseTimeoutMs?: number
 }
 
 type RefTarget = { documentId: string; selector: string }
@@ -170,7 +178,8 @@ export class ManagedBrowserRuntime {
   #idleMs: number
   #cacheBudgetBytes: number
   #onWarning: (message: string) => void
-  #cleanupDerivedCaches: (profileDir: string, budgetBytes: number) => Promise<void>
+  #cleanupDerivedCaches: CacheCleanup
+  #profileLeaseTimeoutMs: number
   #reaping = false
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
@@ -186,6 +195,7 @@ export class ManagedBrowserRuntime {
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
     this.#cleanupDerivedCaches = opts.cleanupDerivedCaches ?? cleanupDerivedChromiumCaches
+    this.#profileLeaseTimeoutMs = opts.profileLeaseTimeoutMs ?? PROFILE_INITIALIZATION_LEASE_TIMEOUT_MS
   }
 
   keyOf(tab: ManagedTabKey): string {
@@ -458,23 +468,33 @@ export class ManagedBrowserRuntime {
     const pending = (async () => {
       const executablePath = await findBrowserExecutable(this.#executablePath)
       await mkdir(this.profileDir, { recursive: true, mode: 0o700 })
-      const singleton = await clearStaleChromiumSingleton(this.profileDir)
-      if (singleton === 'none') {
-        await this.#cleanupDerivedCaches(this.profileDir, this.#cacheBudgetBytes).catch((error) => {
+      const releaseLease = await acquireProfileInitializationLease(this.profileDir, this.#profileLeaseTimeoutMs)
+      try {
+        const singleton = await clearStaleChromiumSingleton(this.profileDir)
+        if (singleton !== 'none') throw chromiumProfileInUse(singleton)
+        await this.#cleanupDerivedCaches(
+          this.profileDir,
+          this.#cacheBudgetBytes,
+          async () => await chromiumSingletonState(this.profileDir) === 'none',
+        ).catch((error) => {
           this.#onWarning('managed Browser cache cleanup failed: ' + errorMessage(error))
         })
+        const beforeLaunch = await chromiumSingletonState(this.profileDir)
+        if (beforeLaunch !== 'none') throw chromiumProfileInUse(beforeLaunch)
+        return await this.#launch(this.profileDir, {
+          executablePath,
+          headless: this.headless,
+          viewport: DEFAULT_VIEWPORT,
+          deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
+          ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
+          args: [
+            '--disk-cache-size=' + this.#cacheBudgetBytes,
+            '--media-cache-size=' + this.#cacheBudgetBytes,
+          ],
+        })
+      } finally {
+        await releaseLease()
       }
-      return this.#launch(this.profileDir, {
-        executablePath,
-        headless: this.headless,
-        viewport: DEFAULT_VIEWPORT,
-        deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
-        ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
-        args: [
-          '--disk-cache-size=' + this.#cacheBudgetBytes,
-          '--media-cache-size=' + this.#cacheBudgetBytes,
-        ],
-      })
     })()
     this.#context = pending
     try {
@@ -663,6 +683,10 @@ function playwrightCacheRoot(env: NodeJS.ProcessEnv): string {
 
 
 const CHROMIUM_SINGLETON_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'] as const
+const PROFILE_INITIALIZATION_LEASE_DIR = '.dcs-profile-initialization'
+const PROFILE_INITIALIZATION_LEASE_OWNER = 'owner.json'
+const PROFILE_INITIALIZATION_LEASE_TIMEOUT_MS = 10_000
+const PROFILE_INITIALIZATION_LEASE_RETRY_MS = 25
 const CHROMIUM_DERIVED_CACHE_DIRS = [
   ['Default', 'Cache'],
   ['Default', 'Code Cache'],
@@ -675,7 +699,9 @@ const CHROMIUM_DERIVED_CACHE_DIRS = [
   ['DawnGraphiteCache'],
 ] as const
 
-async function clearStaleChromiumSingleton(profileDir: string): Promise<'none' | 'live' | 'unknown'> {
+type ChromiumSingletonState = 'none' | 'live' | 'stale' | 'unknown'
+
+async function chromiumSingletonState(profileDir: string): Promise<ChromiumSingletonState> {
   let owner: string
   try {
     owner = await readlink(join(profileDir, 'SingletonLock'))
@@ -694,6 +720,12 @@ async function clearStaleChromiumSingleton(profileDir: string): Promise<'none' |
   } catch (error) {
     if (!hasErrorCode(error, 'ESRCH')) return 'unknown'
   }
+  return 'stale'
+}
+
+async function clearStaleChromiumSingleton(profileDir: string): Promise<Exclude<ChromiumSingletonState, 'stale'>> {
+  const state = await chromiumSingletonState(profileDir)
+  if (state !== 'stale') return state
   await Promise.all(CHROMIUM_SINGLETON_FILES.map(async (name) => {
     try {
       await unlink(join(profileDir, name))
@@ -704,7 +736,18 @@ async function clearStaleChromiumSingleton(profileDir: string): Promise<'none' |
   return 'none'
 }
 
-async function cleanupDerivedChromiumCaches(profileDir: string, budgetBytes: number): Promise<void> {
+/**
+ * Remove only allowlisted derived caches after a caller-supplied ownership recheck.
+ * @param profileDir Chromium user-data directory.
+ * @param budgetBytes Maximum aggregate bytes allowed for derived caches.
+ * @param mayDelete Revalidation performed immediately before each directory removal.
+ * @returns A promise that settles after eligible cache directories are inspected and removed.
+ */
+export async function cleanupDerivedChromiumCaches(
+  profileDir: string,
+  budgetBytes: number,
+  mayDelete: () => Promise<boolean>,
+): Promise<void> {
   const directories: string[] = []
   let total = 0
   for (const segments of CHROMIUM_DERIVED_CACHE_DIRS) {
@@ -724,8 +767,94 @@ async function cleanupDerivedChromiumCaches(profileDir: string, budgetBytes: num
       throw error
     })
     if (info === undefined || info.isSymbolicLink() || !info.isDirectory()) continue
+    if (!await mayDelete()) return
     await rm(directory, { recursive: true, force: false })
   }
+}
+
+type ProfileLeaseOwner = {
+  token: string
+  hostname: string
+  pid: number
+  createdAt: number
+}
+
+async function acquireProfileInitializationLease(profileDir: string, timeoutMs: number): Promise<() => Promise<void>> {
+  const leaseDir = join(profileDir, PROFILE_INITIALIZATION_LEASE_DIR)
+  const ownerPath = join(leaseDir, PROFILE_INITIALIZATION_LEASE_OWNER)
+  const owner: ProfileLeaseOwner = {
+    token: randomUUID(),
+    hostname: hostname(),
+    pid: process.pid,
+    createdAt: Date.now(),
+  }
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    try {
+      await mkdir(leaseDir, { mode: 0o700 })
+      try {
+        await writeFile(ownerPath, JSON.stringify(owner), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      } catch (error) {
+        await rm(leaseDir, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
+      return async () => {
+        const current = await readProfileLeaseOwner(ownerPath)
+        if (current?.token !== owner.token) return
+        await rm(leaseDir, { recursive: true, force: true })
+      }
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST')) throw error
+    }
+    const staleOwner = await staleProfileLeaseOwner(ownerPath)
+    if (staleOwner !== undefined && await reclaimStaleProfileLease(leaseDir, ownerPath, staleOwner)) {
+      continue
+    }
+    if (Date.now() >= deadline) throw new Error('Chromium profile initialization is locked by another Host: ' + profileDir)
+    await delay(PROFILE_INITIALIZATION_LEASE_RETRY_MS)
+  }
+}
+
+async function staleProfileLeaseOwner(ownerPath: string): Promise<ProfileLeaseOwner | undefined> {
+  const owner = await readProfileLeaseOwner(ownerPath)
+  if (owner === undefined || owner.hostname !== hostname()) return undefined
+  try {
+    process.kill(owner.pid, 0)
+    return undefined
+  } catch (error) {
+    return hasErrorCode(error, 'ESRCH') ? owner : undefined
+  }
+}
+
+async function reclaimStaleProfileLease(leaseDir: string, ownerPath: string, owner: ProfileLeaseOwner): Promise<boolean> {
+  const claimPath = join(leaseDir, '.reclaim-' + owner.token)
+  try {
+    await rename(ownerPath, claimPath)
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return false
+    throw error
+  }
+  await rm(leaseDir, { recursive: true, force: true })
+  return true
+}
+
+async function readProfileLeaseOwner(ownerPath: string): Promise<ProfileLeaseOwner | undefined> {
+  try {
+    const value = JSON.parse(await readFile(ownerPath, 'utf8')) as Partial<ProfileLeaseOwner>
+    if (typeof value.token !== 'string' || typeof value.hostname !== 'string') return undefined
+    if (!Number.isSafeInteger(value.pid) || typeof value.createdAt !== 'number') return undefined
+    return value as ProfileLeaseOwner
+  } catch {
+    return undefined
+  }
+}
+
+function chromiumProfileInUse(state: Exclude<ChromiumSingletonState, 'none'>): Error {
+  return new Error('Chromium profile is already in use or its owner cannot be verified (' + state + ')')
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => { setTimeout(resolve, ms) })
 }
 
 async function directoryBytesWithoutSymlinks(path: string): Promise<number> {
