@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import type { Page } from 'playwright-core'
-import { decodeBrowserStreamFrame, ManagedBrowserStream } from '../src/managed-browser-stream.ts'
+import { ManagedBrowserStream } from '../src/managed-browser-stream.ts'
+import { decodeBrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 import { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -28,7 +29,7 @@ function jpegSize(bytes: Uint8Array): { width: number; height: number } {
   throw new Error('JPEG dimensions not found')
 }
 
-type StreamFrame = ReturnType<typeof decodeBrowserStreamFrame>
+type StreamFrame = ReturnType<typeof decodeBrowserStreamFrameV2>
 
 async function jpegCenterPixel(page: Page, frame: StreamFrame): Promise<number[]> {
   const base64 = Buffer.from(frame.jpeg).toString('base64')
@@ -46,14 +47,16 @@ async function jpegCenterPixel(page: Page, frame: StreamFrame): Promise<number[]
 
 function jsonStreamFrame(data: WebSocket.RawData): StreamFrame | undefined {
   const text = typeof data === 'string' ? data : Buffer.from(data as Buffer).toString('utf8')
-  const message = JSON.parse(text) as { type?: unknown; version?: unknown; sequence?: unknown; sentAt?: unknown; width?: unknown; height?: unknown; jpeg?: unknown }
+    const message = JSON.parse(text) as { type?: unknown; version?: unknown; sequence?: unknown; sentAt?: unknown; revision?: unknown; mediaGeneration?: unknown; viewport?: unknown; encodedSize?: unknown; jpeg?: unknown }
   if (message.type !== 'frame' || typeof message.jpeg !== 'string') return undefined
   return {
     version: Number(message.version),
-    sequence: Number(message.sequence),
-    sentAt: Number(message.sentAt),
-    width: Number(message.width),
-    height: Number(message.height),
+      sequence: Number(message.sequence),
+      sentAt: Number(message.sentAt),
+      revision: Number(message.revision),
+      mediaGeneration: Number(message.mediaGeneration),
+      viewport: message.viewport as StreamFrame['viewport'],
+      encodedSize: message.encodedSize as StreamFrame['encodedSize'],
     jpeg: new Uint8Array(Buffer.from(message.jpeg, 'base64')),
   }
 }
@@ -72,7 +75,7 @@ function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => b
     const onMessage = (data: WebSocket.RawData, isBinary: boolean): void => {
       try {
         const frame = isBinary
-          ? decodeBrowserStreamFrame(data instanceof ArrayBuffer
+          ? decodeBrowserStreamFrameV2(data instanceof ArrayBuffer
             ? new Uint8Array(data)
             : Array.isArray(data)
               ? Buffer.concat(data)
@@ -164,27 +167,26 @@ describe('real managed Chromium', () => {
     })
     await new Promise<void>((resolve, reject) => {
       client?.once('open', () => {
-        client?.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+        client?.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
         resolve()
       })
       client?.once('error', reject)
     })
     const frame = await nextStreamFrame(client)
     const size = jpegSize(frame.jpeg)
-    expect(frame.width).toBe(720)
-    expect(frame.height).toBe(860)
+    expect(frame.viewport).toEqual({ width: 720, height: 860 })
     expect(size).toEqual({ width: 1080, height: 1290 })
     const page = runtime.target(tab)?.page
     if (page === undefined) throw new Error('missing managed Page')
     expect(await jpegCenterPixel(page as Page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
-    client.send(JSON.stringify({ type: 'frame-ack', sequence: frame.sequence }))
-    client.send(JSON.stringify({ type: 'resize', width: 390, height: 844 }))
-    const resized = await nextStreamFrame(client, (candidate) => candidate.width === 390 && candidate.height === 844)
+    client.send(JSON.stringify({ type: 'frame-ack', sequence: frame.sequence, revision: frame.revision, mediaGeneration: frame.mediaGeneration }))
+    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'phone', viewport: { width: 390, height: 844 } }))
+    const resized = await nextStreamFrame(client, (candidate) => candidate.viewport.width === 390 && candidate.viewport.height === 844)
     expect(jpegSize(resized.jpeg)).toEqual({ width: 585, height: 1266 })
-    client.send(JSON.stringify({ type: 'frame-ack', sequence: resized.sequence }))
+    client.send(JSON.stringify({ type: 'frame-ack', sequence: resized.sequence, revision: resized.revision, mediaGeneration: resized.mediaGeneration }))
     now += 300
-    client.send(JSON.stringify({ type: 'input', input: { type: 'wheel', x: 195, y: 422, deltaX: 0, deltaY: 900 } }))
+    client.send(JSON.stringify({ type: 'input', revision: resized.revision, input: { type: 'wheel', x: 195, y: 422, deltaX: 0, deltaY: 900 } }))
     const scrolled = await nextStreamFrame(client, (candidate) => candidate.sequence > resized.sequence)
     const pixel = await jpegCenterPixel(page as Page, scrolled)
     expect(pixel[2]).toBeGreaterThan(180)

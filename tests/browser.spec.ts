@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserDeviceViewport, isChromiumErrorUrl, isTakeoverUrl, liveHref, type BrowserPort, type PageDocument } from '../src/browser.ts'
+import { browserDeviceViewport, isChromiumErrorUrl, isTakeoverUrl, liveHref, type BrowserDevice, type BrowserPort, type PageDocument } from '../src/browser.ts'
 import { createHostBrowser } from '../src/host-browser.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
@@ -525,10 +525,10 @@ describe('Browser seam', () => {
   })
 
   it('persists compact device presets and requests fixed managed viewports', () => {
-    const resized: Array<{ tabId: string; width: number; height: number }> = []
+    const resized: Array<{ tabId: string; mode: BrowserDevice; width: number; height: number }> = []
     const browser = {
       ...fakeBrowser(),
-      resize(tabId: string, width: number, height: number) { resized.push({ tabId, width, height }) },
+      resize(tabId: string, mode: BrowserDevice, width: number, height: number) { resized.push({ tabId, mode, width, height }) },
     }
     const box = session(browser)
     box.dispatch({ type: 'open-url', url: PAGE_URL })
@@ -538,11 +538,11 @@ describe('Browser seam', () => {
 
     box.dispatch({ type: 'browser-set-device', device: 'phone' })
     expect(box.snapshot().browser.device).toBe('phone')
-    expect(resized.at(-1)).toEqual({ tabId, width: 390, height: 844 })
+    expect(resized.at(-1)).toEqual({ tabId, mode: 'phone', width: 390, height: 844 })
 
     box.dispatch({ type: 'browser-set-device', device: 'laptop' })
     expect(box.snapshot().browser.device).toBe('laptop')
-    expect(resized.at(-1)).toEqual({ tabId, width: 1280, height: 800 })
+    expect(resized.at(-1)).toEqual({ tabId, mode: 'laptop', width: 1280, height: 800 })
 
     box.dispatch({ type: 'browser-set-device', device: 'fit' })
     expect(box.snapshot().browser.device).toBe('fit')

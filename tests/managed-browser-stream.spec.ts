@@ -17,6 +17,15 @@ import {
   MANAGED_BROWSER_STREAM_PATH,
   MANAGED_BROWSER_STREAM_VERSION,
 } from '../src/managed-browser-stream.ts'
+import { decodeBrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
+
+function v2RuntimePorts() {
+  return {
+    acquire: () => () => {},
+    layout: () => ({ revision: 1, mode: 'fit' as const, viewport: { width: 720, height: 860 }, mediaGeneration: 1 }),
+    layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+  }
+}
 
 describe('managed browser stream protocol', () => {
   it('requires hello before ready and advertises the Mobile frame protocol before stalled CDP startup', async () => {
@@ -26,6 +35,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
       keyOf: () => 's:t',
       touch: () => {},
@@ -51,8 +61,8 @@ describe('managed browser stream protocol', () => {
       client.send(JSON.stringify({
         type: 'hello',
         version: MANAGED_BROWSER_STREAM_VERSION,
-        frameEncodings: ['binary-v1', 'json-base64-v1'],
-        flowControl: ['frame-ack-v1'],
+        frameEncodings: ['binary-v2', 'json-base64-v2'],
+        flowControl: ['frame-ack-v2'],
       }))
       const first = await Promise.race([
         new Promise<string>((resolve, reject) => {
@@ -64,8 +74,8 @@ describe('managed browser stream protocol', () => {
       expect(JSON.parse(first)).toMatchObject({
         type: 'ready',
         version: MANAGED_BROWSER_STREAM_VERSION,
-        frameEncoding: 'json-base64-v1',
-        flowControl: 'frame-ack-v1',
+        frameEncoding: 'json-base64-v2',
+        flowControl: 'frame-ack-v2',
       })
     } finally {
       client.close()
@@ -78,6 +88,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(): Promise<unknown> }
     cdp.send = async () => ({})
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
       keyOf: () => 's:t',
       touch: () => {},
@@ -124,6 +135,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 390, height: 844 }) }, cdp }),
       keyOf: () => 's:t',
       touch: () => {},
@@ -145,19 +157,19 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
           resolve()
         })
         client.once('error', reject)
       })
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(1) })
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
-      client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'tap', x: 120, y: 240 } })))
+      client.send(Buffer.from(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 120, y: 240 } })))
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(2) })
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2, revision: 1, mediaGeneration: 1 }))
       now += 300
-      client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'wheel', x: 120, y: 240, deltaX: 0, deltaY: 360 } })))
+      client.send(Buffer.from(JSON.stringify({ type: 'input', revision: 1, input: { type: 'wheel', x: 120, y: 240, deltaX: 0, deltaY: 360 } })))
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(3) })
       expect(clips.at(-1)).toMatchObject({ x: 0, y: 360 })
     } finally {
@@ -172,6 +184,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
       keyOf: () => 'desktop:tab',
       touch: () => {},
@@ -190,16 +203,16 @@ describe('managed browser stream protocol', () => {
       client.on('message', (data, isBinary) => { messages.push({ data, isBinary }) })
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
           resolve()
         })
         client.once('error', reject)
       })
       await vi.waitFor(() => { expect(messages.some((message) => message.isBinary)).toBe(true) })
       const ready = messages.find((message) => !message.isBinary)
-      expect(JSON.parse(Buffer.from(ready?.data as Buffer).toString('utf8'))).toMatchObject({ frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' })
+      expect(JSON.parse(Buffer.from(ready?.data as Buffer).toString('utf8'))).toMatchObject({ frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2' })
       const binary = messages.find((message) => message.isBinary)
-      expect(decodeBrowserStreamFrame(binary?.data as Buffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 3, 4, 0xff, 0xd9]))
+      expect(decodeBrowserStreamFrameV2(binary?.data as Buffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 3, 4, 0xff, 0xd9]))
     } finally {
       client.close()
       await stream.dispose()
@@ -222,6 +235,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
       keyOf: () => 'flow:tab',
       touch: () => {},
@@ -243,7 +257,7 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
           resolve()
         })
         client.once('error', reject)
@@ -257,16 +271,16 @@ describe('managed browser stream protocol', () => {
       await vi.waitFor(() => { expect(frames).toEqual([1]) })
       await new Promise((resolve) => { setTimeout(resolve, 120) })
       expect(captures).toHaveLength(0)
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 0 }))
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 0, revision: 1, mediaGeneration: 1 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 2, revision: 1, mediaGeneration: 1 }))
       await new Promise((resolve) => { setTimeout(resolve, 25) })
       expect(captures).toHaveLength(0)
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       await vi.waitFor(() => { expect(captures).toHaveLength(1) })
-      expect(clips.at(-1)).toMatchObject({ width: 800, height: 600 })
+      expect(clips.at(-1)).toMatchObject({ width: 720, height: 860 })
       captures.shift()?.()
       await vi.waitFor(() => { expect(frames).toEqual([1, 2]) })
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       await new Promise((resolve) => { setTimeout(resolve, 25) })
       expect(captures).toHaveLength(0)
     } finally {
@@ -281,6 +295,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
     const runtime = {
+      ...v2RuntimePorts(),
       target: () => ({ page: { viewportSize: () => ({ width: 720, height: 860 }) }, cdp }),
       keyOf: () => 'timer:tab',
       touch: () => {},
@@ -302,13 +317,13 @@ describe('managed browser stream protocol', () => {
     try {
       await new Promise<void>((resolve, reject) => {
         client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 1, frameEncodings: ['binary-v1', 'json-base64-v1'], flowControl: ['frame-ack-v1'] }))
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
           resolve()
         })
         client.once('error', reject)
       })
       await vi.waitFor(() => { expect(frames).toEqual([1]) })
-      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1 }))
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 9, metadata: { deviceWidth: 640, deviceHeight: 480 } })
       await vi.waitFor(() => { expect(frames).toEqual([1, 2]) }, { timeout: 500 })
     } finally {

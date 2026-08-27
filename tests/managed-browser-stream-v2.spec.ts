@@ -1,0 +1,144 @@
+import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
+import { WebSocket } from 'ws'
+import { describe, expect, it, vi } from 'vitest'
+import { captureBrowserJpegForLayout, captureBrowserJpegWithinBudget, ManagedBrowserStream, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES, type BrowserStreamTransportProfile } from '../src/managed-browser-stream.ts'
+import type { BrowserLayout } from '../src/managed-browser-protocol.ts'
+
+describe('managed Browser Host protocol v2', () => {
+  it('keeps the default raw JPEG below the nested Mobile tunnel Base64 envelope', () => {
+    const sidebarJsonBytes = Math.ceil(MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES * 4 / 3) + 1024
+    const tunnelPlaintextBytes = Math.ceil(sidebarJsonBytes * 4 / 3) + 1024
+    expect(tunnelPlaintextBytes).toBeLessThan(200 * 1024)
+  })
+
+  it('keeps screencast metadata diagnostic and gates input and ACK by committed layout', async () => {
+    let now = 1_000
+    let layout: BrowserLayout = { revision: 4, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 3 }
+    const clips: Array<Record<string, unknown>> = []
+    const inputs: Array<Record<string, unknown>> = []
+    const sourceAcks: number[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method, params = {}) => {
+      if (method === 'Page.captureScreenshot') {
+        clips.push(params.clip as Record<string, unknown>)
+        return { data: Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64') }
+      }
+      if (method === 'Page.screencastFrameAck') sourceAcks.push(Number(params.sessionId))
+      if (method === 'Input.dispatchMouseEvent') inputs.push(params)
+      return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    }
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => layout.viewport }, cdp, layout }),
+      keyOf: () => 's:t',
+      touch: () => {},
+      acquire: () => () => {},
+      layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
+        layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, mode: proposal.mode, viewport: proposal.viewport }
+        return layout
+      },
+      outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, now: () => now })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+    const messages: Array<Record<string, unknown>> = []
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'] }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(messages.some((message) => message.type === 'frame')).toBe(true) })
+      expect(messages.find((message) => message.type === 'ready')).toMatchObject({ version: 2, frameEncoding: 'json-base64-v2', flowControl: 'frame-ack-v2' })
+      expect(messages.find((message) => message.type === 'layout-commit')).toMatchObject({ layout })
+      const first = messages.find((message) => message.type === 'frame') as { sequence: number; revision: number; mediaGeneration: number; viewport: object }
+      expect(first).toMatchObject({ revision: 4, mediaGeneration: 3, viewport: { width: 1280, height: 800 } })
+      expect(clips).toEqual([expect.objectContaining({ width: 1280, height: 800 })])
+
+      client.send(JSON.stringify({ type: 'input', revision: 99, input: { type: 'tap', x: 20, y: 30 } }))
+      await vi.waitFor(() => { expect(messages.some((message) => message.type === 'input-result')).toBe(true) })
+      expect(inputs).toEqual([])
+      client.send(JSON.stringify({ type: 'input', revision: 4, input: { type: 'tap', x: 20, y: 30 } }))
+      await vi.waitFor(() => { expect(inputs).toHaveLength(2) })
+
+      client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
+      await vi.waitFor(() => { expect(messages.filter((message) => message.type === 'frame')).toHaveLength(2) })
+      const second = messages.filter((message) => message.type === 'frame')[1] as { sequence: number; revision: number; mediaGeneration: number }
+      expect(second).toMatchObject({ revision: 5, mediaGeneration: 4, viewport: { width: 1280, height: 800 } })
+
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: first.sequence, revision: 4, mediaGeneration: 3 }))
+      now += 300
+      cdp.emit('Page.screencastFrame', { data: 'ignored', sessionId: 11, metadata: { deviceWidth: 390, deviceHeight: 844, pageScaleFactor: 2 } })
+      await new Promise((resolve) => { setTimeout(resolve, 30) })
+      expect(messages.filter((message) => message.type === 'frame')).toHaveLength(2)
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: second.sequence, revision: 5, mediaGeneration: 4 }))
+      await vi.waitFor(() => { expect(messages.filter((message) => message.type === 'frame')).toHaveLength(3) })
+      const third = messages.filter((message) => message.type === 'frame')[2]
+      expect(third).toMatchObject({ revision: 5, mediaGeneration: 4, viewport: { width: 1280, height: 800 } })
+      expect(clips.at(-1)).toMatchObject({ width: 1280, height: 800 })
+      expect(sourceAcks).toEqual([11])
+    } finally {
+      client.close()
+      await vi.waitFor(() => { expect(stream.resources()).toMatchObject({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0 }) })
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('recaptures with bounded quality and scale without changing the CSS viewport', async () => {
+    const attempts: Array<{ quality: number; clip: { width: number; height: number; scale: number } }> = []
+    const cdp = {
+      async send(method: string, params?: Record<string, unknown>) {
+        if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 4, pageY: 8 } }
+        const value = params as { quality: number; clip: { width: number; height: number; scale: number } }
+        attempts.push(value)
+        const bytes = attempts.length < 3 ? 120 : 60
+        return { data: Buffer.alloc(bytes, attempts.length).toString('base64') }
+      },
+    }
+    const profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'> = { quality: 80, maxScale: 1.5, maxRawBytes: 80 }
+    await expect(captureBrowserJpegWithinBudget(cdp as never, { width: 1280, height: 800 }, profile)).resolves.toMatchObject({
+      jpeg: expect.objectContaining({ byteLength: 60 }),
+      encodedSize: { width: 960, height: 600 },
+      quality: 45,
+      scale: 0.75,
+    })
+    expect(attempts).toHaveLength(3)
+    expect(attempts.every((attempt) => attempt.clip.width === 1280 && attempt.clip.height === 800)).toBe(true)
+    expect(attempts.every((attempt) => attempt.clip.width !== 960)).toBe(true)
+  })
+
+  it('drops a capture that completes after its layout generation changed', async () => {
+    let release: (() => void) | undefined
+    let current: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 800, height: 600 }, mediaGeneration: 1 }
+    const cdp = {
+      async send(method: string) {
+        if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: 0 } }
+        await new Promise<void>((resolve) => { release = resolve })
+        return { data: Buffer.from([1, 2, 3]).toString('base64') }
+      },
+    }
+    const capture = captureBrowserJpegForLayout(
+      cdp as never,
+      current,
+      () => current,
+      { quality: 80, maxScale: 1, maxRawBytes: 100 },
+    )
+    await vi.waitFor(() => { expect(release).toBeTypeOf('function') })
+    current = { revision: 2, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 2 }
+    release?.()
+    await expect(capture).resolves.toBeUndefined()
+  })
+})

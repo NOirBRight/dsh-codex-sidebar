@@ -65,7 +65,7 @@ export type BrowserPort = {
   openExternal(url: string): void
   isBusy(): boolean
   manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void
-  resize?(tabId: string, width: number, height: number): void
+  resize?(tabId: string, mode: BrowserDevice, width: number, height: number): void
   close?(tabId: string): void
   spawn?(command: string): void
 }

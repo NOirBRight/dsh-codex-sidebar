@@ -75,8 +75,9 @@ export async function handleSidebarRpcAsync(
       if (projection.status === 'error' || projection.status === 'crashed') {
         return fail(projection.error ?? 'Browser page is not ready')
       }
-      const viewport = browserDeviceViewport(snapshot.browsers[tabId]?.device ?? 'fit')
-      if (viewport !== null) await services.managedBrowser.resize(tabKey, viewport.width, viewport.height)
+      const mode = snapshot.browsers[tabId]?.device ?? 'fit'
+      const viewport = browserDeviceViewport(mode)
+      if (viewport !== null) await services.managedBrowser.proposeLayout(tabKey, { mode, viewport })
       return { ok: true, value: services.browserStream.issue(tabKey) }
     }
     if (endpoint === SIDEBAR_BROWSER_CAPTURE_ENDPOINT) {

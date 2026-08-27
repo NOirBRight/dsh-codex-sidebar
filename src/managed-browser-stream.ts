@@ -5,9 +5,19 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ManagedBrowserRuntime, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts'
+import {
+  decodeBrowserClientMessage,
+  encodeBrowserStreamFrameV2,
+  encodeBrowserStreamJsonFrameV2,
+  MANAGED_BROWSER_PROTOCOL_VERSION,
+  type BrowserInput,
+  type BrowserLayout,
+  type BrowserSize,
+  type BrowserStreamFrameV2,
+} from './managed-browser-protocol.ts'
 
 export const MANAGED_BROWSER_STREAM_PATH = '/__dcs/browser-stream'
-export const MANAGED_BROWSER_STREAM_VERSION = 1
+export const MANAGED_BROWSER_STREAM_VERSION = MANAGED_BROWSER_PROTOCOL_VERSION
 
 const TICKET_TTL_MS = 30_000
 const MAX_BUFFERED_BYTES = 512 * 1024
@@ -17,22 +27,28 @@ export const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2
 export const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250
 export const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4
 const HIGH_DENSITY_SCALE = 1.5
+export const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES = 96 * 1024
+export const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES = 480 * 1024
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
 export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
 
 export type BrowserStreamTransportProfile = {
-  frameEncoding: 'binary-v1' | 'json-base64-v1'
+  frameEncoding: 'binary-v2' | 'json-base64-v2'
   quality: number
   maxScale: number
   frameIntervalMs: number
   everyNthFrame: number
+  maxRawBytes: number
 }
 
-export function browserStreamTransportProfile(origin: string | undefined): BrowserStreamTransportProfile {
+export function browserStreamTransportProfile(
+  origin: string | undefined,
+  budgets: { desktopMaxRawBytes?: number; mobileMaxRawBytes?: number } = {},
+): BrowserStreamTransportProfile {
   return origin === undefined || origin.length === 0
-    ? { frameEncoding: 'json-base64-v1', quality: MANAGED_BROWSER_MOBILE_STREAM_QUALITY, maxScale: 1, frameIntervalMs: MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME }
-    : { frameEncoding: 'binary-v1', quality: MANAGED_BROWSER_STREAM_QUALITY, maxScale: HIGH_DENSITY_SCALE, frameIntervalMs: MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME }
+    ? { frameEncoding: 'json-base64-v2', quality: MANAGED_BROWSER_MOBILE_STREAM_QUALITY, maxScale: 1, frameIntervalMs: MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME, maxRawBytes: rawByteBudget(budgets.mobileMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES) }
+    : { frameEncoding: 'binary-v2', quality: MANAGED_BROWSER_STREAM_QUALITY, maxScale: HIGH_DENSITY_SCALE, frameIntervalMs: MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, everyNthFrame: MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME, maxRawBytes: rawByteBudget(budgets.desktopMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES) }
 }
 export const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560
 export const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048
@@ -62,26 +78,23 @@ export type ManagedBrowserStreamOptions = {
   now?: () => number
   ticketTtlMs?: number
   handshakeTimeoutMs?: number
+  desktopMaxRawBytes?: number
+  mobileMaxRawBytes?: number
 }
 
 type ScreencastPayload = {
   data?: unknown
   sessionId?: unknown
-  metadata?: { deviceWidth?: unknown; deviceHeight?: unknown }
 }
 
-type CaptureRequest = {
-  width: number
-  height: number
-  fallback?: string
-}
+export type { BrowserInput } from './managed-browser-protocol.ts'
 
-export type BrowserInput =
-  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; selector?: string }
-  | { type: 'tap'; x: number; y: number }
-  | { type: 'down' | 'up' | 'move'; x: number; y: number; pressed?: boolean }
-  | { type: 'keyDown' | 'keyUp'; key: string; code: string; modifiers?: number }
-  | { type: 'text'; text: string }
+export type ManagedBrowserStreamResources = {
+  sockets: number
+  timers: number
+  captures: number
+  unackedFrames: number
+}
 
 export class ManagedBrowserStream {
   #runtime: ManagedBrowserRuntime
@@ -92,12 +105,21 @@ export class ManagedBrowserStream {
   #server = new WebSocketServer({ noServer: true })
   #sockets = new Set<WebSocket>()
   #tabSockets = new Map<string, WebSocket>()
+  #timerCount = 0
+  #captureCount = 0
+  #unackedCount = 0
+  #budgets: { desktopMaxRawBytes?: number; mobileMaxRawBytes?: number }
+  #tasks = new Set<Promise<void>>()
 
   constructor(opts: ManagedBrowserStreamOptions) {
     this.#runtime = opts.runtime
     this.#now = opts.now ?? Date.now
     this.#ticketTtlMs = opts.ticketTtlMs ?? TICKET_TTL_MS
     this.#handshakeTimeoutMs = opts.handshakeTimeoutMs ?? MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS
+    this.#budgets = {
+      ...(opts.desktopMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: rawByteBudget(opts.desktopMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES) }),
+      ...(opts.mobileMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: rawByteBudget(opts.mobileMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES) }),
+    }
   }
 
   issue(tab: ManagedTabKey): BrowserStreamTicket {
@@ -121,7 +143,7 @@ export class ManagedBrowserStream {
     }
     this.#server.handleUpgrade(req, socket, head, (ws) => {
       this.#server.emit('connection', ws, req)
-      void this.#attach(ws, tab, target, browserStreamTransportProfile(typeof req.headers.origin === 'string' ? req.headers.origin : undefined))
+      void this.#attach(ws, tab, target, browserStreamTransportProfile(typeof req.headers.origin === 'string' ? req.headers.origin : undefined, this.#budgets))
     })
   }
 
@@ -131,6 +153,24 @@ export class ManagedBrowserStream {
     this.#tabSockets.clear()
     this.#tickets.clear()
     await new Promise<void>((resolve) => { this.#server.close(() => resolve()) })
+    while (this.#tasks.size > 0) await Promise.all([...this.#tasks])
+  }
+
+  closeTab(tab: ManagedTabKey): void {
+    this.#tabSockets.get(this.#runtime.keyOf(tab))?.close(1000, 'Browser Tab closed')
+  }
+
+  closeSession(sessionId: string): void {
+    for (const [key, socket] of this.#tabSockets) if (key.startsWith(sessionId + ':')) socket.close(1000, 'Browser session disposed')
+  }
+
+  resources(): ManagedBrowserStreamResources {
+    return {
+      sockets: this.#sockets.size,
+      timers: this.#timerCount,
+      captures: this.#captureCount,
+      unackedFrames: this.#unackedCount,
+    }
   }
 
   consume(ticket: string): ManagedTabKey | undefined {
@@ -153,7 +193,7 @@ export class ManagedBrowserStream {
   async #attach(
     socket: WebSocket,
     tab: ManagedTabKey,
-    target: { page: { viewportSize(): { width: number; height: number } | null }; cdp: ManagedCdpSession },
+    target: { cdp: ManagedCdpSession; layout: BrowserLayout },
     profile: BrowserStreamTransportProfile,
   ): Promise<void> {
     const cdp = target.cdp
@@ -166,13 +206,18 @@ export class ManagedBrowserStream {
     let sequence = 0
     let lastFrameAt = 0
     let lastProjection = ''
+    let lastLayout = ''
     let captureInFlight = false
-    let unackedSequence: number | undefined
-    let dirty: { request: CaptureRequest; force: boolean } | undefined
+    let unacked: { sequence: number; revision: number; mediaGeneration: number } | undefined
+    let dirty: { force: boolean } | undefined
     let frameTimer: ReturnType<typeof setTimeout> | undefined
     let sourceAttached = false
     let handshaken = false
     let detached = false
+    let latestProposalSequence = 0
+    let mediaDegraded = false
+    const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
+    const releaseLease = this.#runtime.acquire(tab)
     const sendProjection = (): void => {
       if (socket.readyState !== WebSocket.OPEN) return
       const projection = this.#runtime.projection(tab)
@@ -182,58 +227,45 @@ export class ManagedBrowserStream {
       lastProjection = signature
       socket.send(JSON.stringify({ type: 'state', projection }))
     }
-    const sendFrame = (jpeg: Uint8Array, width: number, height: number): boolean => {
+    const sendLayout = (layout: BrowserLayout): void => {
+      const signature = layout.revision + ':' + layout.mediaGeneration
+      if (signature === lastLayout || socket.readyState !== WebSocket.OPEN) return
+      lastLayout = signature
+      socket.send(JSON.stringify({ type: 'layout-commit', layout }))
+    }
+    const sendFrame = (capture: BrowserJpegCapture, layout: BrowserLayout): boolean => {
       if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return false
       sequence += 1
-      const frame = {
-        version: MANAGED_BROWSER_STREAM_VERSION,
+      const frame: BrowserStreamFrameV2 = {
+        version: 2,
         sequence,
         sentAt: this.#now(),
-        width,
-        height,
-        jpeg,
+        revision: layout.revision,
+        mediaGeneration: layout.mediaGeneration,
+        viewport: layout.viewport,
+        encodedSize: capture.encodedSize,
+        jpeg: capture.jpeg,
       }
-      socket.send(profile.frameEncoding === 'binary-v1'
-        ? encodeBrowserStreamFrame(frame)
-        : encodeBrowserStreamJsonFrame(frame))
-      unackedSequence = sequence
+      socket.send(profile.frameEncoding === 'binary-v2'
+        ? encodeBrowserStreamFrameV2(frame)
+        : encodeBrowserStreamJsonFrameV2(frame))
+      unacked = { sequence, revision: layout.revision, mediaGeneration: layout.mediaGeneration }
+      this.#unackedCount += 1
       return true
-    }
-    const captureFrame = async (request: CaptureRequest): Promise<Uint8Array | undefined> => {
-      try {
-        const metrics = await cdp.send('Page.getLayoutMetrics').catch(() => undefined)
-        const origin = browserStreamVisualViewportOrigin(metrics)
-        const result = await cdp.send('Page.captureScreenshot', {
-          format: 'jpeg',
-          quality: profile.quality,
-          fromSurface: true,
-          captureBeyondViewport: false,
-          clip: {
-            x: origin.x,
-            y: origin.y,
-            width: request.width,
-            height: request.height,
-            scale: browserStreamCaptureScale(request.width, request.height, profile.maxScale),
-          },
-        })
-        const data = screenshotData(result)
-        if (data === undefined) throw new Error('Browser screenshot returned no data')
-        return Buffer.from(data, 'base64')
-      } catch {
-        return request.fallback === undefined ? undefined : Buffer.from(request.fallback, 'base64')
-      }
     }
     const armFrameTimer = (delay: number, pump: () => void): void => {
       if (frameTimer !== undefined) return
+      this.#timerCount += 1
       frameTimer = setTimeout(() => {
         frameTimer = undefined
+        this.#timerCount -= 1
         pump()
       }, Math.max(1, delay))
       frameTimer.unref()
     }
     const pump = (): void => {
       if (detached || !handshaken || socket.readyState !== WebSocket.OPEN) return
-      if (captureInFlight || unackedSequence !== undefined || dirty === undefined) return
+      if (captureInFlight || unacked !== undefined || dirty === undefined) return
       const delay = dirty.force ? 0 : profile.frameIntervalMs - (this.#now() - lastFrameAt)
       if (delay > 0) {
         armFrameTimer(delay, pump)
@@ -242,48 +274,83 @@ export class ManagedBrowserStream {
       if (frameTimer !== undefined) {
         clearTimeout(frameTimer)
         frameTimer = undefined
+        this.#timerCount -= 1
       }
       if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
         armFrameTimer(profile.frameIntervalMs, pump)
         return
       }
-      const next = dirty
       dirty = undefined
       lastFrameAt = this.#now()
       captureInFlight = true
-      void captureFrame(next.request).then((jpeg) => {
-        if (jpeg === undefined || detached) return
-        if (!sendFrame(jpeg, next.request.width, next.request.height)) {
-          dirty = { request: next.request, force: true }
+      this.#captureCount += 1
+      const capturedLayout = currentLayout()
+      if (capturedLayout === undefined) {
+        captureInFlight = false
+        this.#captureCount -= 1
+        return
+      }
+      const task = captureBrowserJpegForLayout(cdp, capturedLayout, currentLayout, profile).then((capture) => {
+        if (detached) return
+        if (capture === undefined) {
+          const current = currentLayout()
+          if (current?.revision !== capturedLayout.revision || current.mediaGeneration !== capturedLayout.mediaGeneration) return
+          if (!mediaDegraded && socket.readyState === WebSocket.OPEN) {
+            mediaDegraded = true
+            socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'frame-budget-exceeded' }))
+          }
+          return
+        }
+        if (mediaDegraded && socket.readyState === WebSocket.OPEN) {
+          mediaDegraded = false
+          socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }))
+        }
+        if (!sendFrame(capture, capturedLayout)) {
+          dirty = { force: true }
         }
       }).finally(() => {
         captureInFlight = false
+        this.#captureCount -= 1
         pump()
       })
+      this.#track(task)
     }
-    const requestFrame = (request: CaptureRequest, force = false): void => {
+    const requestFrame = (force = false): void => {
       if (detached || socket.readyState !== WebSocket.OPEN) return
-      dirty = { request, force: force || dirty?.force === true }
+      dirty = { force: force || dirty?.force === true }
       pump()
+    }
+    const commitLayout = (layout: BrowserLayout): void => {
+      if (unacked !== undefined
+        && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
+        unacked = undefined
+        this.#unackedCount -= 1
+      }
+      sendLayout(layout)
+      requestFrame(true)
     }
     const onFrame = (value: unknown): void => {
       const payload = value as ScreencastPayload
       sendProjection()
       if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
-      if (typeof payload.data !== 'string') return
-      const width = finiteDimension(payload.metadata?.deviceWidth, 720)
-      const height = finiteDimension(payload.metadata?.deviceHeight, 860)
-      requestFrame({ width, height, fallback: payload.data })
+      this.#runtime.touch(tab)
+      if (typeof payload.data === 'string') requestFrame()
     }
     const detach = async (): Promise<void> => {
       if (detached) return
       detached = true
-      clearTimeout(helloTimer)
-      if (frameTimer !== undefined) clearTimeout(frameTimer)
+      clearHelloTimer()
+      if (frameTimer !== undefined) {
+        clearTimeout(frameTimer)
+        this.#timerCount -= 1
+      }
       frameTimer = undefined
       if (sourceAttached) cdp.off('Page.screencastFrame', onFrame)
       this.#sockets.delete(socket)
       dirty = undefined
+      if (unacked !== undefined) this.#unackedCount -= 1
+      unacked = undefined
+      releaseLease()
       if (this.#tabSockets.get(tabKey) !== socket) return
       this.#tabSockets.delete(tabKey)
       if (sourceAttached) await cdp.send('Page.stopScreencast').catch(() => undefined)
@@ -295,8 +362,17 @@ export class ManagedBrowserStream {
         type: 'ready',
         version: MANAGED_BROWSER_STREAM_VERSION,
         frameEncoding: profile.frameEncoding,
-        flowControl: 'frame-ack-v1',
+        flowControl: 'frame-ack-v2',
+        fallback: { maxRawBytes: profile.maxRawBytes },
+        layoutPolicy: this.#runtime.layoutPolicy(),
       }))
+      const layout = currentLayout()
+      if (layout === undefined) {
+        socket.close(1011, 'Browser layout is not ready')
+        return
+      }
+      sendLayout(layout)
+      socket.send(JSON.stringify({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }))
       sendProjection()
       try {
         await cdp.send('Page.startScreencast', {
@@ -308,13 +384,23 @@ export class ManagedBrowserStream {
         })
         if (detached) return
         // A settled page may not emit a screencast frame until it repaints.
-        const viewport = target.page.viewportSize() ?? { width: 720, height: 860 }
-        requestFrame({ width: viewport.width, height: viewport.height }, true)
+        requestFrame(true)
       } catch (error) {
         if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
       }
     }
+    let helloTimerActive = true
+    const clearHelloTimer = (): void => {
+      if (!helloTimerActive) return
+      helloTimerActive = false
+      clearTimeout(helloTimer)
+      this.#timerCount -= 1
+    }
+    this.#timerCount += 1
     const helloTimer = setTimeout(() => {
+      if (!helloTimerActive) return
+      helloTimerActive = false
+      this.#timerCount -= 1
       if (!handshaken) socket.close(1008, 'Browser stream hello timeout')
     }, this.#handshakeTimeoutMs)
     helloTimer.unref()
@@ -322,31 +408,48 @@ export class ManagedBrowserStream {
     socket.on('message', (data) => {
       const raw = data.toString()
       if (!handshaken) {
-        if (!browserStreamHelloAccepted(raw, profile.frameEncoding)) {
+        const hello = decodeBrowserClientMessage(raw)
+        if (hello?.type !== 'hello' || !hello.frameEncodings.includes(profile.frameEncoding)) {
           socket.close(1002, 'Invalid Browser stream hello')
           return
         }
         handshaken = true
-        clearTimeout(helloTimer)
+        clearHelloTimer()
         void start()
         return
       }
-      const ack = browserStreamFrameAck(raw)
-      if (ack !== undefined) {
-        if (ack === unackedSequence) {
-          unackedSequence = undefined
+      const message = decodeBrowserClientMessage(raw)
+      if (message?.type === 'frame-ack') {
+        if (unacked !== undefined
+          && message.sequence === unacked.sequence
+          && message.revision === unacked.revision
+          && message.mediaGeneration === unacked.mediaGeneration) {
+          unacked = undefined
+          this.#unackedCount -= 1
           pump()
         }
         return
       }
-      void this.#onMessage(socket, tab, cdp, raw, requestFrame).catch(() => undefined)
+      if (message === undefined || message.type === 'hello') return
+      void this.#onMessage(socket, tab, cdp, message, requestFrame, commitLayout, currentLayout, {
+        get latest() { return latestProposalSequence },
+        set latest(value: number) { latestProposalSequence = value },
+      }).catch(() => undefined)
     })
-    socket.once('close', () => { void detach() })
-    socket.once('error', () => { void detach() })
+    socket.once('close', () => { this.#track(detach()) })
+    socket.once('error', () => { this.#track(detach()) })
   }
 
-  async #onMessage(socket: WebSocket, tab: ManagedTabKey, cdp: ManagedCdpSession, raw: string, requestFrame: (request: CaptureRequest, force?: boolean) => void): Promise<void> {
-    const message = JSON.parse(raw) as { type?: unknown; input?: unknown; width?: unknown; height?: unknown }
+  async #onMessage(
+    socket: WebSocket,
+    tab: ManagedTabKey,
+    cdp: ManagedCdpSession,
+    message: Exclude<ReturnType<typeof decodeBrowserClientMessage>, undefined | { type: 'hello' } | { type: 'frame-ack' }>,
+    requestFrame: (force?: boolean) => void,
+    commitLayout: (layout: BrowserLayout) => void,
+    currentLayout: () => BrowserLayout | undefined,
+    proposal: { latest: number },
+  ): Promise<void> {
     if (message.type === 'outline') {
       const outline = await this.#runtime.outline(tab)
       if ('nodes' in outline && socket.readyState === WebSocket.OPEN) {
@@ -358,19 +461,25 @@ export class ManagedBrowserStream {
       }
       return
     }
-    if (message.type === 'resize' && typeof message.width === 'number' && typeof message.height === 'number') {
-      await this.#runtime.resize(tab, message.width, message.height)
-      requestFrame({ width: message.width, height: message.height }, true)
+    if (message.type === 'layout-propose') {
+      if (message.proposalSequence <= proposal.latest) return
+      proposal.latest = message.proposalSequence
+      const layout = await this.#runtime.proposeLayout(tab, { mode: message.mode, viewport: message.viewport })
+      commitLayout(layout)
       return
     }
-    if (message.type !== 'input' || !validInput(message.input)) return
+    if (message.type !== 'input') return
+    const layout = currentLayout()
+    if (layout === undefined || message.revision !== layout.revision) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+        type: 'input-result', accepted: false, reason: 'stale-layout', revision: layout?.revision ?? 0,
+      }))
+      return
+    }
+    this.#runtime.touch(tab)
     await dispatchBrowserInput(cdp, message.input)
     if (message.input.type === 'wheel') await waitForBrowserPaint(cdp)
-    const viewport = this.#runtime.target(tab)?.page.viewportSize() ?? { width: 720, height: 860 }
-    requestFrame(
-      { width: viewport.width, height: viewport.height },
-      message.input.type === 'tap' || message.input.type === 'up' || message.input.type === 'keyUp' || message.input.type === 'text',
-    )
+    requestFrame(message.input.type === 'tap' || message.input.type === 'up' || message.input.type === 'keyUp' || message.input.type === 'text')
     if (message.input.type === 'wheel' && message.input.selector !== undefined) {
       const tracked = await this.#runtime.trackRect(tab, message.input.selector)
       if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {
@@ -382,6 +491,11 @@ export class ManagedBrowserStream {
   #pruneTickets(): void {
     const now = this.#now()
     for (const [ticket, record] of this.#tickets) if (record.expiresAt < now) this.#tickets.delete(ticket)
+  }
+
+  #track(task: Promise<void>): void {
+    this.#tasks.add(task)
+    void task.finally(() => { this.#tasks.delete(task) })
   }
 }
 
@@ -395,6 +509,80 @@ export function browserStreamVisualViewportOrigin(value: unknown): { x: number; 
     x: typeof pageX === 'number' && Number.isFinite(pageX) ? pageX : 0,
     y: typeof pageY === 'number' && Number.isFinite(pageY) ? pageY : 0,
   }
+}
+
+export type BrowserJpegCapture = { jpeg: Uint8Array; encodedSize: BrowserSize; quality: number; scale: number }
+
+/** Capture only while the supplied committed layout remains current. */
+export async function captureBrowserJpegForLayout(
+  cdp: ManagedCdpSession,
+  layout: BrowserLayout,
+  currentLayout: () => BrowserLayout | undefined,
+  profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
+): Promise<BrowserJpegCapture | undefined> {
+  const capture = await captureBrowserJpegWithinBudget(cdp, layout.viewport, profile)
+  const current = currentLayout()
+  return capture !== undefined
+    && current?.revision === layout.revision
+    && current.mediaGeneration === layout.mediaGeneration
+    ? capture
+    : undefined
+}
+
+/** Capture the committed CSS viewport within one route's raw JPEG budget. */
+export async function captureBrowserJpegWithinBudget(
+  cdp: ManagedCdpSession,
+  viewport: BrowserSize,
+  profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
+): Promise<BrowserJpegCapture | undefined> {
+  const metrics = await cdp.send('Page.getLayoutMetrics').catch(() => undefined)
+  const origin = browserStreamVisualViewportOrigin(metrics)
+  const preferredScale = browserStreamCaptureScale(viewport.width, viewport.height, profile.maxScale)
+  const attempts = uniqueCaptureAttempts([
+    { quality: profile.quality, scale: preferredScale },
+    { quality: Math.min(profile.quality, 60), scale: Math.min(preferredScale, 1) },
+    { quality: Math.min(profile.quality, 45), scale: Math.min(preferredScale, 0.75) },
+    { quality: Math.min(profile.quality, 30), scale: Math.min(preferredScale, 0.5) },
+  ])
+  for (const attempt of attempts) {
+    const result = await cdp.send('Page.captureScreenshot', {
+      format: 'jpeg',
+      quality: attempt.quality,
+      fromSurface: true,
+      captureBeyondViewport: false,
+      clip: {
+        x: origin.x,
+        y: origin.y,
+        width: viewport.width,
+        height: viewport.height,
+        scale: attempt.scale,
+      },
+    }).catch(() => undefined)
+    const data = screenshotData(result)
+    if (data === undefined) continue
+    const jpeg = new Uint8Array(Buffer.from(data, 'base64'))
+    if (jpeg.byteLength > profile.maxRawBytes) continue
+    return {
+      jpeg,
+      encodedSize: {
+        width: Math.max(1, Math.round(viewport.width * attempt.scale)),
+        height: Math.max(1, Math.round(viewport.height * attempt.scale)),
+      },
+      quality: attempt.quality,
+      scale: attempt.scale,
+    }
+  }
+  return undefined
+}
+
+function uniqueCaptureAttempts(attempts: Array<{ quality: number; scale: number }>): Array<{ quality: number; scale: number }> {
+  const seen = new Set<string>()
+  return attempts.filter((attempt) => {
+    const signature = attempt.quality + ':' + attempt.scale
+    if (seen.has(signature)) return false
+    seen.add(signature)
+    return true
+  })
 }
 
 export function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array {
@@ -481,49 +669,6 @@ export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: Browse
   }
 }
 
-function validInput(value: unknown): value is BrowserInput {
-  if (typeof value !== 'object' || value === null || !('type' in value)) return false
-  const type = (value as { type?: unknown }).type
-  if (type === 'text') return typeof (value as { text?: unknown }).text === 'string'
-  if (type === 'keyDown' || type === 'keyUp') {
-    const input = value as { key?: unknown; code?: unknown }
-    return typeof input.key === 'string' && typeof input.code === 'string'
-  }
-  const input = value as { x?: unknown; y?: unknown }
-  if (typeof input.x !== 'number' || typeof input.y !== 'number') return false
-  if (type === 'wheel') {
-    const wheel = value as { deltaX?: unknown; deltaY?: unknown; selector?: unknown }
-    return typeof wheel.deltaX === 'number' && typeof wheel.deltaY === 'number'
-      && (wheel.selector === undefined || typeof wheel.selector === 'string')
-  }
-  return type === 'tap' || type === 'down' || type === 'up' || type === 'move'
-}
-
-function browserStreamHelloAccepted(raw: string, frameEncoding: BrowserStreamTransportProfile['frameEncoding']): boolean {
-  try {
-    const message = JSON.parse(raw) as { type?: unknown; version?: unknown; frameEncodings?: unknown; flowControl?: unknown }
-    return message.type === 'hello'
-      && message.version === MANAGED_BROWSER_STREAM_VERSION
-      && Array.isArray(message.frameEncodings)
-      && message.frameEncodings.includes(frameEncoding)
-      && Array.isArray(message.flowControl)
-      && message.flowControl.includes('frame-ack-v1')
-  } catch {
-    return false
-  }
-}
-
-function browserStreamFrameAck(raw: string): number | undefined {
-  try {
-    const message = JSON.parse(raw) as { type?: unknown; sequence?: unknown }
-    return message.type === 'frame-ack' && typeof message.sequence === 'number' && Number.isSafeInteger(message.sequence) && message.sequence > 0
-      ? message.sequence
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 export function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean {
   if (host === undefined || host.length === 0) return false
   if (origin === undefined || origin.length === 0) return true
@@ -550,13 +695,13 @@ function screenshotData(value: unknown): string | undefined {
   return typeof data === 'string' && data.length > 0 ? data : undefined
 }
 
-function finiteDimension(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.min(65_535, Math.max(1, Math.round(value)))
-    : fallback
-}
-
 function rejectUpgrade(socket: Duplex, status: number, message: string): void {
   socket.end('HTTP/1.1 ' + status + ' ' + message + '\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
   socket.destroy()
+}
+
+function rawByteBudget(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('managed Browser JPEG raw-byte budget must be a positive safe integer')
+  return value
 }

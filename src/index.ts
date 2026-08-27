@@ -93,7 +93,11 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
   const managedBrowser = new ManagedBrowserRuntime(config.managedBrowser)
-  const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
+  const managedStream = new ManagedBrowserStream({
+    runtime: managedBrowser,
+    ...(config.managedBrowser?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: config.managedBrowser.desktopJpegMaxRawBytes }),
+    ...(config.managedBrowser?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: config.managedBrowser.mobileJpegMaxRawBytes }),
+  })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()
   const workspace = createWorkspaceInspector()
@@ -115,7 +119,11 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     },
     browserFor: (sessionId, io) => createHostBrowser({
       isBusy: io.isBusy,
-      managed: { runtime: managedBrowser, sessionId },
+      managed: {
+        runtime: managedBrowser,
+        sessionId,
+        closeStream: (tabId) => { managedStream.closeTab({ sessionId, tabId }) },
+      },
     }),
     terminalFor: (_sessionId, io) => createHostTerminal(io.cwdOf),
     sideChatFor: (sessionId, io) => createHostSideChat({

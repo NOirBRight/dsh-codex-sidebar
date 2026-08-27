@@ -8,6 +8,7 @@ import { chromium } from 'playwright-core'
 import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
 import { isChromiumErrorUrl, liveHref } from './browser.ts'
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts'
+import type { BrowserLayout, BrowserLayoutMode, BrowserSize } from './managed-browser-protocol.ts'
 
 export const MANAGED_BROWSER_MAX_LIVE_PAGES = 3
 export const MANAGED_BROWSER_IDLE_MS = 120_000
@@ -27,6 +28,25 @@ export type ManagedBrowserConfig = {
   headless?: boolean
   /** Maximum total bytes retained in allowlisted Chromium-derived cache directories. */
   cacheBudgetBytes?: number
+  /** Minimum adaptive CSS viewport accepted from a Browser client. */
+  layoutMinViewport?: BrowserSize
+  /** Maximum adaptive CSS viewport accepted from a Browser client. */
+  layoutMaxViewport?: BrowserSize
+  /** Time a Browser client waits for an adaptive container measurement to settle. */
+  layoutSettleMs?: number
+  /** Pixel jitter ignored by an adaptive Browser client. */
+  layoutHysteresisPx?: number
+  /** Raw JPEG ceiling for a same-origin desktop Browser stream frame. */
+  desktopJpegMaxRawBytes?: number
+  /** Raw JPEG ceiling before the Mobile tunnel's nested Base64 envelopes. */
+  mobileJpegMaxRawBytes?: number
+}
+
+export type ManagedBrowserLayoutPolicy = {
+  minViewport: BrowserSize
+  maxViewport: BrowserSize
+  settleMs: number
+  hysteresisPx: number
 }
 
 export type ManagedBrowserStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed'
@@ -146,12 +166,30 @@ type PageRecord = {
   command: Promise<void>
   lastAccess: number
   blocked?: boolean
+  layout: BrowserLayout
+  layoutRunning: boolean
+  pendingLayout?: PendingLayout
 }
+
+type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
+type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
+type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
 
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
+const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
+  minViewport: Object.freeze({ width: 320, height: 240 }),
+  maxViewport: Object.freeze({ width: 1920, height: 1440 }),
+  settleMs: 180,
+  hysteresisPx: 8,
+})
+const FIXED_VIEWPORTS: Record<Exclude<BrowserLayoutMode, 'fit'>, BrowserSize> = Object.freeze({
+  phone: Object.freeze({ width: 390, height: 844 }),
+  tablet: Object.freeze({ width: 768, height: 1024 }),
+  laptop: Object.freeze({ width: 1280, height: 800 }),
+})
 
 export class ManagedBrowserRuntime {
   readonly profileDir: string
@@ -161,6 +199,7 @@ export class ManagedBrowserRuntime {
   #context: Promise<ContextLike> | undefined
   #pages = new Map<string, PageRecord>()
   #requestedViewports = new Map<string, { width: number; height: number }>()
+  #leases = new Map<string, Set<object>>()
   #captureSeq = 0
   #onProjection: ((projection: ManagedBrowserProjection) => void) | undefined
   #onPopup: ((opener: ManagedTabKey, page: unknown) => void) | undefined
@@ -170,6 +209,7 @@ export class ManagedBrowserRuntime {
   #cacheBudgetBytes: number
   #onWarning: (message: string) => void
   #reaping = false
+  #layoutPolicy: ManagedBrowserLayoutPolicy
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
     this.profileDir = resolve(opts.profileDir ?? defaultProfileDir())
@@ -182,6 +222,7 @@ export class ManagedBrowserRuntime {
     this.#maxLivePages = opts.maxLivePages ?? MANAGED_BROWSER_MAX_LIVE_PAGES
     this.#idleMs = opts.idleMs ?? MANAGED_BROWSER_IDLE_MS
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
+    this.#layoutPolicy = layoutPolicy(opts)
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
   }
 
@@ -196,6 +237,20 @@ export class ManagedBrowserRuntime {
   projection(tab: ManagedTabKey): ManagedBrowserProjection | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     return record === undefined ? undefined : project(record)
+  }
+
+  layoutPolicy(): ManagedBrowserLayoutPolicy {
+    return {
+      minViewport: { ...this.#layoutPolicy.minViewport },
+      maxViewport: { ...this.#layoutPolicy.maxViewport },
+      settleMs: this.#layoutPolicy.settleMs,
+      hysteresisPx: this.#layoutPolicy.hysteresisPx,
+    }
+  }
+
+  layout(tab: ManagedTabKey): BrowserLayout | undefined {
+    const layout = this.#pages.get(this.keyOf(tab))?.layout
+    return layout === undefined ? undefined : cloneLayout(layout)
   }
 
   async ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection> {
@@ -248,10 +303,10 @@ export class ManagedBrowserRuntime {
     try {
       const now = this.#now()
       for (const record of [...this.#pages.values()]) {
-        if (now - record.lastAccess >= this.#idleMs) await this.close(record.tab)
+        if (!this.#leased(record.key) && now - record.lastAccess >= this.#idleMs) await this.close(record.tab)
       }
-      const live = [...this.#pages.values()].sort((left, right) => left.lastAccess - right.lastAccess)
-      while (live.length > this.#maxLivePages) {
+      const live = [...this.#pages.values()].filter((record) => !this.#leased(record.key)).sort((left, right) => left.lastAccess - right.lastAccess)
+      while (this.#pages.size > this.#maxLivePages && live.length > 0) {
         const oldest = live.shift()
         if (oldest !== undefined) await this.close(oldest.tab)
       }
@@ -263,6 +318,19 @@ export class ManagedBrowserRuntime {
   touch(tab: ManagedTabKey): void {
     const record = this.#pages.get(this.keyOf(tab))
     if (record !== undefined) this.#touch(record)
+  }
+
+  acquire(tab: ManagedTabKey): () => void {
+    const key = this.keyOf(tab)
+    const lease = {}
+    const leases = this.#leases.get(key) ?? new Set<object>()
+    leases.add(lease)
+    this.#leases.set(key, leases)
+    return () => {
+      const current = this.#leases.get(key)
+      current?.delete(lease)
+      if (current?.size === 0) this.#leases.delete(key)
+    }
   }
 
   async back(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined> {
@@ -283,14 +351,27 @@ export class ManagedBrowserRuntime {
   }
 
   async resize(tab: ManagedTabKey, width: number, height: number): Promise<void> {
-    const key = this.keyOf(tab)
-    const size = { width: clamp(Math.round(width), 320, 1920), height: clamp(Math.round(height), 240, 1440) }
-    this.#requestedViewports.set(key, size)
-    const record = this.#pages.get(key)
-    if (record === undefined) return
-    const current = record.page.viewportSize()
-    if (current?.width === size.width && current.height === size.height) return
-    await record.page.setViewportSize(size)
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined) {
+      this.#requestedViewports.set(this.keyOf(tab), normalizeFitViewport({ width, height }, this.#layoutPolicy))
+      return
+    }
+    await this.proposeLayout(tab, { mode: 'fit', viewport: { width, height } })
+  }
+
+  async proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal): Promise<BrowserLayout> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined) throw new Error('Browser page is not ready')
+    const normalized = normalizeLayoutProposal(proposal, this.#layoutPolicy)
+    return await new Promise<BrowserLayout>((resolve, reject) => {
+      const waiter = { resolve, reject }
+      if (record.pendingLayout === undefined) record.pendingLayout = { proposal: normalized, waiters: [waiter] }
+      else {
+        record.pendingLayout.proposal = normalized
+        record.pendingLayout.waiters.push(waiter)
+      }
+      void this.#drainLayouts(record)
+    })
   }
 
   async snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult> {
@@ -360,19 +441,21 @@ export class ManagedBrowserRuntime {
     }
   }
 
-  target(tab: ManagedTabKey): { page: PageLike; cdp: ManagedCdpSession; documentId: string } | undefined {
+  target(tab: ManagedTabKey): { page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.page.isClosed()) return undefined
     if (record.status === 'error' || record.status === 'crashed') return undefined
-    return { page: record.page, cdp: record.cdp, documentId: record.documentId }
+    return { page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout) }
   }
 
   async close(tab: ManagedTabKey): Promise<void> {
     const key = this.keyOf(tab)
     const record = this.#pages.get(key)
     this.#requestedViewports.delete(key)
+    this.#leases.delete(key)
     if (record === undefined) return
     this.#pages.delete(key)
+    rejectPendingLayout(record, new Error('Browser page closed'))
     await record.cdp.detach().catch(() => undefined)
     if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
   }
@@ -381,7 +464,9 @@ export class ManagedBrowserRuntime {
     const pages = [...this.#pages.values()]
     this.#pages.clear()
     this.#requestedViewports.clear()
+    this.#leases.clear()
     await Promise.all(pages.map(async (record) => {
+      rejectPendingLayout(record, new Error('Managed Browser disposed'))
       await record.cdp.detach().catch(() => undefined)
       if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
     }))
@@ -412,6 +497,13 @@ export class ManagedBrowserRuntime {
       refs: new Map(),
       command: Promise.resolve(),
       lastAccess: this.#now(),
+      layout: {
+        revision: 1,
+        mode: 'fit',
+        viewport: { ...(page.viewportSize() ?? requestedViewport ?? DEFAULT_VIEWPORT) },
+        mediaGeneration: 1,
+      },
+      layoutRunning: false,
     }
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return
@@ -478,6 +570,7 @@ export class ManagedBrowserRuntime {
         const records = [...this.#pages.values()]
         this.#pages.clear()
         for (const record of records) {
+          rejectPendingLayout(record, new Error('Chromium context exited'))
           record.status = 'crashed'
           record.error = 'Chromium context exited'
           record.refs.clear()
@@ -517,6 +610,39 @@ export class ManagedBrowserRuntime {
     return project(record)
   }
 
+  async #drainLayouts(record: PageRecord): Promise<void> {
+    if (record.layoutRunning) return
+    record.layoutRunning = true
+    try {
+      while (record.pendingLayout !== undefined) {
+        const pending = record.pendingLayout
+        delete record.pendingLayout
+        try {
+          const current = record.layout
+          const next = pending.proposal
+          if (current.mode === next.mode && sameSize(current.viewport, next.viewport)) {
+            for (const waiter of pending.waiters) waiter.resolve(cloneLayout(current))
+            continue
+          }
+          await record.page.setViewportSize(next.viewport)
+          if (this.#pages.get(record.key) !== record || record.page.isClosed()) throw new Error('Browser page closed during layout commit')
+          record.layout = {
+            revision: current.revision + 1,
+            mode: next.mode,
+            viewport: { ...next.viewport },
+            mediaGeneration: current.mediaGeneration + 1,
+          }
+          for (const waiter of pending.waiters) waiter.resolve(cloneLayout(record.layout))
+        } catch (error) {
+          for (const waiter of pending.waiters) waiter.reject(error)
+        }
+      }
+    } finally {
+      record.layoutRunning = false
+      if (record.pendingLayout !== undefined) void this.#drainLayouts(record)
+    }
+  }
+
   async #refresh(record: PageRecord): Promise<void> {
     const pageUrl = record.page.url()
     if (isChromiumErrorUrl(pageUrl)) {
@@ -550,6 +676,10 @@ export class ManagedBrowserRuntime {
 
   #touch(record: PageRecord): void {
     record.lastAccess = this.#now()
+  }
+
+  #leased(key: string): boolean {
+    return (this.#leases.get(key)?.size ?? 0) > 0
   }
 
   #fail(record: PageRecord, error: unknown): void {
@@ -609,6 +739,64 @@ export class ManagedBrowserRuntime {
     record.command = run.catch(() => undefined)
     await run
   }
+}
+
+function layoutPolicy(config: ManagedBrowserConfig): ManagedBrowserLayoutPolicy {
+  const minViewport = configuredSize(config.layoutMinViewport, DEFAULT_LAYOUT_POLICY.minViewport, 'layoutMinViewport')
+  const maxViewport = configuredSize(config.layoutMaxViewport, DEFAULT_LAYOUT_POLICY.maxViewport, 'layoutMaxViewport')
+  if (minViewport.width > maxViewport.width || minViewport.height > maxViewport.height) {
+    throw new Error('managedBrowser layoutMinViewport must not exceed layoutMaxViewport')
+  }
+  return {
+    minViewport,
+    maxViewport,
+    settleMs: configuredNonNegative(config.layoutSettleMs, DEFAULT_LAYOUT_POLICY.settleMs, 'layoutSettleMs'),
+    hysteresisPx: configuredNonNegative(config.layoutHysteresisPx, DEFAULT_LAYOUT_POLICY.hysteresisPx, 'layoutHysteresisPx'),
+  }
+}
+
+function configuredSize(value: BrowserSize | undefined, fallback: BrowserSize, name: string): BrowserSize {
+  if (value === undefined) return { ...fallback }
+  if (!Number.isFinite(value.width) || !Number.isFinite(value.height) || value.width <= 0 || value.height <= 0 || value.width > 65_535 || value.height > 65_535) {
+    throw new Error('managedBrowser ' + name + ' must contain positive finite 16-bit dimensions')
+  }
+  return { width: Math.round(value.width), height: Math.round(value.height) }
+}
+
+function configuredNonNegative(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback
+  if (!Number.isFinite(value) || value < 0) throw new Error('managedBrowser ' + name + ' must be a non-negative finite number')
+  return Math.round(value)
+}
+
+function normalizeLayoutProposal(proposal: LayoutProposal, policy: ManagedBrowserLayoutPolicy): LayoutProposal {
+  const fixed = proposal.mode === 'fit' ? undefined : FIXED_VIEWPORTS[proposal.mode]
+  return {
+    mode: proposal.mode,
+    viewport: fixed === undefined ? normalizeFitViewport(proposal.viewport, policy) : { ...fixed },
+  }
+}
+
+function normalizeFitViewport(viewport: BrowserSize, policy: ManagedBrowserLayoutPolicy): BrowserSize {
+  if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)) throw new Error('Browser layout viewport must contain finite dimensions')
+  return {
+    width: clamp(Math.round(viewport.width), policy.minViewport.width, policy.maxViewport.width),
+    height: clamp(Math.round(viewport.height), policy.minViewport.height, policy.maxViewport.height),
+  }
+}
+
+function sameSize(left: BrowserSize, right: BrowserSize): boolean {
+  return left.width === right.width && left.height === right.height
+}
+
+function cloneLayout(layout: BrowserLayout): BrowserLayout {
+  return { ...layout, viewport: { ...layout.viewport } }
+}
+
+function rejectPendingLayout(record: PageRecord, error: Error): void {
+  const pending = record.pendingLayout
+  delete record.pendingLayout
+  if (pending !== undefined) for (const waiter of pending.waiters) waiter.reject(error)
 }
 
 export async function findBrowserExecutable(explicit?: string): Promise<string> {

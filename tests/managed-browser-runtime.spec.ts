@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
@@ -12,6 +12,9 @@ class FakePage {
   filled: Array<{ selector: string; text: string }> = []
   size = { width: 720, height: 860 }
   history: string[] = []
+  resizeCalls: Array<{ width: number; height: number }> = []
+  resizeReleases: Array<() => void> = []
+  blockResizes = false
   handlers = new Map<string, Array<(...args: unknown[]) => void>>()
   frame = { url: () => this.currentUrl }
 
@@ -34,7 +37,11 @@ class FakePage {
   url(): string { return this.currentUrl }
   async title(): Promise<string> { return this.currentTitle }
   viewportSize(): { width: number; height: number } { return this.size }
-  async setViewportSize(size: { width: number; height: number }): Promise<void> { this.size = size }
+  async setViewportSize(size: { width: number; height: number }): Promise<void> {
+    this.resizeCalls.push(size)
+    if (this.blockResizes) await new Promise<void>((resolve) => { this.resizeReleases.push(resolve) })
+    this.size = size
+  }
   async evaluate<T>(): Promise<T> {
     return [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }] as T
   }
@@ -193,6 +200,81 @@ function cacheContextThatClosesDuringClear(): {
 }
 
 describe('ManagedBrowserRuntime', () => {
+  it('owns revisioned fixed and clamped fit layouts', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'page' }
+    await box.runtime.ensure(tab, 'https://example.com')
+
+    expect(box.runtime.layout(tab)).toEqual({
+      revision: 1,
+      mode: 'fit',
+      viewport: { width: 720, height: 860 },
+      mediaGeneration: 1,
+    })
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'phone', viewport: { width: 999, height: 999 },
+    })).resolves.toEqual({
+      revision: 2,
+      mode: 'phone',
+      viewport: { width: 390, height: 844 },
+      mediaGeneration: 2,
+    })
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'phone', viewport: { width: 1, height: 1 },
+    })).resolves.toMatchObject({ revision: 2, mediaGeneration: 2 })
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'fit', viewport: { width: 10_000, height: 1 },
+    })).resolves.toEqual({
+      revision: 3,
+      mode: 'fit',
+      viewport: { width: 1920, height: 240 },
+      mediaGeneration: 3,
+    })
+    expect(box.pages[0]?.resizeCalls).toEqual([
+      { width: 390, height: 844 },
+      { width: 1920, height: 240 },
+    ])
+    await box.runtime.dispose()
+  })
+
+  it('serializes layout changes and retains only the latest pending proposal', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'latest' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.blockResizes = true
+
+    const first = box.runtime.proposeLayout(tab, { mode: 'fit', viewport: { width: 800, height: 600 } })
+    await vi.waitFor(() => { expect(page.resizeCalls).toEqual([{ width: 800, height: 600 }]) })
+    const superseded = box.runtime.proposeLayout(tab, { mode: 'fit', viewport: { width: 900, height: 700 } })
+    const latest = box.runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1, height: 1 } })
+    page.resizeReleases.shift()?.()
+    await vi.waitFor(() => { expect(page.resizeCalls).toHaveLength(2) })
+    expect(page.resizeCalls[1]).toEqual({ width: 1280, height: 800 })
+    page.resizeReleases.shift()?.()
+
+    await expect(first).resolves.toMatchObject({ revision: 2, viewport: { width: 800, height: 600 } })
+    await expect(superseded).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    await expect(latest).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    await box.runtime.dispose()
+  })
+
+  it('does not reap a Page while an exact media owner holds a lease', async () => {
+    let now = 0
+    const box = harness({ now: () => now, idleMs: 10 })
+    const tab = { sessionId: 'lease', tabId: 'page' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const release = box.runtime.acquire(tab)
+    now = 100
+    await box.runtime.reap()
+    expect(box.pages[0]?.closed).toBe(false)
+    release()
+    await box.runtime.reap()
+    expect(box.pages[0]?.closed).toBe(true)
+    await box.runtime.dispose()
+  })
+
   it('opens public https pages and drives document-scoped refs', async () => {
     const box = harness()
     const tab = { sessionId: 's1', tabId: 'browser-1' }

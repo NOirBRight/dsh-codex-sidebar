@@ -12,7 +12,7 @@ export function createHostBrowser(opts: {
   isBusy: () => boolean
   probe?: (url: string) => PageProbe
   openExternal?: (url: string) => void
-  managed?: { runtime: ManagedBrowserRuntime; sessionId: string }
+  managed?: { runtime: ManagedBrowserRuntime; sessionId: string; closeStream?: (tabId: string) => void }
 }): BrowserPort {
   return {
     load(url) {
@@ -36,11 +36,12 @@ export function createHostBrowser(opts: {
               : opts.managed?.runtime.ensure(tab, url)
         void command?.catch(() => undefined)
       },
-      resize(tabId, width, height) {
-        const command = opts.managed?.runtime.resize({ sessionId: opts.managed.sessionId, tabId }, width, height)
+      resize(tabId, mode, width, height) {
+        const command = opts.managed?.runtime.proposeLayout({ sessionId: opts.managed.sessionId, tabId }, { mode, viewport: { width, height } })
         void command?.catch(() => undefined)
       },
       close(tabId) {
+        opts.managed?.closeStream?.(tabId)
         void opts.managed?.runtime.close({ sessionId: opts.managed.sessionId, tabId })
       },
     },

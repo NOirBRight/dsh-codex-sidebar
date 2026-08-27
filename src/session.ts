@@ -409,7 +409,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
     }
     if (intent.type === 'browser-set-device') {
       const viewport = browserDeviceViewport(next.state.device)
-      if (viewport !== null) opts.browser?.resize?.(id, viewport.width, viewport.height)
+      if (viewport !== null) opts.browser?.resize?.(id, next.state.device, viewport.width, viewport.height)
     }
     return next.effects
   }
@@ -529,7 +529,7 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         const viewport = tab.kind === 'Browser' && selectedBrowser !== undefined
           ? browserDeviceViewport(selectedBrowser.device)
           : null
-        if (viewport !== null) opts.browser?.resize?.(tab.id, viewport.width, viewport.height)
+        if (viewport !== null && selectedBrowser !== undefined) opts.browser?.resize?.(tab.id, selectedBrowser.device, viewport.width, viewport.height)
         break
       }
       case 'toggle-collapsed':
