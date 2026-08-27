@@ -72,7 +72,9 @@ export async function handleSidebarRpcAsync(
       if (tab === undefined || url === undefined || url.length === 0) return fail('unknown Browser Tab')
       const tabKey = { sessionId: payload.sessionId, tabId }
       const projection = await services.managedBrowser.ensure(tabKey, url)
-      if (projection.status !== 'ready') return fail(projection.error ?? 'Browser page is not ready')
+      if (projection.status === 'error' || projection.status === 'crashed') {
+        return fail(projection.error ?? 'Browser page is not ready')
+      }
       const viewport = browserDeviceViewport(snapshot.browsers[tabId]?.device ?? 'fit')
       if (viewport !== null) await services.managedBrowser.resize(tabKey, viewport.width, viewport.height)
       return { ok: true, value: services.browserStream.issue(tabKey) }

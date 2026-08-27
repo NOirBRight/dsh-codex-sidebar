@@ -256,6 +256,20 @@ describe('ManagedBrowserRuntime', () => {
     await runtime.dispose()
   })
 
+  it('keeps the stream target while a public page is still navigating', async () => {
+    const box = harness()
+    const tab = { sessionId: 'gh', tabId: 'browser' }
+    await box.runtime.ensure(tab, 'https://github.com/NOirBRi')
+    expect(box.runtime.target(tab)).toBeDefined()
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing page')
+    page.currentUrl = 'https://github.com/NOirBRi?tab=repositories'
+    page.emit('framenavigated', page.frame)
+    expect(box.runtime.projection(tab)?.status).toBe('loading')
+    expect(box.runtime.target(tab)).toBeDefined()
+    await box.runtime.dispose()
+  })
+
   it('does not spawn a Page for the DSH web GUI itself', async () => {
     const box = harness()
     await expect(box.runtime.ensure({ sessionId: 'nest', tabId: 'b' }, 'http://127.0.0.1:3080/')).resolves.toMatchObject({

@@ -36,6 +36,8 @@ export declare class ManagedBrowserStream {
     consume(ticket: string): ManagedTabKey | undefined;
 }
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
+export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;
+export declare function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean;
 export declare function browserStreamCaptureScale(width: number, height: number): number;
 //# sourceMappingURL=managed-browser-stream.d.ts.map

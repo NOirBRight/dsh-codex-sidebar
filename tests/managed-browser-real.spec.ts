@@ -29,6 +29,20 @@ function jpegSize(bytes: Uint8Array): { width: number; height: number } {
 
 type StreamFrame = ReturnType<typeof decodeBrowserStreamFrame>
 
+function jsonStreamFrame(data: WebSocket.RawData): StreamFrame | undefined {
+  const text = typeof data === 'string' ? data : Buffer.from(data as Buffer).toString('utf8')
+  const message = JSON.parse(text) as { type?: unknown; version?: unknown; sequence?: unknown; sentAt?: unknown; width?: unknown; height?: unknown; jpeg?: unknown }
+  if (message.type !== 'frame' || typeof message.jpeg !== 'string') return undefined
+  return {
+    version: Number(message.version),
+    sequence: Number(message.sequence),
+    sentAt: Number(message.sentAt),
+    width: Number(message.width),
+    height: Number(message.height),
+    jpeg: new Uint8Array(Buffer.from(message.jpeg, 'base64')),
+  }
+}
+
 function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => boolean = () => true): Promise<StreamFrame> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => { finish(new Error('stream frame timeout')) }, 15_000)
@@ -41,15 +55,15 @@ function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => b
     }
     const onError = (error: Error): void => { finish(error) }
     const onMessage = (data: WebSocket.RawData, isBinary: boolean): void => {
-      if (!isBinary) return
-      const bytes = data instanceof ArrayBuffer
-        ? new Uint8Array(data)
-        : Array.isArray(data)
-          ? Buffer.concat(data)
-          : data
       try {
-        const frame = decodeBrowserStreamFrame(bytes)
-        if (predicate(frame)) finish(null, frame)
+        const frame = isBinary
+          ? decodeBrowserStreamFrame(data instanceof ArrayBuffer
+            ? new Uint8Array(data)
+            : Array.isArray(data)
+              ? Buffer.concat(data)
+              : data)
+          : jsonStreamFrame(data)
+        if (frame !== undefined && predicate(frame)) finish(null, frame)
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)))
       }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamShouldRun, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -143,7 +143,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     let reconnect: ReturnType<typeof setTimeout> | undefined
     let attempt = 0
     let decoding = false
-    let latest: ArrayBuffer | undefined
+    let latest: Uint8Array | undefined
 
     if (!visible) {
       setStatus('connecting')
@@ -155,13 +155,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       decoding = true
       try {
         while (!stopped && latest !== undefined) {
-          const value = latest
+          const jpeg = latest
           latest = undefined
-          const frame = decodeBrowserFrame(value)
-          if (frame.version !== 1) throw new Error('Unsupported Browser stream version')
           const canvas = canvasRef.current
           if (canvas === null) return
-          const bitmap = await createImageBitmap(new Blob([frame.jpeg], { type: 'image/jpeg' }))
+          const bitmap = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }))
           if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
             canvas.width = bitmap.width
             canvas.height = bitmap.height
@@ -170,7 +168,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           if (context !== null) context.transferFromImageBitmap(bitmap)
           else canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
           bitmap.close()
+          setStatus('ready')
         }
+      } catch {
+        // DSH Mobile's tunnel used to UTF-8-mangle binary JPEGs; skip a bad frame.
       } finally {
         decoding = false
       }
@@ -192,45 +193,70 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         sendLayout(socket)
         if (annotateRef.current) requestOutline()
       }
+      const acceptJpeg = (jpeg: Uint8Array): void => {
+        latest = jpeg
+        void drawLatest()
+      }
+      const acceptBinary = (buffer: ArrayBuffer): void => {
+        try {
+          const frame = decodeBrowserFrame(buffer)
+          if (frame.version === 1) acceptJpeg(frame.jpeg)
+        } catch {
+          // Ignore truncated binary leftovers from the mobile tunnel.
+        }
+      }
       socket.onmessage = (event) => {
-        if (browserStreamSignalsReady(event.data)) setStatus('ready')
-        if (typeof event.data === 'string') {
-          const tracked = decodeBrowserTrackedRect(event.data)
-          if (tracked !== undefined) {
-            if ((documentRef.current === undefined || documentRef.current === tracked.documentId) && selectedSelectorRef.current === tracked.selector) {
-              setSelectedLiveRect((current) => updateBrowserSelectedRect(current, { type: 'tracked', rect: tracked.rect }))
-            }
-            return
-          }
-          const outline = decodeBrowserOutline(event.data)
-          if (outline !== undefined) {
-            if (documentRef.current === undefined || documentRef.current === outline.documentId) {
-              documentRef.current = outline.documentId
-              setOutlineNodes(outline.nodes)
-              const selector = selectedSelectorRef.current
-              if (selector !== null) setSelectedLiveRect(browserSelectedRectForOutline(selector, outline.nodes))
-            }
-            return
-          }
-          try {
-            const message = JSON.parse(event.data) as { type?: unknown; projection?: unknown }
-            if (message.type === 'ready') setStatus('ready')
-            if (message.type === 'state' && managedProjection(message.projection)) {
-              if (documentRef.current !== undefined && documentRef.current !== message.projection.documentId) {
-                setOutlineNodes([])
-                setHovered(null)
-                setSelectedLiveRect(null)
-              }
-              documentRef.current = message.projection.documentId
-              stateRef.current(message.projection)
-              if (annotateRef.current && message.projection.status === 'ready') requestOutline()
-            }
-          } catch { setStatus('error') }
+        const buffer = browserStreamFrameBuffer(event.data)
+        if (buffer !== undefined) {
+          acceptBinary(buffer)
           return
         }
-        if (event.data instanceof ArrayBuffer) {
-          latest = event.data
-          void drawLatest().catch(() => { setStatus('error') })
+        if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
+          void event.data.arrayBuffer().then((value) => {
+            if (!stopped) acceptBinary(value)
+          }).catch(() => undefined)
+          return
+        }
+        const text = browserStreamTextMessage(event.data)
+        if (text === undefined) return
+        const jpegFrame = decodeBrowserJpegJson(text)
+        if (jpegFrame !== undefined) {
+          acceptJpeg(jpegFrame.jpeg)
+          return
+        }
+        if (browserStreamSignalsReady(text)) setStatus('ready')
+        const tracked = decodeBrowserTrackedRect(text)
+        if (tracked !== undefined) {
+          if ((documentRef.current === undefined || documentRef.current === tracked.documentId) && selectedSelectorRef.current === tracked.selector) {
+            setSelectedLiveRect((current) => updateBrowserSelectedRect(current, { type: 'tracked', rect: tracked.rect }))
+          }
+          return
+        }
+        const outline = decodeBrowserOutline(text)
+        if (outline !== undefined) {
+          if (documentRef.current === undefined || documentRef.current === outline.documentId) {
+            documentRef.current = outline.documentId
+            setOutlineNodes(outline.nodes)
+            const selector = selectedSelectorRef.current
+            if (selector !== null) setSelectedLiveRect(browserSelectedRectForOutline(selector, outline.nodes))
+          }
+          return
+        }
+        try {
+          const message = JSON.parse(text) as { type?: unknown; projection?: unknown }
+          if (message.type === 'ready') setStatus('ready')
+          if (message.type === 'state' && managedProjection(message.projection)) {
+            if (documentRef.current !== undefined && documentRef.current !== message.projection.documentId) {
+              setOutlineNodes([])
+              setHovered(null)
+              setSelectedLiveRect(null)
+            }
+            documentRef.current = message.projection.documentId
+            stateRef.current(message.projection)
+            if (annotateRef.current && message.projection.status === 'ready') requestOutline()
+          }
+        } catch {
+          // APP WebViews sometimes deliver non-protocol text; keep the last good frame.
         }
       }
       socket.onerror = () => { setStatus('error') }

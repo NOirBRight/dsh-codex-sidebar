@@ -6,6 +6,7 @@ import type { Annotation, AnnotationRect, AnnotationTextRange, Intent, SidebarSn
 import { fileCaption, parsePathLine, visibleAnnotations } from '../annotation.ts'
 import { ancestorsOf, visibleTree } from '../file-tree.ts'
 import { highlightSource, parseMarkdown, type Inline, type MdBlock, type Token } from '../preview.ts'
+import { filesPreviewPhase, shouldFetchFilePreview } from './files-preview.ts'
 import { FileGlyph, Ico } from './icons.tsx'
 import { NoteComposer } from './NoteComposer.tsx'
 
@@ -49,7 +50,7 @@ export function FilesPane({
     setFetchedPreview(undefined)
     setFetchFailed(false)
     const load = onFilePreviewRef.current
-    if (files.preview !== undefined || !isImagePath(files.path) || load === undefined) return
+    if (!shouldFetchFilePreview(files.path, files.preview) || load === undefined) return
     let cancelled = false
     void load(files.path).then(
       (value) => {
@@ -64,13 +65,19 @@ export function FilesPane({
   const preview = files.preview ?? fetchedPreview
   const image = imageSrc(files.path, preview)
   const markdown = image === undefined && isMarkdown(files.path)
-  const loadingImage = isImagePath(files.path) && preview === undefined && !fetchFailed && onFilePreview !== undefined
-  const missing = files.path.length > 0 && preview === undefined && !loadingImage
+  const phase = filesPreviewPhase({
+    path: files.path,
+    preview,
+    fetchFailed,
+    canFetch: onFilePreview !== undefined,
+  })
+  const loadingPreview = phase === 'loading'
+  const missing = phase === 'missing'
   const tooLarge = image === undefined && isImagePath(files.path) && (preview?.startsWith('[File too large') ?? false)
   const empty = files.path.length === 0
   const showDiff = files.view === 'diff' && files.diff !== null
-  const lines = !empty && image === undefined && !markdown && !missing && !showDiff ? (files.preview ?? '').split('\n') : []
-  const tokens = lines.length > 0 ? highlightSource(files.path, files.preview ?? '') : []
+  const lines = !empty && image === undefined && !markdown && !missing && !loadingPreview && !showDiff ? (preview ?? '').split('\n') : []
+  const tokens = lines.length > 0 ? highlightSource(files.path, preview ?? '') : []
   const paneMarks = visibleAnnotations(snapshot)
   const surfaceMarks = fileBadges(paneMarks, files.path)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -319,7 +326,7 @@ export function FilesPane({
             data-annotated={!markdown && image === undefined && surfaceMarks.length > 0 || undefined}
             data-media={image !== undefined || markdown || undefined}
           >
-            {loadingImage ? (
+            {loadingPreview ? (
               <div className="dcs-missing">正在读取…</div>
             ) : missing ? (
               <div className="dcs-missing">无法读取 {files.path}</div>

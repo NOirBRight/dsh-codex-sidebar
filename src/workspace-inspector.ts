@@ -137,13 +137,20 @@ export function createWorkspaceInspector(opts: { gitExec?: AsyncGitExec; ttlMs?:
         return { ...snapshot, review }
       }
       if (active?.kind === 'Files') {
+        const selectedPath = snapshot.files.path
+        const selectedImage = IMAGE_PATH.test(selectedPath)
+        const previewPromise = selectedPath.length > 0 && !selectedImage
+          ? readPreview(gate.cwd, selectedPath, signal)
+          : Promise.resolve(undefined)
         const nodes = await tree(gate.cwd, signal)
-        const path = snapshot.files.path || nodes.find((node) => node.kind !== 'dir')?.path || ''
+        const path = selectedPath || nodes.find((node) => node.kind !== 'dir')?.path || ''
         if (path.length > 0 && !nodes.some((node) => node.path === path)) {
           nodes.push({ path, name: path.split('/').pop() || path })
         }
         const image = IMAGE_PATH.test(path)
-        const preview = image ? undefined : await readPreview(gate.cwd, path, signal)
+        const preview = path === selectedPath
+          ? await previewPromise
+          : image ? undefined : await readPreview(gate.cwd, path, signal)
         const hunk = image ? undefined : snapshot.files.hunk ?? (path.length === 0 ? undefined : await readChange(gate.cwd, path, preview, run, signal))
         const diff = hunk === undefined || hunk.before === hunk.after ? null : boundedFileDiff(hunk.before, hunk.after)
         const tabs = path.length === 0 || path === snapshot.files.path

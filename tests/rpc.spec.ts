@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
 import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
@@ -85,6 +85,23 @@ describe('sidebar RPC', () => {
     const snapshot = (opened.value as { snapshot: { files: { path: string; preview?: string } } }).snapshot
     expect(snapshot.files.path).toBe(path)
     expect(snapshot.files.preview).toBe('# ZSXQ market analysis\n')
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('reads a relative file when a remote client omits cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dcs-remote-read-'))
+    const path = 'test_issue_62_runtime_trace.py'
+    writeFileSync(join(root, path), 'print("trace")\n')
+    const registry = createRegistry({ persist: memoryPersist() })
+    const read = await handleSidebarRpcAsync(registry, SIDEBAR_FILE_READ_ENDPOINT, {
+      sessionId: 'sess-remote-read',
+      cwd: '',
+      path,
+    }, {
+      cwdForSession: (sessionId: string) => sessionId === 'sess-remote-read' ? root : undefined,
+    })
+    expect(read.ok).toBe(true)
+    if (read.ok) expect((read.value as { preview: string }).preview).toBe('print("trace")\n')
     rmSync(root, { recursive: true, force: true })
   })
 

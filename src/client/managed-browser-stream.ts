@@ -26,6 +26,33 @@ export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
   }
 }
 
+function looksLikeJsonText(value: string): boolean {
+  const start = value.trimStart()[0]
+  return start === '{' || start === '['
+}
+
+function latin1Buffer(value: string): ArrayBuffer {
+  const bytes = new Uint8Array(value.length)
+  for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index) & 0xff
+  return bytes.buffer
+}
+
+/** APP WebViews may deliver JPEG frames as ArrayBuffer, typed arrays, Blob, or binary strings. */
+export function browserStreamFrameBuffer(data: unknown): ArrayBuffer | undefined {
+  if (data instanceof ArrayBuffer) return data
+  if (ArrayBuffer.isView(data)) {
+    const view = data
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+  }
+  if (typeof data !== 'string' || looksLikeJsonText(data) || data.length < BROWSER_STREAM_HEADER_BYTES) return undefined
+  const buffer = latin1Buffer(data)
+  return new Uint8Array(buffer)[0] === 1 ? buffer : undefined
+}
+
+export function browserStreamTextMessage(data: unknown): string | undefined {
+  return typeof data === 'string' && looksLikeJsonText(data) ? data : undefined
+}
+
 
 
 
@@ -122,12 +149,46 @@ function browserOutlineNode(value: unknown): value is BrowserOutlineNode {
   return [rect.x, rect.y, rect.w, rect.h].every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate))
 }
 
+export function decodeBrowserJpegJson(value: string): DecodedBrowserFrame | undefined {
+  try {
+    const message = JSON.parse(value) as {
+      type?: unknown
+      version?: unknown
+      sequence?: unknown
+      sentAt?: unknown
+      width?: unknown
+      height?: unknown
+      jpeg?: unknown
+    }
+    if (message.type !== 'frame' || message.version !== 1 || typeof message.jpeg !== 'string') return undefined
+    if (typeof message.sequence !== 'number' || typeof message.sentAt !== 'number') return undefined
+    if (typeof message.width !== 'number' || typeof message.height !== 'number') return undefined
+    return {
+      version: 1,
+      sequence: message.sequence,
+      sentAt: message.sentAt,
+      width: message.width,
+      height: message.height,
+      jpeg: decodeBase64Bytes(message.jpeg),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function decodeBase64Bytes(value: string): Uint8Array {
+  const bin = atob(value)
+  const bytes = new Uint8Array(bin.length)
+  for (let index = 0; index < bin.length; index += 1) bytes[index] = bin.charCodeAt(index)
+  return bytes
+}
+
 export function browserStreamSignalsReady(value: unknown): boolean {
   if (value instanceof ArrayBuffer) return true
   if (typeof value !== 'string') return false
   try {
     const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
-    if (message.type === 'ready') return true
+    if (message.type === 'ready' || message.type === 'frame') return true
     if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false
     return (message.projection as { status?: unknown }).status === 'ready'
   } catch {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamShouldRun, browserStreamSignalsReady, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
-import { encodeBrowserStreamFrame } from '../src/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
   it('pauses the live stream when the page is hidden or the canvas is offscreen', () => {
@@ -38,6 +38,45 @@ describe('managed Browser stream client', () => {
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
     expect(browserStreamSignalsReady('not json')).toBe(false)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'frame', version: 1, jpeg: 'abc' }))).toBe(true)
+  })
+
+  it('decodes JSON JPEG frames that DSH Mobile delivers as strings', () => {
+    const encoded = encodeBrowserStreamJsonFrame({
+      version: 1,
+      sequence: 9,
+      sentAt: 12,
+      width: 720,
+      height: 860,
+      jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
+    })
+    expect(browserStreamTextMessage(encoded)).toBe(encoded)
+    expect(decodeBrowserJpegJson(encoded)).toEqual({
+      version: 1,
+      sequence: 9,
+      sentAt: 12,
+      width: 720,
+      height: 860,
+      jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
+    })
+  })
+
+  it('recovers JPEG frames that an APP WebView delivers as binary strings', () => {
+    const encoded = encodeBrowserStreamFrame({
+      version: 1,
+      sequence: 3,
+      sentAt: 42,
+      width: 640,
+      height: 480,
+      jpeg: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
+    })
+    const binaryString = Array.from(encoded, (byte) => String.fromCharCode(byte)).join('')
+    const recovered = browserStreamFrameBuffer(binaryString)
+    expect(recovered).toBeInstanceOf(ArrayBuffer)
+    expect(decodeBrowserFrame(recovered as ArrayBuffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]))
+    expect(browserStreamTextMessage(binaryString)).toBeUndefined()
+    expect(browserStreamTextMessage(JSON.stringify({ type: 'ready' }))).toBe('{"type":"ready"}')
+    expect(browserStreamFrameBuffer(JSON.stringify({ type: 'ready' }))).toBeUndefined()
   })
 
 

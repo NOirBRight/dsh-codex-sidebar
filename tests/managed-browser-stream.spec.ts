@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   browserStreamCaptureScale,
+  browserStreamRequestAllowed,
   decodeBrowserStreamFrame,
   encodeBrowserStreamFrame,
+  encodeBrowserStreamJsonFrame,
   ManagedBrowserStream,
   MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME,
   MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS,
@@ -11,6 +13,23 @@ import {
 } from '../src/managed-browser-stream.ts'
 
 describe('managed browser stream protocol', () => {
+  it('encodes JPEG frames as JSON text so DSH Mobile can tunnel them', () => {
+    const encoded = encodeBrowserStreamJsonFrame({
+      version: MANAGED_BROWSER_STREAM_VERSION,
+      sequence: 7,
+      sentAt: 99,
+      width: 390,
+      height: 844,
+      jpeg: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
+    })
+    expect(encoded.startsWith('{')).toBe(true)
+    const parsed = JSON.parse(encoded) as { type: string; jpeg: string; width: number; height: number }
+    expect(parsed.type).toBe('frame')
+    expect(parsed.width).toBe(390)
+    expect(parsed.height).toBe(844)
+    expect(Buffer.from(parsed.jpeg, 'base64')).toEqual(Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]))
+  })
+
   it('encodes binary JPEG frames without base64', () => {
     const encoded = encodeBrowserStreamFrame({
       version: MANAGED_BROWSER_STREAM_VERSION,
@@ -63,5 +82,14 @@ describe('managed browser stream protocol', () => {
     const expired = stream.issue(tab)
     now = 151
     expect(stream.consume(expired.ticket)).toBeUndefined()
+  })
+
+  it('authorizes APP WebViews that omit Origin as long as Host is present', () => {
+    expect(browserStreamRequestAllowed(undefined, '127.0.0.1:3080')).toBe(true)
+    expect(browserStreamRequestAllowed('', '127.0.0.1:3080')).toBe(true)
+    expect(browserStreamRequestAllowed('http://127.0.0.1:3080', '127.0.0.1:3080')).toBe(true)
+    expect(browserStreamRequestAllowed('http://evil.example', '127.0.0.1:3080')).toBe(false)
+    expect(browserStreamRequestAllowed('null', '127.0.0.1:3080')).toBe(false)
+    expect(browserStreamRequestAllowed('http://127.0.0.1:3080', undefined)).toBe(false)
   })
 })

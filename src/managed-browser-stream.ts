@@ -119,9 +119,9 @@ export class ManagedBrowserStream {
   }
 
   #authorize(req: IncomingMessage): ManagedTabKey | undefined {
-    const host = req.headers.host
-    const origin = req.headers.origin
-    if (host === undefined || origin === undefined || !sameOriginHost(origin, host)) return undefined
+    const host = typeof req.headers.host === 'string' ? req.headers.host : undefined
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined
+    if (!browserStreamRequestAllowed(origin, host)) return undefined
     let ticket: string | null = null
     try { ticket = new URL(req.url ?? '', 'http://' + host).searchParams.get('ticket') } catch { return undefined }
     if (ticket === null || ticket.length === 0) return undefined
@@ -153,14 +153,15 @@ export class ManagedBrowserStream {
     const sendFrame = (jpeg: Uint8Array, width: number, height: number): void => {
       if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_BUFFERED_BYTES) return
       sequence += 1
-      socket.send(encodeBrowserStreamFrame({
+      // Text JSON survives DSH Mobile's tunnel, which UTF-8-decodes every ws-msg.
+      socket.send(encodeBrowserStreamJsonFrame({
         version: MANAGED_BROWSER_STREAM_VERSION,
         sequence,
         sentAt: this.#now(),
         width,
         height,
         jpeg,
-      }), { binary: true })
+      }))
     }
     const captureFrame = async (request: CaptureRequest): Promise<void> => {
       try {
@@ -290,6 +291,18 @@ export function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array 
   return new Uint8Array(Buffer.concat([header, Buffer.from(frame.jpeg)]))
 }
 
+export function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string {
+  return JSON.stringify({
+    type: 'frame',
+    version: frame.version,
+    sequence: frame.sequence,
+    sentAt: frame.sentAt,
+    width: frame.width,
+    height: frame.height,
+    jpeg: Buffer.from(frame.jpeg).toString('base64'),
+  })
+}
+
 export function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value)
   if (bytes.byteLength < 17) throw new Error('Browser stream frame is shorter than its header')
@@ -353,7 +366,9 @@ function validInput(value: unknown): value is BrowserInput {
   return type === 'down' || type === 'up' || type === 'move'
 }
 
-function sameOriginHost(origin: string, host: string): boolean {
+export function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean {
+  if (host === undefined || host.length === 0) return false
+  if (origin === undefined || origin.length === 0) return true
   try {
     const url = new URL(origin)
     return (url.protocol === 'http:' || url.protocol === 'https:') && url.host === host

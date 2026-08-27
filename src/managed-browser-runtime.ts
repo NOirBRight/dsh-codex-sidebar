@@ -353,7 +353,8 @@ export class ManagedBrowserRuntime {
 
   target(tab: ManagedTabKey): { page: PageLike; cdp: ManagedCdpSession; documentId: string } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return undefined
+    if (record === undefined || record.page.isClosed()) return undefined
+    if (record.status === 'error' || record.status === 'crashed') return undefined
     return { page: record.page, cdp: record.cdp, documentId: record.documentId }
   }
 
