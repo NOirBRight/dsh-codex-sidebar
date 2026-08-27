@@ -122,6 +122,7 @@ Client messages include:
 - `input`: input payload and the revision currently presented to the human.
 - `frame-ack`: JPEG sequence, revision, and media generation.
 - `rtc-answer` and `rtc-candidate`: authenticated WebRTC signaling.
+- `media-decline`: exact owner, layout revision, and media generation when negotiated video cannot present its first decoded frame.
 - `media-retry`: an explicit retry after a user action or recognized network change.
 
 Host messages include:
@@ -146,6 +147,8 @@ Move and wheel coalescing remains client-side. A pending layout switch pauses ne
 Each visible Browser Tab may own one Sidebar-managed RTCPeerConnection. Signaling rides the authenticated control WebSocket. The media peer does not reuse the DSH Mobile Pairing peer because that peer is absent on desktop, may remain on a tunnel route, and has an independent lifecycle.
 
 ICE is STUN-only. TURN URLs are rejected by Sidebar configuration. A configurable negotiation deadline bounds connection setup. Failure immediately selects JPEG fallback. Failed connections do not retry continuously; retry is permitted after a network-change signal, Tab reactivation, or explicit user action and is rate-limited by a configurable cooldown.
+
+The client does not treat ICE connection as proof that video is usable. If autoplay, decode, or first-frame presentation fails, it sends an exact `media-decline`; the Host releases that attempt and resumes JPEG fallback. Retry remains available when no client peer was created, such as Host capacity fallback.
 
 The media connection carries video only. It never requests camera or microphone permission. Closing or replacing the control connection, hiding or closing the Tab, disposing the session, or unloading the plugin closes the peer and its encoder resources.
 
