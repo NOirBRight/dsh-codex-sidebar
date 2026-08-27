@@ -1,8 +1,8 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { cleanupDerivedChromiumCaches, findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { cleanupDerivedChromiumCaches, findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime, reclaimProfileInitializationLease } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -385,6 +385,32 @@ describe('ManagedBrowserRuntime', () => {
     await rm(profileDir, { recursive: true, force: true })
   })
 
+  it('keeps a detached cache quarantine when a Chromium singleton appears before recursive deletion', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-quarantine-race-'))
+    const cacheParent = join(profileDir, 'Default')
+    const cacheDir = join(cacheParent, 'Cache')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '12345678')
+    let ownershipChecks = 0
+    await cleanupDerivedChromiumCaches(profileDir, 1, async () => {
+      ownershipChecks += 1
+      if (ownershipChecks === 1) return true
+      await mkdir(cacheDir)
+      await writeFile(join(cacheDir, 'active'), 'current Chromium cache')
+      await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
+      return false
+    })
+    const quarantines = (await readdir(cacheParent)).filter((name) => name.startsWith('.dcs-cache-quarantine-'))
+    expect(ownershipChecks).toBe(2)
+    expect(quarantines).toHaveLength(1)
+    const quarantine = quarantines[0]
+    if (quarantine === undefined) throw new Error('missing detached cache quarantine')
+    await expect(readFile(join(cacheParent, quarantine, 'data'), 'utf8')).resolves.toBe('12345678')
+    await expect(readFile(join(cacheDir, 'active'), 'utf8')).resolves.toBe('current Chromium cache')
+    await expect(readlink(join(profileDir, 'SingletonLock'))).resolves.toBe(hostname() + '-' + process.pid)
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
   it('does not clean caches when singleton ownership cannot be proven stale', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'dcs-opaque-singleton-'))
     await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
@@ -408,6 +434,33 @@ describe('ManagedBrowserRuntime', () => {
     await expect(runtime.ensure({ sessionId: 'opaque-cache', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
     expect(launched).toBe(false)
     await expect(readFile(join(profileDir, 'Default', 'Cache', 'data'), 'utf8')).resolves.toBe('12345678')
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('preserves a live SingletonLock that replaces stale ownership after the initial check', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-singleton-replacement-'))
+    const singletonLock = join(profileDir, 'SingletonLock')
+    await symlink(hostname() + '-2147483646', singletonLock)
+    let launched = false
+    let ownershipAfterReplacement = true
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cleanupDerivedCaches: async (_profileDir, _budgetBytes, mayDelete) => {
+        await rm(singletonLock)
+        await symlink(hostname() + '-' + process.pid, singletonLock)
+        ownershipAfterReplacement = await mayDelete()
+      },
+      launch: async () => {
+        launched = true
+        throw new Error('must not launch')
+      },
+    })
+    await expect(runtime.ensure({ sessionId: 'singleton-race', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
+    expect(ownershipAfterReplacement).toBe(false)
+    expect(launched).toBe(false)
+    await expect(readlink(singletonLock)).resolves.toBe(hostname() + '-' + process.pid)
     await runtime.dispose()
     await rm(profileDir, { recursive: true, force: true })
   })
@@ -440,6 +493,67 @@ describe('ManagedBrowserRuntime', () => {
     } finally {
       await rm(profileDir, { recursive: true, force: true })
     }
+  })
+
+  it('does not discard a launched context when profile lease release fails', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-lease-release-failure-'))
+    const warnings: string[] = []
+    let closed = false
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      onWarning: (message) => { warnings.push(message) },
+      launch: async () => {
+        await chmod(profileDir, 0o500)
+        return {
+          async newPage() { return new FakePage() },
+          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+          on() {},
+          async close() { closed = true },
+        }
+      },
+    })
+    try {
+      await expect(runtime.ensure({ sessionId: 'release', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+      expect(warnings.some((message) => message.includes('profile initialization lease release failed'))).toBe(true)
+    } finally {
+      await chmod(profileDir, 0o700)
+      await runtime.dispose()
+      await rm(profileDir, { recursive: true, force: true })
+    }
+    expect(closed).toBe(true)
+  })
+
+  it.each(['orphan', 'corrupt', 'dead-owner'] as const)('recovers an expired %s profile initialization lease', async (kind) => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-expired-lease-'))
+    const leaseDir = join(profileDir, '.dcs-profile-initialization')
+    await mkdir(leaseDir)
+    const ownerPath = join(leaseDir, 'owner.json')
+    if (kind === 'corrupt') await writeFile(ownerPath, '{not-json')
+    if (kind === 'dead-owner') {
+      await writeFile(ownerPath, JSON.stringify({ token: 'expired', hostname: hostname(), pid: 2147483646, createdAt: Date.now() - 60_000 }))
+    }
+    const expired = new Date(Date.now() - 60_000)
+    await utimes(leaseDir, expired, expired)
+    if (kind !== 'orphan') await utimes(ownerPath, expired, expired)
+    const box = harness({ profileDir, profileLeaseTimeoutMs: 250 })
+    await expect(box.runtime.ensure({ sessionId: kind, tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+    await box.runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('does not reclaim a replacement lease whose directory identity changed after inspection', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-replaced-lease-'))
+    const leaseDir = join(profileDir, '.dcs-profile-initialization')
+    await mkdir(leaseDir)
+    const inspected = await lstat(leaseDir)
+    await rm(leaseDir, { recursive: true })
+    await mkdir(leaseDir)
+    await writeFile(join(leaseDir, 'owner.json'), JSON.stringify({ token: 'new', hostname: hostname(), pid: process.pid, createdAt: Date.now() }))
+    const reclaimed = await reclaimProfileInitializationLease(leaseDir, { dev: inspected.dev, ino: inspected.ino })
+    expect(reclaimed).toBe(false)
+    await expect(readFile(join(leaseDir, 'owner.json'), 'utf8')).resolves.toContain('"token":"new"')
+    await rm(profileDir, { recursive: true, force: true })
   })
 
   it('keeps the stream target while a public page is still navigating', async () => {
@@ -531,17 +645,19 @@ describe('ManagedBrowserRuntime', () => {
     }
   })
 
-  it('removes a dead Chromium singleton before relaunching the persistent profile', async () => {
+  it('leaves a dead Chromium singleton for Chromium to arbitrate without unlinking it', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'dcs-stale-chromium-'))
     await symlink(hostname() + '-2147483646', join(profileDir, 'SingletonLock'))
     await symlink('/tmp/dcs-stale-singleton/socket', join(profileDir, 'SingletonSocket'))
     await symlink('stale-cookie', join(profileDir, 'SingletonCookie'))
     let staleAtLaunch = false
+    let staleOwnerAtLaunch = ''
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir,
       launch: async () => {
         staleAtLaunch = await lstat(join(profileDir, 'SingletonLock')).then(() => true, () => false)
+        staleOwnerAtLaunch = await readlink(join(profileDir, 'SingletonLock'))
         return {
           async newPage() { return new FakePage() },
           async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
@@ -551,7 +667,8 @@ describe('ManagedBrowserRuntime', () => {
       },
     })
     await runtime.ensure({ sessionId: 'stale', tabId: 'tab' }, 'https://example.com')
-    expect(staleAtLaunch).toBe(false)
+    expect(staleAtLaunch).toBe(true)
+    expect(staleOwnerAtLaunch).toBe(hostname() + '-2147483646')
     await runtime.dispose()
     await rm(profileDir, { recursive: true, force: true })
   })

@@ -173,12 +173,23 @@ export declare class ManagedBrowserRuntime {
 export declare function findBrowserExecutable(explicit?: string): Promise<string>;
 export declare function installedPlaywrightChromiumCandidates(cacheRoot: string): Promise<string[]>;
 /**
- * Remove only allowlisted derived caches after a caller-supplied ownership recheck.
+ * Detach allowlisted derived caches before deleting them after ownership rechecks.
  * @param profileDir Chromium user-data directory.
  * @param budgetBytes Maximum aggregate bytes allowed for derived caches.
- * @param mayDelete Revalidation performed immediately before each directory removal.
+ * @param mayDelete Ownership revalidation performed before detachment and detached removal.
  * @returns A promise that settles after eligible cache directories are inspected and removed.
  */
 export declare function cleanupDerivedChromiumCaches(profileDir: string, budgetBytes: number, mayDelete: () => Promise<boolean>): Promise<void>;
+type FilesystemIdentity = {
+    dev: number;
+    ino: number;
+};
+/**
+ * Atomically detach and remove only the lease directory identity previously inspected.
+ * @param leaseDir Canonical profile initialization lease directory.
+ * @param expected Filesystem identity observed while deciding whether reclaim is safe.
+ * @returns Whether the expected lease was detached and removed.
+ */
+export declare function reclaimProfileInitializationLease(leaseDir: string, expected: FilesystemIdentity): Promise<boolean>;
 export {};
 //# sourceMappingURL=managed-browser-runtime.d.ts.map
