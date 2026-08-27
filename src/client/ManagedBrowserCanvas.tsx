@@ -3,7 +3,7 @@ import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinary
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver, type BrowserMediaClientIdentity } from '../managed-browser-webrtc-client.ts'
-import { decodeBrowserHostMessage, type BrowserInput, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 import type { BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -24,7 +24,7 @@ type ManagedBrowserCanvasProps = {
   selectedRect: AnnotationRect | null
   selectedSelector: string | null
   requestTicket: (tabId: string) => Promise<StreamTicket | undefined>
-  onPick: (rect: AnnotationRect, anchor: Point) => void | Promise<void>
+  onPick: (rect: AnnotationRect, anchor: Point, layout: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => void | Promise<void>
   onState: (projection: ManagedProjection) => void
   children?: ReactNode
 }
@@ -582,9 +582,12 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
       const canvasBounds = event.currentTarget.getBoundingClientRect()
       const rootBounds = rootRef.current?.getBoundingClientRect() ?? canvasBounds
+      const presented = layoutRef.current?.snapshot().presented
+      if (presented === undefined || presented.revision !== revision) return
       void onPick(
         rect.w < 4 && rect.h < 4 ? { x: at.x - 8, y: at.y - 8, w: 16, h: 16 } : rect,
         { x: event.clientX - rootBounds.left, y: event.clientY - rootBounds.top },
+        { revision: presented.revision, mediaGeneration: presented.mediaGeneration },
       )
       return
     }

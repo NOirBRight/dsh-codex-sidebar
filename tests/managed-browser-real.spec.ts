@@ -120,7 +120,7 @@ describe('real managed Chromium', () => {
     if (input === undefined || button === undefined) throw new Error('missing test controls')
     await expect(runtime.fill(tab, input.ref, 'ada@example.com')).resolves.toEqual({ ok: true })
     await expect(runtime.click(tab, button.ref)).resolves.toEqual({ ok: true })
-    await expect(runtime.capture(tab)).resolves.toMatchObject({ mediaType: 'image/jpeg', width: 720, height: 860 })
+    await expect(runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({ mediaType: 'image/jpeg', width: 720, height: 860 })
   }, 30_000)
 
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('streams a high-density frame while preserving CSS viewport dimensions', async () => {

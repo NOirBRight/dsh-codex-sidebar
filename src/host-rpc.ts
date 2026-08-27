@@ -81,7 +81,8 @@ export async function handleSidebarRpcAsync(
       return { ok: true, value: services.browserStream.issue(tabKey) }
     }
     if (endpoint === SIDEBAR_BROWSER_CAPTURE_ENDPOINT) {
-      if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.tabId !== 'string') {
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.tabId !== 'string'
+        || !positiveSafeInteger(payload.expectedRevision) || !positiveSafeInteger(payload.expectedMediaGeneration)) {
         return fail('invalid sidebar browser-capture request')
       }
       if (services.browserEvidence === undefined) return fail('Browser evidence capture is unavailable')
@@ -89,14 +90,21 @@ export async function handleSidebarRpcAsync(
       const box = registry.forSession(payload.sessionId, { cwd: typeof payload.cwd === 'string' ? payload.cwd : '', busy: payload.busy === true })
       const tab = box.snapshot(false).tabs.find((item) => item.id === tabId && item.kind === 'Browser')
       if (tab === undefined) return fail('unknown Browser Tab')
-      return { ok: true, value: await services.browserEvidence.capture({ sessionId: payload.sessionId, tabId }) }
+      return { ok: true, value: await services.browserEvidence.capture(
+        { sessionId: payload.sessionId, tabId },
+        { revision: payload.expectedRevision, mediaGeneration: payload.expectedMediaGeneration },
+      ) }
     }
     if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) {
-      if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.captureId !== 'string') {
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string' || typeof payload.captureId !== 'string'
+        || !positiveSafeInteger(payload.expectedRevision) || !positiveSafeInteger(payload.expectedMediaGeneration)) {
         return fail('invalid sidebar browser-evidence-commit request')
       }
       if (services.browserEvidence === undefined) return fail('Browser evidence commit is unavailable')
-      return { ok: true, value: await services.browserEvidence.commit(payload.sessionId, payload.captureId) }
+      return { ok: true, value: await services.browserEvidence.commit(
+        payload.sessionId, payload.captureId,
+        { revision: payload.expectedRevision, mediaGeneration: payload.expectedMediaGeneration },
+      ) }
     }
     if (endpoint === SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT) {
       if (!isRecord(payload) || typeof payload.sessionId !== 'string') return fail('invalid sidebar browser-evidence-read request')
@@ -298,6 +306,8 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     typeof value.id !== 'string'
     || typeof value.captureId !== 'string'
     || typeof value.documentId !== 'string'
+    || !positiveSafeInteger(value.layoutRevision)
+    || !positiveSafeInteger(value.mediaGeneration)
     || typeof value.ref !== 'string'
     || value.mediaType !== 'image/jpeg'
     || typeof value.width !== 'number'
@@ -307,11 +317,17 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     id: value.id,
     captureId: value.captureId,
     documentId: value.documentId,
+    layoutRevision: value.layoutRevision,
+    mediaGeneration: value.mediaGeneration,
     ref: value.ref,
     mediaType: value.mediaType,
     width: value.width,
     height: value.height,
   }
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 function snapshotCached(sessionId: string, revision: number, compute: () => unknown): unknown {

@@ -79,6 +79,8 @@ export type ManagedBrowserActionResult =
   | { ok: true }
   | { ok: false; code: 'not-ready' | 'stale-ref' | 'unknown-ref' | 'navigation-failed'; message: string }
 
+export type ManagedBrowserCaptureFailure = { ok: false; code: 'stale-layout'; message: string }
+
 export type ManagedBrowserOutline = {
   documentId: string
   nodes: DriveNode[]
@@ -93,6 +95,8 @@ export type ManagedBrowserTrackedRect = {
 export type ManagedBrowserCapture = {
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   url: string
   title: string
   image: Uint8Array
@@ -439,16 +443,23 @@ export class ManagedBrowserRuntime {
     return this.#act(tab, ref, (locator) => locator.fill(text))
   }
 
-  async capture(tab: ManagedTabKey): Promise<ManagedBrowserCapture | ManagedBrowserActionResult> {
+  async capture(tab: ManagedTabKey, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<ManagedBrowserCapture | ManagedBrowserActionResult | ManagedBrowserCaptureFailure> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
+    const documentId = record.documentId
+    const layout = cloneLayout(record.layout)
+    if (!sameLayoutIdentity(layout, expected)) return staleLayout()
     const nodes = await this.#outlineNodes(record)
+    if (!this.#captureStillCurrent(record, documentId, layout)) return staleLayout()
     const image = await record.page.screenshot({ type: 'jpeg', quality: EVIDENCE_QUALITY })
+    if (!this.#captureStillCurrent(record, documentId, layout)) return staleLayout()
     const viewport = record.page.viewportSize() ?? DEFAULT_VIEWPORT
     this.#captureSeq += 1
     return {
-      captureId: record.documentId + ':c' + this.#captureSeq,
-      documentId: record.documentId,
+      captureId: documentId + ':c' + this.#captureSeq,
+      documentId,
+      layoutRevision: layout.revision,
+      mediaGeneration: layout.mediaGeneration,
       url: record.url,
       title: record.title,
       image: new Uint8Array(image),
@@ -457,6 +468,13 @@ export class ManagedBrowserRuntime {
       height: viewport.height,
       nodes,
     }
+  }
+
+  /** Return the current document and committed layout identity without exposing the target Page. */
+  captureIdentity(tab: ManagedTabKey): { documentId: string; layoutRevision: number; mediaGeneration: number } | undefined {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.status !== 'ready' || record.page.isClosed()) return undefined
+    return { documentId: record.documentId, layoutRevision: record.layout.revision, mediaGeneration: record.layout.mediaGeneration }
   }
 
   target(tab: ManagedTabKey): { page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout } | undefined {
@@ -672,6 +690,11 @@ export class ManagedBrowserRuntime {
     return project(record)
   }
 
+  #captureStillCurrent(record: PageRecord, documentId: string, layout: BrowserLayout): boolean {
+    return this.#pages.get(record.key) === record && !record.page.isClosed() && record.status === 'ready'
+      && record.documentId === documentId && sameLayoutIdentity(record.layout, layout)
+  }
+
   async #drainLayouts(record: PageRecord): Promise<void> {
     if (record.layoutRunning) return
     record.layoutRunning = true
@@ -855,6 +878,10 @@ function normalizeFitViewport(viewport: BrowserSize, policy: ManagedBrowserLayou
 
 function sameSize(left: BrowserSize, right: BrowserSize): boolean {
   return left.width === right.width && left.height === right.height
+}
+
+function sameLayoutIdentity(left: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>, right: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): boolean {
+  return left.revision === right.revision && left.mediaGeneration === right.mediaGeneration
 }
 
 function cloneLayout(layout: BrowserLayout): BrowserLayout {
@@ -1042,6 +1069,10 @@ function project(record: PageRecord): ManagedBrowserProjection {
 
 function notReady(): ManagedBrowserActionResult {
   return { ok: false, code: 'not-ready', message: '托管浏览器页面尚未加载完成' }
+}
+
+function staleLayout(): ManagedBrowserCaptureFailure {
+  return { ok: false, code: 'stale-layout', message: 'Browser document or layout changed; capture again' }
 }
 
 function clamp(value: number, min: number, max: number): number {

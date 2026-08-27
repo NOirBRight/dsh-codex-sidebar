@@ -5,6 +5,7 @@ import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice } from '../browser
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import { Ico, type IconName } from './icons.tsx'
 import { ManagedBrowserCanvas } from './ManagedBrowserCanvas.tsx'
 import { NoteComposer } from './NoteComposer.tsx'
@@ -64,7 +65,7 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
   snapshot: SidebarSnapshot
   onIntent: (intent: Intent) => void
   requestTicket: (tabId: string) => Promise<Ticket | undefined>
-  requestCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
+  requestCapture: (tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => Promise<BrowserCaptureReply | undefined>
   sendLabel: string
   addLabel: string
   deleteLabel: string
@@ -105,12 +106,13 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
     window.open(href, '_blank', 'noopener')
   }
 
-  const pick = async (rect: AnnotationRect, anchor: { x: number; y: number }): Promise<void> => {
+  const pick = async (rect: AnnotationRect, anchor: { x: number; y: number }, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<void> => {
     if (tabId === undefined || capturing) return
     setCapturing(true)
     try {
-      const capture = await requestCapture(tabId)
+      const capture = await requestCapture(tabId, expected)
       if (capture === undefined) return
+      if (capture.layoutRevision !== expected.revision || capture.mediaGeneration !== expected.mediaGeneration) return
       const hit = targetFor(rect, capture)
       const page = pageRef.current
       const body = bodyRef.current
@@ -123,6 +125,8 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
         y: body === null ? y : Math.min(body.clientHeight - 12, Math.max(12, y)),
         captureId: capture.captureId,
         documentId: capture.documentId,
+        layoutRevision: capture.layoutRevision,
+        mediaGeneration: capture.mediaGeneration,
         ...hit === undefined ? { rect } : { selector: hit.selector, rect: hit.rect ?? rect },
       })
     } finally {

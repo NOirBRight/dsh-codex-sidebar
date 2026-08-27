@@ -24,6 +24,7 @@ import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCa
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
 import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
 import { pinHostDetailsTrack } from './host-frame.ts'
@@ -37,6 +38,8 @@ const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
 export type BrowserCaptureReply = {
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   url: string
   title: string
   width: number
@@ -84,10 +87,12 @@ export class SidebarController {
     return this.#store.bySession[sessionId]
   }
 
-  async browserCapture(sessionId: string, tabId: string): Promise<BrowserCaptureReply | undefined> {
+  async browserCapture(sessionId: string, tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserCaptureReply | undefined> {
     const gate = this.#gate(sessionId)
     if (gate === undefined) return undefined
-    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, { ...gate, tabId })
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      ...gate, tabId, expectedRevision: expected.revision, expectedMediaGeneration: expected.mediaGeneration,
+    })
     if (!result.ok || !captureReply(result.value)) return undefined
     return result.value
   }
@@ -249,15 +254,19 @@ export class SidebarController {
     if (browser === undefined) return undefined
     let evidence = browser.pendingEvidence
     if (evidence === null) {
-      if (browser.pendingCaptureId === null) return undefined
+      if (browser.pendingCaptureId === null || browser.pendingLayoutRevision === null || browser.pendingMediaGeneration === null) return undefined
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
         ...gate,
         captureId: browser.pendingCaptureId,
+        expectedRevision: browser.pendingLayoutRevision,
+        expectedMediaGeneration: browser.pendingMediaGeneration,
       })
       if (!result.ok || !browserEvidence(result.value)) return undefined
       evidence = result.value
     }
     if (browser.pendingDocumentId !== null && evidence.documentId !== browser.pendingDocumentId) return undefined
+    if (browser.pendingLayoutRevision !== null && evidence.layoutRevision !== browser.pendingLayoutRevision) return undefined
+    if (browser.pendingMediaGeneration !== null && evidence.mediaGeneration !== browser.pendingMediaGeneration) return undefined
     return { ...intent, evidence }
   }
 
@@ -639,6 +648,8 @@ function captureReply(value: unknown): value is BrowserCaptureReply {
   return isRecord(value)
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.url === 'string'
     && typeof value.title === 'string'
     && typeof value.width === 'number'
@@ -651,10 +662,16 @@ function browserEvidence(value: unknown): value is BrowserEvidence {
     && typeof value.id === 'string'
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.ref === 'string'
     && value.mediaType === 'image/jpeg'
     && typeof value.width === 'number'
     && typeof value.height === 'number'
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 

@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
 import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
@@ -36,6 +36,34 @@ function memoryPersist(): PersistPort {
 }
 
 describe('sidebar RPC', () => {
+  it('requires exact Browser layout identity for capture and temporary evidence commit', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, intent: { type: 'open-url', url: 'https://example.com' },
+    })
+    if (!opened.ok) throw new Error('failed to open Browser Tab')
+    const tabId = (opened.value as { snapshot: { active: string } }).snapshot.active
+    const capture = vi.fn(async () => ({ captureId: 'c1' }))
+    const commit = vi.fn(async () => ({ id: 'e1' }))
+    const services = { browserEvidence: { capture, commit } as never }
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, tabId,
+    }, services)).resolves.toMatchObject({ ok: false })
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, tabId, expectedRevision: 4, expectedMediaGeneration: 7,
+    }, services)).resolves.toMatchObject({ ok: true })
+    expect(capture).toHaveBeenCalledWith({ sessionId: 'sess-a', tabId }, { revision: 4, mediaGeneration: 7 })
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
+      sessionId: 'sess-a', captureId: 'c1', expectedRevision: 4,
+    }, services)).resolves.toMatchObject({ ok: false })
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
+      sessionId: 'sess-a', captureId: 'c1', expectedRevision: 4, expectedMediaGeneration: 7,
+    }, services)).resolves.toMatchObject({ ok: true })
+    expect(commit).toHaveBeenCalledWith('sess-a', 'c1', { revision: 4, mediaGeneration: 7 })
+  })
+
   it('opens a Files Tab through dispatch and reloads it for the same 主会话', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dcs-'))
     const persist = createFilePersist(root)

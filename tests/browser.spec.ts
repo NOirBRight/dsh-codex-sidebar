@@ -41,6 +41,8 @@ function browserEvidence(n: number) {
     id: 'e' + n,
     captureId: 'sess-a:t1:d1:c' + n,
     documentId: 'sess-a:t1:d1',
+    layoutRevision: n,
+    mediaGeneration: n,
     ref: '0123456789abcdefabcd/' + String(n).padStart(32, '0') + '.jpg',
     mediaType: 'image/jpeg' as const,
     width: 720,
@@ -254,10 +256,11 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'browser-set-annotate', on: true })
     expect(box.snapshot().browser.annotate).toBe(true)
     expect(box.snapshot().browser.pendingMark).toBeNull()
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80, captureId: 'c1', documentId: 'd1' })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80, captureId: 'c1', documentId: 'd1', layoutRevision: 4, mediaGeneration: 7 })
     expect(box.snapshot().browser.pendingMark).toBe('button.submit')
     expect(box.snapshot().browser.notePos).toEqual({ x: 40, y: 80 })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20, captureId: 'c2', documentId: 'd1' })
+    expect(box.snapshot().browser).toMatchObject({ pendingLayoutRevision: 4, pendingMediaGeneration: 7 })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20, captureId: 'c2', documentId: 'd1', layoutRevision: 5, mediaGeneration: 8 })
     expect(box.snapshot().browser.pendingMark).toBe('h1.signin')
     expect(box.snapshot().browser.notePos).toEqual({ x: 12, y: 20 })
     box.dispatch({ type: 'browser-dismiss-note' })
@@ -304,7 +307,7 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId, layoutRevision: 1, mediaGeneration: 1 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make this heading red' })
     expect(box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
@@ -313,7 +316,7 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.pendingMark).toBeNull()
     expect(box.snapshot().browser.attachments).toEqual([])
 
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'and the button' })
     const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
     expect(sent).toEqual([{
@@ -339,13 +342,15 @@ describe('Browser seam', () => {
       y: 1,
       captureId: browserEvidence(1).captureId,
       documentId: browserEvidence(1).documentId,
+      layoutRevision: 1,
+      mediaGeneration: 1,
       selector: 'h1.signin',
       rect: { x: 10, y: 20, w: 100, h: 30 },
     })
     box.dispatch({ type: 'browser-set-note-draft', text: 'keep stacked' })
     box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })
 
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, selector: 'button.submit' })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2, selector: 'button.submit' })
     box.dispatch({ type: 'browser-set-note-draft', text: 'send this' })
     const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
     expect(sent).toHaveLength(1)
@@ -369,6 +374,8 @@ describe('Browser seam', () => {
       y: 1,
       captureId: browserEvidence(1).captureId,
       documentId: browserEvidence(1).documentId,
+      layoutRevision: 1,
+      mediaGeneration: 1,
       selector: 'h1.signin',
       rect: { x: 10, y: 20, w: 100, h: 30 },
     })
@@ -404,7 +411,7 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId, layoutRevision: 1, mediaGeneration: 1 })
     const queued = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(1) })
     expect(queued).toEqual([{
       type: 'queue',
@@ -412,7 +419,7 @@ describe('Browser seam', () => {
       attachments: [{ id: 'b1', text: '', from: 'button.submit', source: 'browser', url: PAGE_URL, evidence: browserEvidence(1) }],
     }])
     busy = false
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make the heading larger' })
     expect(box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })[0]?.type).toBe('send')
   })

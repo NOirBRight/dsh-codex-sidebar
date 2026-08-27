@@ -45,6 +45,8 @@ export type BrowserEvidence = {
   id: string
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   ref: string
   mediaType: 'image/jpeg'
   width: number
@@ -686,6 +688,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             pendingRect: item.rect ?? null,
             pendingCaptureId: item.evidence?.captureId ?? null,
             pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingLayoutRevision: item.evidence?.layoutRevision ?? null,
+            pendingMediaGeneration: item.evidence?.mediaGeneration ?? null,
             pendingEvidence: item.evidence ?? null,
             notePos: null,
             noteDraft: '',
@@ -744,6 +748,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             pendingRect: item.rect ?? null,
             pendingCaptureId: item.evidence?.captureId ?? null,
             pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingLayoutRevision: item.evidence?.layoutRevision ?? null,
+            pendingMediaGeneration: item.evidence?.mediaGeneration ?? null,
             pendingEvidence: item.evidence ?? null,
             notePos,
             noteDraft: item.text,
@@ -810,6 +816,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           pendingRect: null,
           pendingCaptureId: null,
           pendingDocumentId: null,
+          pendingLayoutRevision: null,
+          pendingMediaGeneration: null,
           pendingEvidence: null,
           editingId: null,
         })
@@ -843,6 +851,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           pendingRect: null,
           pendingCaptureId: null,
           pendingDocumentId: null,
+          pendingLayoutRevision: null,
+          pendingMediaGeneration: null,
           pendingEvidence: null,
           editingId: null,
         })

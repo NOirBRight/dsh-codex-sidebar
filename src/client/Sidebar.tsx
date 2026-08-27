@@ -14,6 +14,7 @@ import { ReviewPane } from './ReviewPane.tsx'
 import { TerminalPane } from './TerminalPane.tsx'
 import { TerminalRail } from './TerminalRail.tsx'
 import type { BrowserCaptureReply, SidebarStore } from './controller.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import { SidebarController } from './controller.ts'
 import { AttachmentStrip } from './AttachmentChips.tsx'
 import { OccupantBoundary } from './OccupantBoundary.tsx'
@@ -56,7 +57,7 @@ export function SidebarPanel({
             onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
             onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
             onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
-            onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
+            onBrowserCapture={(tabId, expected) => controller.browserCapture(String(sessionId), tabId, expected)}
             onFilePreview={(path) => controller.readFilePreview(String(sessionId), path)}
           />
         </div>
@@ -99,7 +100,7 @@ function SidebarChrome({
   onIntent: (intent: Intent) => void
   onPullTerminal: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
   onBrowserTicket: (tabId: string) => Promise<{ path: string; expiresAt: number } | undefined>
-  onBrowserCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
+  onBrowserCapture: (tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => Promise<BrowserCaptureReply | undefined>
   onFilePreview: (path: string) => Promise<string | undefined>
 }): ReactElement {
   const active = snapshot.tabs.find((tab) => tab.id === snapshot.active)
@@ -336,4 +337,3 @@ function basename(cwd: string | undefined): string {
   const parts = cwd.replace(/\/$/, '').split('/')
   return parts[parts.length - 1] ?? 'workspace'
 }
-

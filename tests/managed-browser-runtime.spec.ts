@@ -19,6 +19,8 @@ class FakePage {
   frame = { url: () => this.currentUrl }
   exposedBindings: Array<{ name: string; callback: (source: unknown, payload: unknown) => void }> = []
   evaluations: Array<{ source: string; argument: unknown }> = []
+  onEvaluate: (() => void | Promise<void>) | undefined
+  onScreenshot: (() => void | Promise<void>) | undefined
 
   async goto(url: string): Promise<void> {
     this.history.push(this.currentUrl)
@@ -46,12 +48,13 @@ class FakePage {
   }
   async evaluate<T>(source?: string, argument?: unknown): Promise<T> {
     if (source !== undefined) this.evaluations.push({ source, argument })
+    await this.onEvaluate?.()
     return [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }] as T
   }
   async exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
     this.exposedBindings.push({ name, callback })
   }
-  async screenshot(): Promise<Uint8Array> { return new Uint8Array([1, 2, 3]) }
+  async screenshot(): Promise<Uint8Array> { await this.onScreenshot?.(); return new Uint8Array([1, 2, 3]) }
   locator(selector: string): { click(): Promise<void>; fill(text: string): Promise<void> } {
     return {
       click: async () => { this.clicked.push(selector) },
@@ -206,6 +209,34 @@ function cacheContextThatClosesDuringClear(): {
 }
 
 describe('ManagedBrowserRuntime', () => {
+  it('captures exact target Page evidence only while document and layout identity remain stable', async () => {
+    const box = harness()
+    const tab = { sessionId: 'evidence', tabId: 'page' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+
+    await expect(box.runtime.capture(tab, { revision: 99, mediaGeneration: 1 })).resolves.toMatchObject({ ok: false, code: 'stale-layout' })
+    expect(page.evaluations).toEqual([])
+
+    await expect(box.runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({
+      captureId: expect.any(String), documentId: 'evidence:page:d1', layoutRevision: 1, mediaGeneration: 1,
+    })
+
+    page.onScreenshot = async () => {
+      page.onScreenshot = undefined
+      await box.runtime.proposeLayout(tab, { mode: 'phone', viewport: { width: 1, height: 1 } })
+    }
+    await expect(box.runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({ ok: false, code: 'stale-layout' })
+
+    page.onEvaluate = async () => {
+      page.onEvaluate = undefined
+      await page.goto('https://example.com/next')
+    }
+    await expect(box.runtime.capture(tab, { revision: 2, mediaGeneration: 2 })).resolves.toMatchObject({ ok: false, code: 'stale-layout' })
+    await box.runtime.dispose()
+  })
+
   it('leases narrow owned media Pages from the persistent context with an exact capacity', async () => {
     const box = harness({ maxEncoderPages: 1 })
     await box.runtime.ensure({ sessionId: 'media', tabId: 'target' }, 'https://example.com')
@@ -368,7 +399,7 @@ describe('ManagedBrowserRuntime', () => {
       documentId: 'outline:browser:d1',
       nodes: [{ role: 'image', name: 'Baidu logo', selector: '#logo' }],
     })
-    await expect(runtime.capture(tab)).resolves.toMatchObject({
+    await expect(runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({
       nodes: [{ role: 'image', name: 'Baidu logo', selector: '#logo' }],
     })
     await expect(runtime.trackRect(tab, '#logo')).resolves.toEqual({
@@ -382,7 +413,7 @@ describe('ManagedBrowserRuntime', () => {
     const tab = { sessionId: 's2', tabId: 'browser-2' }
     await box.runtime.ensure(tab, 'https://example.com')
 
-    await expect(box.runtime.capture(tab)).resolves.toMatchObject({
+    await expect(box.runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({
       captureId: 's2:browser-2:d1:c1',
       documentId: 's2:browser-2:d1',
       mediaType: 'image/jpeg',

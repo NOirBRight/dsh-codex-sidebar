@@ -54,7 +54,7 @@ export type BrowserIntent =
   | { type: 'browser-open-external' }
   | { type: 'browser-runtime-sync'; tabId: string; url: string; title: string; documentId: string; status: BrowserRuntimeStatus; error?: string }
   | { type: 'browser-set-annotate'; on: boolean }
-  | { type: 'browser-click-content'; mark: string; x: number; y: number; captureId: string; documentId: string; selector?: string; rect?: AnnotationRect }
+  | { type: 'browser-click-content'; mark: string; x: number; y: number; captureId: string; documentId: string; layoutRevision: number; mediaGeneration: number; selector?: string; rect?: AnnotationRect }
   | { type: 'browser-dismiss-note' }
   | { type: 'browser-set-note-draft'; text: string }
   | { type: 'browser-note-add'; evidence?: BrowserEvidence }
@@ -90,6 +90,8 @@ export type BrowserState = {
   pendingRect: AnnotationRect | null
   pendingCaptureId: string | null
   pendingDocumentId: string | null
+  pendingLayoutRevision: number | null
+  pendingMediaGeneration: number | null
   pendingEvidence: BrowserEvidence | null
   notePos: { x: number; y: number } | null
   noteDraft: string
@@ -164,6 +166,8 @@ export function syncManagedBrowser(state: BrowserState, projection: {
       pendingRect: null,
       pendingCaptureId: null,
       pendingDocumentId: null,
+      pendingLayoutRevision: null,
+      pendingMediaGeneration: null,
       pendingEvidence: null,
       notePos: null,
       noteDraft: '',
@@ -220,6 +224,8 @@ export function reduceBrowser(
             pendingRect: null,
             pendingCaptureId: null,
             pendingDocumentId: null,
+            pendingLayoutRevision: null,
+            pendingMediaGeneration: null,
             pendingEvidence: null,
             notePos: null,
             noteDraft: '',
@@ -233,7 +239,9 @@ export function reduceBrowser(
     case 'browser-click-content': {
       if (!current.annotate || current.status !== 'loaded') return { state: current, effects: [] }
       const click = intent as BrowserIntent & { type: 'browser-click-content' }
-      if (typeof click.captureId !== 'string' || click.captureId.length === 0 || typeof click.documentId !== 'string' || click.documentId.length === 0) {
+      if (typeof click.captureId !== 'string' || click.captureId.length === 0 || typeof click.documentId !== 'string' || click.documentId.length === 0
+        || !Number.isSafeInteger(click.layoutRevision) || click.layoutRevision <= 0
+        || !Number.isSafeInteger(click.mediaGeneration) || click.mediaGeneration <= 0) {
         return { state: current, effects: [] }
       }
       const mark = click.mark
@@ -249,6 +257,8 @@ export function reduceBrowser(
           pendingRect: rect ?? null,
           pendingCaptureId: click.captureId,
           pendingDocumentId: click.documentId,
+          pendingLayoutRevision: click.layoutRevision,
+          pendingMediaGeneration: click.mediaGeneration,
           pendingEvidence: null,
           notePos: { x, y },
           noteDraft: '',
@@ -270,6 +280,8 @@ export function reduceBrowser(
           pendingRect: null,
           pendingCaptureId: null,
           pendingDocumentId: null,
+          pendingLayoutRevision: null,
+          pendingMediaGeneration: null,
           pendingEvidence: null,
           notePos: null,
           noteDraft: '',
@@ -303,6 +315,8 @@ function hydrate(state: Partial<BrowserState> & { url: string }): BrowserState {
     pendingRect: state.pendingRect ?? null,
     pendingCaptureId: state.pendingCaptureId ?? null,
     pendingDocumentId: state.pendingDocumentId ?? null,
+    pendingLayoutRevision: state.pendingLayoutRevision ?? null,
+    pendingMediaGeneration: state.pendingMediaGeneration ?? null,
     pendingEvidence: state.pendingEvidence ?? null,
     notePos: state.notePos ?? null,
     noteDraft: state.noteDraft ?? '',
@@ -352,6 +366,8 @@ function show(
     pendingRect: null,
     pendingCaptureId: null,
     pendingDocumentId: null,
+    pendingLayoutRevision: null,
+    pendingMediaGeneration: null,
     pendingEvidence: null,
     notePos: null,
     noteDraft: '',
