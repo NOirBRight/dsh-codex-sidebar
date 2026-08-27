@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
@@ -8,6 +8,15 @@ describe('managed Browser stream client', () => {
     expect(surface.width / surface.height).toBeCloseTo(720 / 860, 2)
     expect(surface.width).toBeLessThanOrEqual(390)
     expect(surface.height).toBeLessThanOrEqual(600)
+  })
+
+  it('turns a touch drag into wheel deltas but keeps a small move as a tap', () => {
+    const small = browserTouchGestureMove({ startX: 100, startY: 200, lastX: 100, lastY: 200, moved: false }, 103, 204)
+    expect(small.moved).toBe(false)
+    expect(small.deltaY).toBe(-4)
+    const drag = browserTouchGestureMove(small.gesture, 103, 170)
+    expect(drag.moved).toBe(true)
+    expect(drag.deltaY).toBe(34)
   })
 
   it('pauses the live stream when the page is hidden or the canvas is offscreen', () => {

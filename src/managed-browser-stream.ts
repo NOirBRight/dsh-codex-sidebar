@@ -57,8 +57,9 @@ type CaptureRequest = {
   fallback?: string
 }
 
-type BrowserInput =
+export type BrowserInput =
   | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; selector?: string }
+  | { type: 'tap'; x: number; y: number }
   | { type: 'down' | 'up' | 'move'; x: number; y: number; pressed?: boolean }
   | { type: 'keyDown' | 'keyUp'; key: string; code: string; modifiers?: number }
   | { type: 'text'; text: string }
@@ -266,7 +267,7 @@ export class ManagedBrowserStream {
       return
     }
     if (message.type !== 'input' || !validInput(message.input)) return
-    await dispatchInput(cdp, message.input)
+    await dispatchBrowserInput(cdp, message.input)
     if (message.input.type === 'wheel' && message.input.selector !== undefined) {
       const tracked = await this.#runtime.trackRect(tab, message.input.selector)
       if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {
@@ -317,9 +318,18 @@ export function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): Brows
   }
 }
 
-async function dispatchInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void> {
+export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void> {
   if (input.type === 'wheel') {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY })
+    return
+  }
+  if (input.type === 'tap') {
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: input.x, y: input.y, button: 'left', buttons: 1, clickCount: 1,
+    })
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: input.x, y: input.y, button: 'left', buttons: 0, clickCount: 1,
+    })
     return
   }
   if (input.type === 'down' || input.type === 'up' || input.type === 'move') {
@@ -363,7 +373,7 @@ function validInput(value: unknown): value is BrowserInput {
     return typeof wheel.deltaX === 'number' && typeof wheel.deltaY === 'number'
       && (wheel.selector === undefined || typeof wheel.selector === 'string')
   }
-  return type === 'down' || type === 'up' || type === 'move'
+  return type === 'tap' || type === 'down' || type === 'up' || type === 'move'
 }
 
 export function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean {

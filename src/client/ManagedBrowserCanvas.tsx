@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -27,6 +27,7 @@ type ManagedBrowserCanvasProps = {
 
 type Point = { x: number; y: number }
 type Size = { width: number; height: number }
+type TouchGesture = BrowserTouchGesture & { pointerId: number }
 
 export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -48,6 +49,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   annotateRef.current = annotate
   selectedSelectorRef.current = selectedSelector
   const dragRef = useRef<{ point: Point; pointerId: number } | null>(null)
+  const touchRef = useRef<TouchGesture | null>(null)
   const inputQueueRef = useRef<ReturnType<typeof createBrowserInputCoalescer> | null>(null)
   if (inputQueueRef.current === null) {
     inputQueueRef.current = createBrowserInputCoalescer((input) => {
@@ -304,8 +306,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const input = (value: { type: string; [key: string]: unknown }): void => { inputQueueRef.current?.push(value) }
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
+    event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
-    inputRef.current?.focus({ preventScroll: true })
     const at = point(event)
     if (annotate) {
       dragRef.current = { point: at, pointerId: event.pointerId }
@@ -313,6 +315,18 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       setSelection({ x: at.x, y: at.y, w: 0, h: 0 })
       return
     }
+    if (event.pointerType === 'touch') {
+      touchRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        moved: false,
+      }
+      return
+    }
+    inputRef.current?.focus({ preventScroll: true })
     input({ type: 'down', ...at, pressed: true })
   }
 
@@ -322,6 +336,16 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     if (annotate) {
       if (drag?.pointerId === event.pointerId) setSelection(rectFrom(drag.point, at))
       else setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
+      return
+    }
+    const touch = touchRef.current
+    if (touch?.pointerId === event.pointerId) {
+      event.preventDefault()
+      const update = browserTouchGestureMove(touch, event.clientX, event.clientY)
+      touchRef.current = { ...update.gesture, pointerId: event.pointerId }
+      if (update.moved && (update.deltaX !== 0 || update.deltaY !== 0)) {
+        input({ type: 'wheel', ...at, deltaX: update.deltaX, deltaY: update.deltaY })
+      }
       return
     }
     input({ type: 'move', ...at, pressed: event.buttons === 1 })
@@ -341,6 +365,16 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         rect.w < 4 && rect.h < 4 ? { x: at.x - 8, y: at.y - 8, w: 16, h: 16 } : rect,
         { x: event.clientX - rootBounds.left, y: event.clientY - rootBounds.top },
       )
+      return
+    }
+    const touch = touchRef.current
+    if (touch?.pointerId === event.pointerId) {
+      event.preventDefault()
+      touchRef.current = null
+      if (!touch.moved) {
+        input({ type: 'tap', ...at })
+        inputRef.current?.focus({ preventScroll: true })
+      }
       return
     }
     input({ type: 'up', ...at, pressed: false })
@@ -381,7 +415,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={() => { dragRef.current = null; setSelection(null); setHovered(null) }}
+          onPointerCancel={() => { dragRef.current = null; touchRef.current = null; setSelection(null); setHovered(null) }}
           onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
           onWheel={onWheel}
         />

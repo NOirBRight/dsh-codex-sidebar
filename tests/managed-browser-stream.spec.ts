@@ -3,6 +3,7 @@ import {
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
   decodeBrowserStreamFrame,
+  dispatchBrowserInput,
   encodeBrowserStreamFrame,
   encodeBrowserStreamJsonFrame,
   ManagedBrowserStream,
@@ -82,6 +83,18 @@ describe('managed browser stream protocol', () => {
     const expired = stream.issue(tab)
     now = 151
     expect(stream.consume(expired.ticket)).toBeUndefined()
+  })
+
+  it('dispatches one mobile tap as an atomic mouse press and release', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const cdp = {
+      async send(method: string, params?: Record<string, unknown>) { calls.push({ method, params }); return {} },
+    }
+    await dispatchBrowserInput(cdp as never, { type: 'tap', x: 120, y: 240 })
+    expect(calls).toEqual([
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 120, y: 240, button: 'left', buttons: 1, clickCount: 1 } },
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 120, y: 240, button: 'left', buttons: 0, clickCount: 1 } },
+    ])
   })
 
   it('authorizes APP WebViews that omit Origin as long as Host is present', () => {

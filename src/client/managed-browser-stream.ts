@@ -4,6 +4,29 @@ export function browserStreamShouldRun(pageVisible: boolean, intersecting: boole
 
 export type BrowserStreamSize = { width: number; height: number }
 
+export type BrowserTouchGesture = {
+  startX: number
+  startY: number
+  lastX: number
+  lastY: number
+  moved: boolean
+}
+
+export function browserTouchGestureMove(
+  current: BrowserTouchGesture,
+  x: number,
+  y: number,
+  threshold = 8,
+): { gesture: BrowserTouchGesture; moved: boolean; deltaX: number; deltaY: number } {
+  const moved = current.moved || Math.hypot(x - current.startX, y - current.startY) >= threshold
+  return {
+    gesture: { ...current, lastX: x, lastY: y, moved },
+    moved,
+    deltaX: current.lastX - x,
+    deltaY: current.lastY - y,
+  }
+}
+
 /** Letterbox content into the container. Never stretch a mismatched JPEG. */
 export function browserStreamFitSurface(container: BrowserStreamSize, content: BrowserStreamSize): BrowserStreamSize {
   const scale = Math.min(
