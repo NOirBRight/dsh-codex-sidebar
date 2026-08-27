@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -193,14 +193,28 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         sendLayout(socket)
         if (annotateRef.current) requestOutline()
       }
-      const acceptJpeg = (jpeg: Uint8Array): void => {
+      const acceptJpeg = (jpeg: Uint8Array, css?: { width: number; height: number }): void => {
+        if (css !== undefined && css.width > 0 && css.height > 0) {
+          viewportRef.current = css
+          const root = rootRef.current
+          if (root !== null) {
+            const bounds = root.getBoundingClientRect()
+            if (bounds.width > 0 && bounds.height > 0) {
+              const surface = browserStreamFitSurface(
+                { width: bounds.width, height: bounds.height },
+                css,
+              )
+              setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
+            }
+          }
+        }
         latest = jpeg
         void drawLatest()
       }
       const acceptBinary = (buffer: ArrayBuffer): void => {
         try {
           const frame = decodeBrowserFrame(buffer)
-          if (frame.version === 1) acceptJpeg(frame.jpeg)
+          if (frame.version === 1) acceptJpeg(frame.jpeg, { width: frame.width, height: frame.height })
         } catch {
           // Ignore truncated binary leftovers from the mobile tunnel.
         }
@@ -221,7 +235,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (text === undefined) return
         const jpegFrame = decodeBrowserJpegJson(text)
         if (jpegFrame !== undefined) {
-          acceptJpeg(jpegFrame.jpeg)
+          acceptJpeg(jpegFrame.jpeg, { width: jpegFrame.width, height: jpegFrame.height })
           return
         }
         if (browserStreamSignalsReady(text)) setStatus('ready')

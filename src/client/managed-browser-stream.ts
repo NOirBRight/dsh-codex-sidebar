@@ -2,6 +2,20 @@ export function browserStreamShouldRun(pageVisible: boolean, intersecting: boole
   return pageVisible && intersecting
 }
 
+export type BrowserStreamSize = { width: number; height: number }
+
+/** Letterbox content into the container. Never stretch a mismatched JPEG. */
+export function browserStreamFitSurface(container: BrowserStreamSize, content: BrowserStreamSize): BrowserStreamSize {
+  const scale = Math.min(
+    container.width / Math.max(1, content.width),
+    container.height / Math.max(1, content.height),
+  )
+  return {
+    width: Math.max(1, Math.round(content.width * scale)),
+    height: Math.max(1, Math.round(content.height * scale)),
+  }
+}
+
 export const BROWSER_STREAM_HEADER_BYTES = 17
 
 export type DecodedBrowserFrame = {

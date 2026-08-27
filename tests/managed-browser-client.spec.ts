@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
+  it('letterboxes a desktop JPEG into a phone sidebar without stretching', () => {
+    const surface = browserStreamFitSurface({ width: 390, height: 600 }, { width: 720, height: 860 })
+    expect(surface.width / surface.height).toBeCloseTo(720 / 860, 2)
+    expect(surface.width).toBeLessThanOrEqual(390)
+    expect(surface.height).toBeLessThanOrEqual(600)
+  })
+
   it('pauses the live stream when the page is hidden or the canvas is offscreen', () => {
     expect(browserStreamShouldRun(true, true)).toBe(true)
     expect(browserStreamShouldRun(false, true)).toBe(false)
