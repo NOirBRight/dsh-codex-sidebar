@@ -1,8 +1,10 @@
 /** Turn transcript file paths into clicks that open Files. */
 
+import { isTakeoverUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 
 const MARK = 'dcs-path-link'
+const URL_HREF = '#dcs-browser'
 const FILE_EXT = /\.(tsx?|jsx?|mjs|cjs|md|json|css|html?|vue|svelte|py|rs|go|toml|ya?ml|svg|png|jpe?g|gif|webp|txt|map|lock|sh|bash)$/i
 
 export function transcriptPath(text: string): string | undefined {
@@ -19,6 +21,7 @@ export function transcriptPath(text: string): string | undefined {
 }
 
 export function decorate(root: ParentNode = document): void {
+  decorateUrls(root)
   const nodes = root.querySelectorAll('code')
   for (const node of nodes) {
     if (!(node instanceof HTMLElement)) continue
@@ -43,6 +46,21 @@ export function decorate(root: ParentNode = document): void {
     node.dataset.dcsPath = path
     node.classList.add(MARK)
     node.title = path
+  }
+}
+
+function decorateUrls(root: ParentNode): void {
+  for (const node of root.querySelectorAll('a[href]')) {
+    if (!(node instanceof HTMLElement)) continue
+    if (node.closest('[data-chat-flow-kind], [data-tool], [data-chat-flow]') === null) continue
+    if (!allowTranscriptTakeover((selector) => node.closest(selector))) continue
+    const href = (node.getAttribute('data-dcs-url') ?? node.getAttribute('href') ?? '').trim()
+    if (!isTakeoverUrl(href)) continue
+    node.setAttribute('data-dcs-url', href)
+    const target = node.getAttribute('target')
+    if (target !== null) node.setAttribute('data-dcs-target', target)
+    node.setAttribute('href', URL_HREF)
+    node.removeAttribute('target')
   }
 }
 

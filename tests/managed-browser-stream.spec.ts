@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
@@ -47,6 +47,44 @@ describe('managed browser stream protocol', () => {
         new Promise<string>((_resolve, reject) => { setTimeout(() => { reject(new Error('ready timeout')) }, 100) }),
       ])
       expect(JSON.parse(first)).toMatchObject({ type: 'ready' })
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('accepts Mobile tunnel binary JSON and sends a fresh frame after tap', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64')
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => {
+      if (method === 'Page.captureScreenshot') return { data: jpeg }
+      return {}
+    }
+    const runtime = {
+      target: () => ({ page: { viewportSize: () => ({ width: 390, height: 844 }) }, cdp }),
+      keyOf: () => 's:t',
+      touch: () => {},
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const ticket = stream.issue({ sessionId: 's', tabId: 't' })
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + ticket.path)
+    const frames: Array<{ type?: string; sequence?: number }> = []
+    client.on('message', (data) => {
+      const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string; sequence?: number }
+      if (message.type === 'frame') frames.push(message)
+    })
+    try {
+      await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(1) })
+      // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
+      client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'tap', x: 120, y: 240 } })))
+      await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(2) })
     } finally {
       client.close()
       await stream.dispose()

@@ -12,6 +12,14 @@ export function installTranscriptClickCapture(
   for (const root of new Set(roots)) root.addEventListener('click', listener, true)
 }
 
+export function allowTranscriptClick(
+  event: { defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean },
+  explicitlyDecorated: boolean,
+): boolean {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false
+  return !event.defaultPrevented || explicitlyDecorated
+}
+
 export function allowTranscriptTakeover(
   closest: (selector: string) => unknown,
 ): boolean {

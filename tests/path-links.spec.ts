@@ -85,6 +85,7 @@ class FakeElement {
     if (selector === 'code') return this.tagName === 'CODE'
     if (selector === 'code.dcs-path-link') return this.tagName === 'CODE' && this.className.split(/\s+/).includes('dcs-path-link')
     if (selector === 'a') return this.tagName === 'A'
+    if (selector === 'a[href]') return this.tagName === 'A' && this.attrs.has('href')
     if (selector === 'button') return this.tagName === 'BUTTON'
     if (selector.startsWith('.')) return this.className.split(/\s+/).includes(selector.slice(1))
     const quoted = /^\[([^=\]]+)="([^"]*)"\]$/.exec(selector)
@@ -130,6 +131,31 @@ describe('transcript path links', () => {
 })
 
 describe('path link decorate and click', () => {
+  it('makes transcript HTTP anchors inert before the official shell capture sees them', () => {
+    stubDom()
+    const root = new FakeHTMLElement('MAIN')
+    const row = new FakeHTMLElement('DIV')
+    row.setAttribute('data-chat-flow-kind', 'assistant')
+    const anchor = new FakeHTMLElement('A')
+    anchor.setAttribute('href', 'https://example.test/docs')
+    anchor.setAttribute('target', '_blank')
+    row.append(anchor)
+    root.append(row)
+
+    decorate(root as never)
+
+    expect(anchor.getAttribute('data-dcs-url')).toBe('https://example.test/docs')
+    expect(anchor.getAttribute('href')).toBe('#dcs-browser')
+    expect(anchor.getAttribute('target')).toBeNull()
+
+    const outside = new FakeHTMLElement('A')
+    outside.setAttribute('href', 'https://example.test/settings')
+    root.append(outside)
+    decorate(root as never)
+    expect(outside.getAttribute('href')).toBe('https://example.test/settings')
+    expect(outside.getAttribute('data-dcs-url')).toBeNull()
+  })
+
   it('reuses a code node and opens only the current path once', () => {
     stubDom()
     const root = new FakeHTMLElement('MAIN')

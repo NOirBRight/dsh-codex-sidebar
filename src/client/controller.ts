@@ -20,7 +20,7 @@ import { formatDelivery } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
-import { allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
+import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
 import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
@@ -364,14 +364,14 @@ export class SidebarController {
     if (this.#urlClicks || typeof document === 'undefined') return
     this.#urlClicks = true
     const onClick = (event: MouseEvent): void => {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const raw = event.target
       const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
       if (!(node instanceof Element)) return
       const anchor = node.closest('a')
       if (anchor === null) return
+      if (!allowTranscriptClick(event, anchor.hasAttribute('data-dcs-url'))) return
       if (!allowTranscriptTakeover((selector) => anchor.closest(selector))) return
-      const href = (anchor.getAttribute('href') ?? '').trim()
+      const href = (anchor.getAttribute('data-dcs-url') ?? anchor.getAttribute('href') ?? '').trim()
       if (!isTakeoverUrl(href)) return
       event.preventDefault()
       event.stopPropagation()

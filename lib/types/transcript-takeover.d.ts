@@ -4,5 +4,12 @@ export type TranscriptClickCaptureRoot = {
 };
 /** Install above both React's root capture and document-level shell handlers. */
 export declare function installTranscriptClickCapture(roots: readonly TranscriptClickCaptureRoot[], listener: (event: unknown) => void): void;
+export declare function allowTranscriptClick(event: {
+    defaultPrevented: boolean;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    shiftKey: boolean;
+    altKey: boolean;
+}, explicitlyDecorated: boolean): boolean;
 export declare function allowTranscriptTakeover(closest: (selector: string) => unknown): boolean;
 //# sourceMappingURL=transcript-takeover.d.ts.map

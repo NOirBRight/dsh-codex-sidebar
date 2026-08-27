@@ -316,6 +316,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       return
     }
     if (event.pointerType === 'touch') {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
       inputRef.current?.blur()
       touchRef.current = {
         pointerId: event.pointerId,

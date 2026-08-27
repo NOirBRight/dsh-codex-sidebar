@@ -245,8 +245,8 @@ export class ManagedBrowserStream {
       await cdp.send('Page.stopScreencast').catch(() => undefined)
     }
     cdp.on('Page.screencastFrame', onFrame)
-    socket.on('message', (data, isBinary) => {
-      if (isBinary) return
+    // DSH Mobile's loopback bridge forwards client text messages as binary Buffers.
+    socket.on('message', (data) => {
       void this.#onMessage(socket, tab, cdp, data.toString(), requestFrame).catch(() => undefined)
     })
     socket.once('close', () => { void detach() })
@@ -290,6 +290,11 @@ export class ManagedBrowserStream {
     }
     if (message.type !== 'input' || !validInput(message.input)) return
     await dispatchBrowserInput(cdp, message.input)
+    const viewport = this.#runtime.target(tab)?.page.viewportSize() ?? { width: 720, height: 860 }
+    requestFrame(
+      { width: viewport.width, height: viewport.height },
+      message.input.type === 'tap' || message.input.type === 'up' || message.input.type === 'keyUp' || message.input.type === 'text',
+    )
     if (message.input.type === 'wheel' && message.input.selector !== undefined) {
       const tracked = await this.#runtime.trackRect(tab, message.input.selector)
       if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {
