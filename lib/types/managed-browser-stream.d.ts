@@ -2,23 +2,57 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { ManagedBrowserRuntime, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts';
+import { type BrowserInput, type BrowserLayout, type BrowserSize, type BrowserRtcCandidate, type BrowserRtcDescription } from './managed-browser-protocol.ts';
+import { type BrowserMediaFrame, type ManagedBrowserWebRtcEncoderOptions } from './managed-browser-webrtc.ts';
 export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
-export declare const MANAGED_BROWSER_STREAM_VERSION = 1;
+export declare const MANAGED_BROWSER_STREAM_VERSION = 2;
+export declare const MANAGED_BROWSER_STREAM_SHUTDOWN_TIMEOUT_MS = 2000;
 export declare const MANAGED_BROWSER_STREAM_HANDSHAKE_TIMEOUT_MS = 5000;
 export declare const MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS = 100;
 export declare const MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME = 2;
 export declare const MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS = 250;
 export declare const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4;
+export declare const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES: number;
+export declare const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES: number;
+export declare const MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES = 20;
+export declare const MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES = 4;
 export declare const MANAGED_BROWSER_STREAM_QUALITY = 80;
 export declare const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65;
+export declare const MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS: number;
 export type BrowserStreamTransportProfile = {
-    frameEncoding: 'binary-v1' | 'json-base64-v1';
+    frameEncoding: 'binary-v2' | 'json-base64-v2';
     quality: number;
     maxScale: number;
     frameIntervalMs: number;
     everyNthFrame: number;
+    interactionBurstFrames: number;
+    maxRawBytes: number;
 };
-export declare function browserStreamTransportProfile(origin: string | undefined): BrowserStreamTransportProfile;
+export type BrowserStreamProfileConfig = {
+    desktopJpegMaxRawBytes?: number | undefined;
+    desktopJpegQuality?: number | undefined;
+    desktopJpegFrameIntervalMs?: number | undefined;
+    desktopJpegMaxScale?: number | undefined;
+    desktopScreencastEveryNthFrame?: number | undefined;
+    desktopJpegInteractionBurstFrames?: number | undefined;
+    mobileJpegMaxRawBytes?: number | undefined;
+    mobileJpegQuality?: number | undefined;
+    mobileJpegFrameIntervalMs?: number | undefined;
+    mobileJpegMaxScale?: number | undefined;
+    mobileScreencastEveryNthFrame?: number | undefined;
+    mobileJpegInteractionBurstFrames?: number | undefined;
+};
+export declare function browserStreamTransportProfile(origin: string | undefined, config?: BrowserStreamProfileConfig): BrowserStreamTransportProfile;
+/** Calculates the next capture delay without allowing priority requests to bypass the route FPS ceiling. */
+export declare function browserStreamCaptureDelay(lastCapturedAt: number | undefined, now: number, frameIntervalMs: number): number;
+/** Bounds passive screencast-driven fallback frames after explicit Browser activity. */
+export declare class BrowserFallbackActivityBudget {
+    #private;
+    constructor(limit: number);
+    activate(): void;
+    takePassive(directVideo?: boolean): boolean;
+    remaining(): number;
+}
 export declare const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560;
 export declare const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048;
 export type BrowserStreamTicket = {
@@ -39,31 +73,45 @@ export type ManagedBrowserStreamOptions = {
     now?: () => number;
     ticketTtlMs?: number;
     handshakeTimeoutMs?: number;
+    desktopMaxRawBytes?: number;
+    mobileMaxRawBytes?: number;
+    desktopJpegQuality?: number;
+    desktopJpegFrameIntervalMs?: number;
+    desktopJpegMaxScale?: number;
+    desktopScreencastEveryNthFrame?: number;
+    desktopJpegInteractionBurstFrames?: number;
+    mobileJpegQuality?: number;
+    mobileJpegFrameIntervalMs?: number;
+    mobileJpegMaxScale?: number;
+    mobileScreencastEveryNthFrame?: number;
+    mobileJpegInteractionBurstFrames?: number;
+    preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only';
+    stunUrls?: string[];
+    webrtcNegotiationTimeoutMs?: number;
+    webrtcRetryCooldownMs?: number;
+    maxMediaPeers?: number;
+    directVideoFrameRate?: number;
+    directVideoMaxBitrate?: number;
+    mediaIdleTimeoutMs?: number;
+    mediaHideGraceMs?: number;
+    shutdownTimeoutMs?: number;
+    encoderFactory?: ManagedBrowserWebRtcEncoderFactory;
 };
-export type BrowserInput = {
-    type: 'wheel';
-    x: number;
-    y: number;
-    deltaX: number;
-    deltaY: number;
-    selector?: string;
-} | {
-    type: 'tap';
-    x: number;
-    y: number;
-} | {
-    type: 'down' | 'up' | 'move';
-    x: number;
-    y: number;
-    pressed?: boolean;
-} | {
-    type: 'keyDown' | 'keyUp';
-    key: string;
-    code: string;
-    modifiers?: number;
-} | {
-    type: 'text';
-    text: string;
+export type ManagedBrowserWebRtcEncoderLike = {
+    start(): Promise<BrowserRtcDescription>;
+    acceptAnswer(description: BrowserRtcDescription): Promise<void>;
+    addCandidate(candidate: BrowserRtcCandidate | null): Promise<void>;
+    submit(frame: BrowserMediaFrame): boolean;
+    dispose(): Promise<void>;
+};
+export type ManagedBrowserWebRtcEncoderFactory = (options: ManagedBrowserWebRtcEncoderOptions) => ManagedBrowserWebRtcEncoderLike;
+export type { BrowserInput } from './managed-browser-protocol.ts';
+export type ManagedBrowserStreamResources = {
+    sockets: number;
+    timers: number;
+    captures: number;
+    unackedFrames: number;
+    peers: number;
 };
 export declare class ManagedBrowserStream {
     #private;
@@ -71,12 +119,25 @@ export declare class ManagedBrowserStream {
     issue(tab: ManagedTabKey): BrowserStreamTicket;
     handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
     dispose(): Promise<void>;
+    closeTab(tab: ManagedTabKey): void;
+    closeSession(sessionId: string): void;
+    resources(): ManagedBrowserStreamResources;
     consume(ticket: string): ManagedTabKey | undefined;
 }
 export declare function browserStreamVisualViewportOrigin(value: unknown): {
     x: number;
     y: number;
 };
+export type BrowserJpegCapture = {
+    jpeg: Uint8Array;
+    encodedSize: BrowserSize;
+    quality: number;
+    scale: number;
+};
+/** Capture only while the supplied committed layout remains current. */
+export declare function captureBrowserJpegForLayout(cdp: ManagedCdpSession, layout: BrowserLayout, currentLayout: () => BrowserLayout | undefined, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>): Promise<BrowserJpegCapture | undefined>;
+/** Capture the committed CSS viewport within one route's raw JPEG budget. */
+export declare function captureBrowserJpegWithinBudget(cdp: ManagedCdpSession, viewport: BrowserSize, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>): Promise<BrowserJpegCapture | undefined>;
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;

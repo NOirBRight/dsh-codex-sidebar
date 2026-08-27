@@ -1,5 +1,7 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 import type { DriveNode, DriveSnapshot } from './browser-drive.ts';
+import type { BrowserLayout, BrowserLayoutMode, BrowserSize } from './managed-browser-protocol.ts';
+import type { BrowserMediaPage } from './managed-browser-webrtc.ts';
 export declare const MANAGED_BROWSER_MAX_LIVE_PAGES = 3;
 export declare const MANAGED_BROWSER_IDLE_MS = 120000;
 export declare const MANAGED_BROWSER_CACHE_BUDGET_BYTES: number;
@@ -14,6 +16,66 @@ export type ManagedBrowserConfig = {
     headless?: boolean;
     /** Maximum total bytes retained in allowlisted Chromium-derived cache directories. */
     cacheBudgetBytes?: number;
+    /** Minimum adaptive CSS viewport accepted from a Browser client. */
+    layoutMinViewport?: BrowserSize;
+    /** Maximum adaptive CSS viewport accepted from a Browser client. */
+    layoutMaxViewport?: BrowserSize;
+    /** Time a Browser client waits for an adaptive container measurement to settle. */
+    layoutSettleMs?: number;
+    /** Pixel jitter ignored by an adaptive Browser client. */
+    layoutHysteresisPx?: number;
+    /** Raw JPEG ceiling for a same-origin desktop Browser stream frame. */
+    desktopJpegMaxRawBytes?: number;
+    /** Initial desktop JPEG quality from 1 to 100. */
+    desktopJpegQuality?: number;
+    /** Minimum milliseconds between desktop JPEG captures. */
+    desktopJpegFrameIntervalMs?: number;
+    /** Maximum encoded-to-CSS pixel scale for desktop JPEG captures. */
+    desktopJpegMaxScale?: number;
+    /** Chromium screencast change-signal sampling interval for desktop clients. */
+    desktopScreencastEveryNthFrame?: number;
+    /** Maximum passive desktop fallback frames emitted after Browser activity. */
+    desktopJpegInteractionBurstFrames?: number;
+    /** Raw JPEG ceiling before the Mobile tunnel's nested Base64 envelopes. */
+    mobileJpegMaxRawBytes?: number;
+    /** Initial Mobile JPEG quality from 1 to 100. */
+    mobileJpegQuality?: number;
+    /** Minimum milliseconds between Mobile JPEG captures. */
+    mobileJpegFrameIntervalMs?: number;
+    /** Maximum encoded-to-CSS pixel scale for Mobile JPEG captures. */
+    mobileJpegMaxScale?: number;
+    /** Chromium screencast change-signal sampling interval for Mobile clients. */
+    mobileScreencastEveryNthFrame?: number;
+    /** Maximum passive Mobile fallback frames emitted after Browser activity. */
+    mobileJpegInteractionBurstFrames?: number;
+    /** Preferred managed Browser media route. */
+    preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only';
+    /** STUN-only ICE server URLs used by managed Browser WebRTC peers. */
+    stunUrls?: string[];
+    /** Maximum time allowed for one WebRTC negotiation. */
+    webrtcNegotiationTimeoutMs?: number;
+    /** Minimum delay before retrying a failed WebRTC generation. */
+    webrtcRetryCooldownMs?: number;
+    /** Maximum concurrent managed Browser WebRTC peers. */
+    maxMediaPeers?: number;
+    /** Maximum frames per second requested from a direct-video sender. */
+    directVideoFrameRate?: number;
+    /** Maximum direct-video sender bitrate in bits per second. */
+    directVideoMaxBitrate?: number;
+    /** Dispose an inactive direct-video peer after this many milliseconds. */
+    mediaIdleTimeoutMs?: number;
+    /** Keep the Browser control connection alive this long after its surface becomes hidden. */
+    mediaHideGraceMs?: number;
+    /** Force-close Browser stream sockets and stop waiting for work after this shutdown deadline. */
+    streamShutdownTimeoutMs?: number;
+    /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
+    maxEncoderPages?: number;
+};
+export type ManagedBrowserLayoutPolicy = {
+    minViewport: BrowserSize;
+    maxViewport: BrowserSize;
+    settleMs: number;
+    hysteresisPx: number;
 };
 export type ManagedBrowserStatus = 'idle' | 'loading' | 'ready' | 'error' | 'crashed';
 export type ManagedBrowserProjection = {
@@ -33,6 +95,11 @@ export type ManagedBrowserActionResult = {
     code: 'not-ready' | 'stale-ref' | 'unknown-ref' | 'navigation-failed';
     message: string;
 };
+export type ManagedBrowserCaptureFailure = {
+    ok: false;
+    code: 'stale-layout';
+    message: string;
+};
 export type ManagedBrowserOutline = {
     documentId: string;
     nodes: DriveNode[];
@@ -50,6 +117,8 @@ export type ManagedBrowserTrackedRect = {
 export type ManagedBrowserCapture = {
     captureId: string;
     documentId: string;
+    layoutRevision: number;
+    mediaGeneration: number;
     url: string;
     title: string;
     image: Uint8Array;
@@ -94,7 +163,8 @@ type PageLike = {
         width: number;
         height: number;
     }): Promise<void>;
-    evaluate<R>(expression: string): Promise<R>;
+    evaluate<R>(expression: string, argument?: unknown): Promise<R>;
+    exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void>;
     screenshot(opts: {
         type: 'jpeg';
         quality: number;
@@ -137,6 +207,10 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
     idleMs?: number;
     onWarning?: (message: string) => void;
 };
+type LayoutProposal = {
+    mode: BrowserLayoutMode;
+    viewport: BrowserSize;
+};
 export declare class ManagedBrowserRuntime {
     #private;
     readonly profileDir: string;
@@ -145,25 +219,40 @@ export declare class ManagedBrowserRuntime {
     keyOf(tab: ManagedTabKey): string;
     list(): ManagedBrowserProjection[];
     projection(tab: ManagedTabKey): ManagedBrowserProjection | undefined;
+    layoutPolicy(): ManagedBrowserLayoutPolicy;
+    layout(tab: ManagedTabKey): BrowserLayout | undefined;
     ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection>;
     closeSession(sessionId: string): Promise<void>;
     reap(): Promise<void>;
     touch(tab: ManagedTabKey): void;
+    acquire(tab: ManagedTabKey): () => void;
     back(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     forward(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     resize(tab: ManagedTabKey, width: number, height: number): Promise<void>;
+    proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal): Promise<BrowserLayout>;
     snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult>;
     outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult>;
     trackRect(tab: ManagedTabKey, selector: string): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult>;
     click(tab: ManagedTabKey, ref: string): Promise<ManagedBrowserActionResult>;
     fill(tab: ManagedTabKey, ref: string, text: string): Promise<ManagedBrowserActionResult>;
-    capture(tab: ManagedTabKey): Promise<ManagedBrowserCapture | ManagedBrowserActionResult>;
+    capture(tab: ManagedTabKey, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<ManagedBrowserCapture | ManagedBrowserActionResult | ManagedBrowserCaptureFailure>;
+    /** Return the current document and committed layout identity without exposing the target Page. */
+    captureIdentity(tab: ManagedTabKey): {
+        documentId: string;
+        layoutRevision: number;
+        mediaGeneration: number;
+    } | undefined;
     target(tab: ManagedTabKey): {
         page: PageLike;
         cdp: ManagedCdpSession;
         documentId: string;
+        layout: BrowserLayout;
     } | undefined;
+    /** Lease one narrow media Page from the same persistent Chromium context. */
+    createMediaPage(): Promise<BrowserMediaPage>;
+    /** Return the number of owned encoder Pages. */
+    mediaPageCount(): number;
     close(tab: ManagedTabKey): Promise<void>;
     dispose(): Promise<void>;
 }

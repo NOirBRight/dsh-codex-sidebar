@@ -1,10 +1,13 @@
 /** Temporary Browser captures and draft screenshot evidence sidecars. */
 import type { DriveNode } from './browser-drive.ts';
 import type { ManagedBrowserRuntime, ManagedTabKey } from './managed-browser-runtime.ts';
+import type { BrowserLayout } from './managed-browser-protocol.ts';
 import type { BrowserEvidence } from './session.ts';
 export type BrowserCaptureMetadata = {
     captureId: string;
     documentId: string;
+    layoutRevision: number;
+    mediaGeneration: number;
     url: string;
     title: string;
     mediaType: 'image/jpeg';
@@ -19,8 +22,8 @@ export declare class ManagedBrowserEvidenceStore {
         root?: string;
         now?: () => number;
     });
-    capture(tab: ManagedTabKey): Promise<BrowserCaptureMetadata>;
-    commit(sessionId: string, captureId: string): Promise<BrowserEvidence>;
+    capture(tab: ManagedTabKey, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserCaptureMetadata>;
+    commit(sessionId: string, captureId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserEvidence>;
     read(sessionId: string, evidence: BrowserEvidence): Promise<{
         mediaType: 'image/jpeg';
         data: string;

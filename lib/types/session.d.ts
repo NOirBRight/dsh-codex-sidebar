@@ -31,6 +31,8 @@ export type BrowserEvidence = {
     id: string;
     captureId: string;
     documentId: string;
+    layoutRevision: number;
+    mediaGeneration: number;
     ref: string;
     mediaType: 'image/jpeg';
     width: number;

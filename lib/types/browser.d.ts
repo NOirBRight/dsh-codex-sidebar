@@ -61,6 +61,8 @@ export type BrowserIntent = {
     y: number;
     captureId: string;
     documentId: string;
+    layoutRevision: number;
+    mediaGeneration: number;
     selector?: string;
     rect?: AnnotationRect;
 } | {
@@ -80,7 +82,7 @@ export type BrowserPort = {
     openExternal(url: string): void;
     isBusy(): boolean;
     manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void;
-    resize?(tabId: string, width: number, height: number): void;
+    resize?(tabId: string, mode: BrowserDevice, width: number, height: number): void;
     close?(tabId: string): void;
     spawn?(command: string): void;
 };
@@ -104,6 +106,8 @@ export type BrowserState = {
     pendingRect: AnnotationRect | null;
     pendingCaptureId: string | null;
     pendingDocumentId: string | null;
+    pendingLayoutRevision: number | null;
+    pendingMediaGeneration: number | null;
     pendingEvidence: BrowserEvidence | null;
     notePos: {
         x: number;
