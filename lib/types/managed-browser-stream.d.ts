@@ -132,6 +132,12 @@ export type ManagedBrowserMediaRouteDiagnostic = {
     status: 'active' | 'degraded' | 'reconnecting';
     reason?: string;
 };
+export type ManagedBrowserLatencyDiagnostic = {
+    samples: number;
+    totalMs: number;
+    lastMs: number;
+    maxMs: number;
+};
 export type ManagedBrowserStreamDiagnostics = {
     layoutProposals: number;
     layoutCommits: number;
@@ -139,8 +145,22 @@ export type ManagedBrowserStreamDiagnostics = {
     staleCaptureDrops: number;
     fallbackBytes: number;
     fallbackRecaptures: number;
+    encodedBytes: number;
+    routeBudgetDrops: number;
     mediaAttempts: number;
     mediaFailures: number;
+    currentViewportRevision: number | undefined;
+    currentMediaGeneration: number | undefined;
+    captureLatencyMs: ManagedBrowserLatencyDiagnostic;
+    encodeLatencyMs: ManagedBrowserLatencyDiagnostic;
+    sendLatencyMs: ManagedBrowserLatencyDiagnostic;
+    encoderPaintLatencyMs: ManagedBrowserLatencyDiagnostic;
+    fallbackAckEndToEndLatencyMs: ManagedBrowserLatencyDiagnostic;
+    activePeers: number;
+    activeEncoderPages: number;
+    activeCaptures: number;
+    activeSockets: number;
+    activeTimers: number;
     lastMediaRoute: ManagedBrowserMediaRouteDiagnostic | undefined;
     mediaRouteReasons: Record<string, number>;
 };

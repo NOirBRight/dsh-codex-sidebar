@@ -2,6 +2,8 @@
 export declare const MANAGED_BROWSER_PROTOCOL_VERSION = 2;
 /** Default delay before a hidden managed Browser surface releases its control connection. */
 export declare const MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS = 15000;
+/** Maximum ICE candidates retained or forwarded for one media attempt in either direction. */
+export declare const MANAGED_BROWSER_MAX_RTC_CANDIDATES = 64;
 export declare const BROWSER_STREAM_V2_HEADER_BYTES = 29;
 export type BrowserLayoutMode = 'fit' | 'phone' | 'tablet' | 'laptop';
 export type BrowserSize = {
