@@ -422,6 +422,7 @@ export class ManagedBrowserStream {
     let lastMediaFailureAt = Number.NEGATIVE_INFINITY
     let lastMediaRetryAt = Number.NEGATIVE_INFINITY
     let mediaIdleSuspended = false
+    let mediaStarted = false
     let mediaTransition = Promise.resolve()
     let noteMediaActivity = (): void => {}
     const fallbackActivity = new BrowserFallbackActivityBudget(profile.interactionBurstFrames)
@@ -688,11 +689,38 @@ export class ManagedBrowserStream {
       mediaIdleSuspended = false
       replaceMediaAttempt(layout)
     }
+    const startCommittedMedia = async (layout: BrowserLayout): Promise<void> => {
+      if (mediaStarted || detached) return
+      mediaStarted = true
+      sourceAttached = true
+      cdp.on('Page.screencastFrame', onFrame)
+      sendLayout(layout)
+      sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
+      replaceMediaAttempt(layout)
+      try {
+        await cdp.send('Page.startScreencast', {
+          format: 'jpeg',
+          quality: profile.quality,
+          maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
+          maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
+          everyNthFrame: profile.everyNthFrame,
+        })
+        if (detached) return
+        // A settled page may not emit a screencast frame until it repaints.
+        requestFrame('activity')
+      } catch (error) {
+        if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
+      }
+    }
     const commitLayout = (layout: BrowserLayout): void => {
       if (unacked !== undefined
         && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
         unacked = undefined
         this.#unackedCount -= 1
+      }
+      if (!mediaStarted) {
+        this.#track(startCommittedMedia(layout))
+        return
       }
       sendLayout(layout)
       replaceMediaAttempt(layout)
@@ -734,8 +762,6 @@ export class ManagedBrowserStream {
       await Promise.all([mediaTransition, releaseMedia, stopScreencast])
     }
     const start = async (): Promise<void> => {
-      sourceAttached = true
-      cdp.on('Page.screencastFrame', onFrame)
       socket.send(JSON.stringify({
         type: 'ready',
         version: MANAGED_BROWSER_STREAM_VERSION,
@@ -760,24 +786,8 @@ export class ManagedBrowserStream {
         socket.close(1011, 'Browser layout is not ready')
         return
       }
-      sendLayout(layout)
-      sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
-      replaceMediaAttempt(layout)
       sendProjection()
-      try {
-        await cdp.send('Page.startScreencast', {
-          format: 'jpeg',
-          quality: profile.quality,
-          maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
-          maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
-          everyNthFrame: profile.everyNthFrame,
-        })
-        if (detached) return
-        // A settled page may not emit a screencast frame until it repaints.
-        requestFrame('activity')
-      } catch (error) {
-        if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
-      }
+      if (layout.mode !== 'fit') await startCommittedMedia(layout)
     }
     let helloTimerActive = true
     const clearHelloTimer = (): void => {
@@ -826,7 +836,7 @@ export class ManagedBrowserStream {
         if (message.type === 'media-retry') {
           const layout = currentLayout()
           const now = this.#now()
-          if (layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
+          if (!mediaStarted || layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
             || message.mediaGeneration !== layout.mediaGeneration
             || (mediaAttempt?.connected === true && message.trigger !== 'explicit')
             || now - Math.max(lastMediaFailureAt, lastMediaRetryAt) < this.#webrtcRetryCooldownMs) return

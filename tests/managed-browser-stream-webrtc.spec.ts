@@ -40,7 +40,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
   })
 
   it('gates signaling by owner/layout and rotates one encoder per media generation', async () => {
-    let layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    let layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method) => method === 'Page.captureScreenshot'
       ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
@@ -174,7 +174,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
   })
 
   it('releases an inactive peer and lets later input retry after the cooldown', async () => {
-    const layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method) => method === 'Page.captureScreenshot'
       ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }

@@ -24,7 +24,7 @@ import { decodeBrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 function v2RuntimePorts() {
   return {
     acquire: () => () => {},
-    layout: () => ({ revision: 1, mode: 'fit' as const, viewport: { width: 720, height: 860 }, mediaGeneration: 1 }),
+    layout: () => ({ revision: 1, mode: 'laptop' as const, viewport: { width: 720, height: 860 }, mediaGeneration: 1 }),
     layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
   }
 }
