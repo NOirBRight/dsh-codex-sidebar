@@ -47,17 +47,24 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     let releaseEncoder: (() => void) | undefined
     let releaseScreencast: (() => void) | undefined
+    let releaseCapture: (() => void) | undefined
     const encoderGate = new Promise<void>((resolve) => { releaseEncoder = resolve })
     const screencastGate = new Promise<void>((resolve) => { releaseScreencast = resolve })
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve })
     let starts = 0
     let stops = 0
+    let captures = 0
     let acquisitions = 0
     let releases = 0
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method) => {
       if (method === 'Page.startScreencast') { starts += 1; return {} }
       if (method === 'Page.stopScreencast') { stops += 1; await screencastGate; return {} }
-      if (method === 'Page.captureScreenshot') return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      if (method === 'Page.captureScreenshot') {
+        captures += 1
+        await captureGate
+        return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      }
       if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: 0 } }
       return {}
     }
@@ -97,7 +104,12 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     const first = await connect()
     let second: Awaited<ReturnType<typeof connect>> | undefined
     try {
-      await vi.waitFor(() => { expect(encoders).toHaveLength(1); expect(starts).toBe(1); expect(acquisitions).toBe(1) })
+      await vi.waitFor(() => {
+        expect(encoders).toHaveLength(1)
+        expect(starts).toBe(1)
+        expect(captures).toBe(1)
+        expect(acquisitions).toBe(1)
+      })
       encoders[0]!.disposeGate = encoderGate
 
       second = await connect()
@@ -106,14 +118,16 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(encoders).toHaveLength(1)
       expect(acquisitions).toBe(1)
       expect(releases).toBe(1)
+      await vi.waitFor(() => { expect(stream.resources().timers).toBe(0) })
 
       releaseEncoder?.()
+      releaseScreencast?.()
       await new Promise<void>((resolve) => { setImmediate(resolve) })
       expect(second.messages).toEqual([])
       expect(encoders).toHaveLength(1)
       expect(acquisitions).toBe(1)
 
-      releaseScreencast?.()
+      releaseCapture?.()
       await vi.waitFor(() => {
         expect(second?.messages.some((message) => message.type === 'ready')).toBe(true)
         expect(encoders).toHaveLength(2)
@@ -128,6 +142,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       second?.client.close()
       releaseEncoder?.()
       releaseScreencast?.()
+      releaseCapture?.()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => resolve()) })
     }
