@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserDeviceViewport, isChromiumErrorUrl, isTakeoverUrl, liveHref, type BrowserDevice, type BrowserPort, type PageDocument } from '../src/browser.ts'
+import { browserDeviceViewport, externalBrowserHref, isChromiumErrorUrl, isTakeoverUrl, liveHref, managedBrowserHref, type BrowserDevice, type BrowserPort, type PageDocument } from '../src/browser.ts'
 import { createHostBrowser } from '../src/host-browser.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
@@ -517,6 +517,26 @@ describe('Browser seam', () => {
     expect(isTakeoverUrl('README.md')).toBe(false)
     expect(isTakeoverUrl('Login.tsx')).toBe(false)
     expect(liveHref('src/Login.tsx')).toBeUndefined()
+  })
+
+  it('accepts absolute local HTML only as a managed Browser address', () => {
+    const html = 'file:///tmp/dsh-browser-v2-dynamic/index.html'
+    expect(managedBrowserHref(html)).toBe(html)
+    expect(externalBrowserHref(html)).toBeUndefined()
+    expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')).toBe('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')
+    expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/readme.txt')).toBeUndefined()
+    expect(managedBrowserHref('file://server/share/index.html')).toBeUndefined()
+    expect(managedBrowserHref('data:text/html,hello')).toBeUndefined()
+  })
+
+  it('keeps local HTML inside the managed Browser when external-open is requested', () => {
+    const browser = fakeBrowser()
+    const box = session(browser)
+    const html = 'file:///tmp/dsh-browser-v2-dynamic/index.html'
+    box.dispatch({ type: 'open-url', url: html })
+    expect(box.snapshot().browser.status).toBe('loaded')
+    expect(box.dispatch({ type: 'browser-open-external' })).toEqual([])
+    expect(browser.opened).toEqual([])
   })
 
   it('opens an http Tab without waiting on a host HTML probe', () => {

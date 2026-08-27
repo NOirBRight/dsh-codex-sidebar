@@ -1,6 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
@@ -209,6 +210,48 @@ function cacheContextThatClosesDuringClear(): {
 }
 
 describe('ManagedBrowserRuntime', () => {
+  it('navigates through the private local HTML gateway but projects only public file URLs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-managed-local-html-'))
+    await writeFile(join(root, 'index.html'), '<!doctype html><title>Local</title>')
+    await writeFile(join(root, 'next.html'), '<!doctype html><title>Next</title>')
+    const target = pathToFileURL(join(root, 'index.html')).href + '#start'
+    const next = pathToFileURL(join(root, 'next.html')).href
+    const box = harness()
+    const tab = { sessionId: 'local', tabId: 'html' }
+
+    const opened = await box.runtime.ensure(tab, target)
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    expect(page.currentUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//)
+    expect(page.currentUrl).not.toContain('/tmp/')
+    expect(opened).toMatchObject({ status: 'ready', url: target })
+    expect(JSON.stringify(opened)).not.toContain(new URL(page.currentUrl).port)
+
+    page.currentUrl = new URL('next.html', page.currentUrl).href
+    page.currentTitle = 'Next'
+    page.emit('framenavigated', page.frame)
+    page.emit('domcontentloaded')
+    await vi.waitFor(() => { expect(box.runtime.projection(tab)?.url).toBe(next) })
+
+    await box.runtime.close(tab)
+    expect(box.runtime.localHtmlResources()).toEqual({ listening: true, leases: 0 })
+    await box.runtime.dispose()
+    expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('rejects invalid local HTML before creating a Chromium Page', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-managed-local-html-invalid-'))
+    await writeFile(join(root, 'page.txt'), 'not html')
+    const box = harness()
+    const result = await box.runtime.ensure({ sessionId: 'local', tabId: 'invalid' }, pathToFileURL(join(root, 'page.txt')).href)
+    expect(result).toMatchObject({ status: 'error', error: expect.stringContaining('local HTML') })
+    expect(box.pages).toEqual([])
+    expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
+    await box.runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  })
+
   it('captures exact target Page evidence only while document and layout identity remain stable', async () => {
     const box = harness()
     const tab = { sessionId: 'evidence', tabId: 'page' }
