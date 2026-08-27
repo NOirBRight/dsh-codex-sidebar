@@ -934,6 +934,10 @@ export class ManagedBrowserStream {
         return
       }
       const message = decodeBrowserClientMessage(raw)
+      if (!activated) {
+        if (message !== undefined && message.type !== 'hello') socket.close(1008, 'Previous Browser owner is still detaching')
+        return
+      }
       if (message?.type === 'frame-ack') {
         if (unacked !== undefined
           && message.sequence === unacked.sequence

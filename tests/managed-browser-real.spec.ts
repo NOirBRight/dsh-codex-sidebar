@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import type { Page } from 'playwright-core'
 import { ManagedBrowserStream } from '../src/managed-browser-stream.ts'
-import { decodeBrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
+import { decodeBrowserStreamFrameV2, type BrowserLayout } from '../src/managed-browser-protocol.ts'
 import { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -61,9 +61,10 @@ function jsonStreamFrame(data: WebSocket.RawData): StreamFrame | undefined {
   }
 }
 
-function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => boolean = () => true): Promise<StreamFrame> {
+function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => boolean = () => true, label = 'stream frame'): Promise<StreamFrame> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { finish(new Error('stream frame timeout')) }, 15_000)
+    const seen: string[] = []
+    const timeout = setTimeout(() => { finish(new Error(label + ' timeout; saw ' + (seen.join(', ') || 'no frames'))) }, 15_000)
     const finish = (error: Error | null, frame?: StreamFrame): void => {
       clearTimeout(timeout)
       client.off('message', onMessage)
@@ -81,7 +82,35 @@ function nextStreamFrame(client: WebSocket, predicate: (frame: StreamFrame) => b
               ? Buffer.concat(data)
               : data)
           : jsonStreamFrame(data)
-        if (frame !== undefined && predicate(frame)) finish(null, frame)
+        if (frame !== undefined) {
+          seen.push(`${frame.sequence}:${frame.revision}/${frame.mediaGeneration}:${frame.viewport.width}x${frame.viewport.height}`)
+          if (predicate(frame)) finish(null, frame)
+        }
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    client.on('message', onMessage)
+    client.once('error', onError)
+  })
+}
+
+function nextLayoutCommit(client: WebSocket): Promise<BrowserLayout> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { finish(new Error('layout commit timeout')) }, 15_000)
+    const finish = (error: Error | null, layout?: BrowserLayout): void => {
+      clearTimeout(timeout)
+      client.off('message', onMessage)
+      client.off('error', onError)
+      if (error !== null) reject(error)
+      else if (layout !== undefined) resolve(layout)
+    }
+    const onError = (error: Error): void => { finish(error) }
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean): void => {
+      if (isBinary) return
+      try {
+        const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: unknown; layout?: BrowserLayout }
+        if (message.type === 'layout-commit' && message.layout !== undefined) finish(null, message.layout)
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)))
       }
@@ -172,7 +201,11 @@ describe('real managed Chromium', () => {
       })
       client?.once('error', reject)
     })
-    const frame = await nextStreamFrame(client)
+    const initialCommit = nextLayoutCommit(client)
+    const initialFrame = nextStreamFrame(client, () => true, 'initial fit frame')
+    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'fit', viewport: { width: 720, height: 860 } }))
+    await expect(initialCommit).resolves.toMatchObject({ mode: 'fit', viewport: { width: 720, height: 860 } })
+    const frame = await initialFrame
     const size = jpegSize(frame.jpeg)
     expect(frame.viewport).toEqual({ width: 720, height: 860 })
     expect(size).toEqual({ width: 1080, height: 1290 })
@@ -180,15 +213,18 @@ describe('real managed Chromium', () => {
     if (page === undefined) throw new Error('missing managed Page')
     expect(await jpegCenterPixel(page as Page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
-    client.send(JSON.stringify({ type: 'frame-ack', sequence: frame.sequence, revision: frame.revision, mediaGeneration: frame.mediaGeneration }))
     now += 100
-    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'phone', viewport: { width: 390, height: 844 } }))
-    const resized = await nextStreamFrame(client, (candidate) => candidate.viewport.width === 390 && candidate.viewport.height === 844)
+    const resizedCommit = nextLayoutCommit(client)
+    const resizedFrame = nextStreamFrame(client, (candidate) => candidate.viewport.width === 390 && candidate.viewport.height === 844, 'resized frame')
+    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 2, mode: 'phone', viewport: { width: 390, height: 844 } }))
+    await expect(resizedCommit).resolves.toMatchObject({ mode: 'phone', viewport: { width: 390, height: 844 } })
+    const resized = await resizedFrame
     expect(jpegSize(resized.jpeg)).toEqual({ width: 585, height: 1266 })
     client.send(JSON.stringify({ type: 'frame-ack', sequence: resized.sequence, revision: resized.revision, mediaGeneration: resized.mediaGeneration }))
     now += 300
+    const scrolledFrame = nextStreamFrame(client, (candidate) => candidate.sequence > resized.sequence, 'scrolled frame')
     client.send(JSON.stringify({ type: 'input', revision: resized.revision, input: { type: 'wheel', x: 195, y: 422, deltaX: 0, deltaY: 900 } }))
-    const scrolled = await nextStreamFrame(client, (candidate) => candidate.sequence > resized.sequence)
+    const scrolled = await scrolledFrame
     const pixel = await jpegCenterPixel(page as Page, scrolled)
     expect(pixel[2]).toBeGreaterThan(180)
     expect(pixel[0]).toBeLessThan(80)

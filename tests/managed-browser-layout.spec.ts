@@ -85,12 +85,11 @@ describe('managed Browser authoritative client layout', () => {
 
   it('settles the latest fit measurement and suppresses jitter within hysteresis', () => {
     const client = new ManagedBrowserLayoutClient({ ...OPTIONS, mode: 'fit' })
-    client.observeContainer({ width: 800, height: 600 }, 0)
-    for (let index = 1; index <= 20; index += 1) {
+    for (let index = 1; index <= 100; index += 1) {
       client.observeContainer({
         width: 800 + index % 3,
         height: 600 - index % 2,
-      }, index * 4)
+      }, index - 1)
     }
 
     expect(client.proposalDueAt()).toBe(100)
@@ -98,8 +97,9 @@ describe('managed Browser authoritative client layout', () => {
     expect(client.pollProposal(100)).toEqual({
       proposalSequence: 1,
       mode: 'fit',
-      viewport: { width: 802, height: 600 },
+      viewport: { width: 801, height: 600 },
     })
+    expect(client.pollProposal(1_000)).toBeUndefined()
 
     client.observeContainer({ width: 805, height: 598 }, 110)
     expect(client.pollProposal(1_000)).toBeUndefined()

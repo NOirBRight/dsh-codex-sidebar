@@ -56,6 +56,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     let captures = 0
     let acquisitions = 0
     let releases = 0
+    let proposals = 0
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method) => {
       if (method === 'Page.startScreencast') { starts += 1; return {} }
@@ -74,7 +75,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
-      proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
+      proposeLayout: async () => { proposals += 1; return layout }, outline: async () => ({ documentId: 'd1', nodes: [] }),
       trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
       createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
     }
@@ -103,6 +104,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     }
     const first = await connect()
     let second: Awaited<ReturnType<typeof connect>> | undefined
+    let third: Awaited<ReturnType<typeof connect>> | undefined
     try {
       await vi.waitFor(() => {
         expect(encoders).toHaveLength(1)
@@ -120,6 +122,13 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(releases).toBe(1)
       await vi.waitFor(() => { expect(stream.resources().timers).toBe(0) })
 
+      const rejected = new Promise<{ code: number; reason: string }>((resolve) => {
+        second?.client.once('close', (code, reason) => { resolve({ code, reason: reason.toString() }) })
+      })
+      second.client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'phone', viewport: { width: 390, height: 844 } }))
+      await expect(rejected).resolves.toEqual({ code: 1008, reason: 'Previous Browser owner is still detaching' })
+      expect(proposals).toBe(0)
+
       releaseEncoder?.()
       releaseScreencast?.()
       await new Promise<void>((resolve) => { setImmediate(resolve) })
@@ -128,18 +137,20 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(acquisitions).toBe(1)
 
       releaseCapture?.()
+      third = await connect()
       await vi.waitFor(() => {
-        expect(second?.messages.some((message) => message.type === 'ready')).toBe(true)
+        expect(third?.messages.some((message) => message.type === 'ready')).toBe(true)
         expect(encoders).toHaveLength(2)
         expect(starts).toBe(2)
         expect(acquisitions).toBe(2)
       })
 
       stream.closeTab({ sessionId: 's', tabId: 't' })
-      await vi.waitFor(() => { expect(second?.client.readyState).toBe(WebSocket.CLOSED) })
+      await vi.waitFor(() => { expect(third?.client.readyState).toBe(WebSocket.CLOSED) })
     } finally {
       first.client.close()
       second?.client.close()
+      third?.client.close()
       releaseEncoder?.()
       releaseScreencast?.()
       releaseCapture?.()
