@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
@@ -316,6 +316,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       return
     }
     if (event.pointerType === 'touch') {
+      inputRef.current?.blur()
       touchRef.current = {
         pointerId: event.pointerId,
         startX: event.clientX,
@@ -326,7 +327,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       }
       return
     }
-    inputRef.current?.focus({ preventScroll: true })
+    if (browserPointerShouldFocusIme(event.pointerType)) inputRef.current?.focus({ preventScroll: true })
     input({ type: 'down', ...at, pressed: true })
   }
 
@@ -371,10 +372,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     if (touch?.pointerId === event.pointerId) {
       event.preventDefault()
       touchRef.current = null
-      if (!touch.moved) {
-        input({ type: 'tap', ...at })
-        inputRef.current?.focus({ preventScroll: true })
-      }
+      if (!touch.moved) input({ type: 'tap', ...at })
       return
     }
     input({ type: 'up', ...at, pressed: false })

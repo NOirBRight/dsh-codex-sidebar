@@ -20,7 +20,7 @@ import { formatDelivery } from '../send-text.ts'
 import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
 import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
-import { allowTranscriptTakeover } from '../transcript-takeover.ts'
+import { allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
 import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
@@ -363,7 +363,7 @@ export class SidebarController {
   #installUrlClicks(): void {
     if (this.#urlClicks || typeof document === 'undefined') return
     this.#urlClicks = true
-    document.addEventListener('click', (event) => {
+    const onClick = (event: MouseEvent): void => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const raw = event.target
       const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
@@ -378,7 +378,10 @@ export class SidebarController {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
       if (sessionId === undefined) return
       void this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(href) })
-    }, true)
+    }
+    const roots: TranscriptClickCaptureRoot[] = [document as unknown as TranscriptClickCaptureRoot]
+    if (typeof window !== 'undefined') roots.unshift(window as unknown as TranscriptClickCaptureRoot)
+    installTranscriptClickCapture(roots, onClick as (event: unknown) => void)
   }
 
   #gate(sessionId: string, opts: { includeLogs?: boolean; includeRoster?: boolean; intent?: Intent } = {}): {

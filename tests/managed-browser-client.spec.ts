@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
 
 describe('managed Browser stream client', () => {
@@ -8,6 +8,11 @@ describe('managed Browser stream client', () => {
     expect(surface.width / surface.height).toBeCloseTo(720 / 860, 2)
     expect(surface.width).toBeLessThanOrEqual(390)
     expect(surface.height).toBeLessThanOrEqual(600)
+  })
+
+  it('does not focus the hidden IME for touch taps', () => {
+    expect(browserPointerShouldFocusIme('touch')).toBe(false)
+    expect(browserPointerShouldFocusIme('mouse')).toBe(true)
   })
 
   it('turns a touch drag into wheel deltas but keeps a small move as a tap', () => {

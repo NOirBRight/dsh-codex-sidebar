@@ -2,6 +2,11 @@ export function browserStreamShouldRun(pageVisible: boolean, intersecting: boole
   return pageVisible && intersecting
 }
 
+/** Touch taps must not focus the local hidden IME; it steals the remote click on Android. */
+export function browserPointerShouldFocusIme(pointerType: string): boolean {
+  return pointerType !== 'touch'
+}
+
 export type BrowserStreamSize = { width: number; height: number }
 
 export type BrowserTouchGesture = {
