@@ -58,7 +58,7 @@ export class SidebarController {
   #depth = new Map<string, number>()
   #pathTakeover = false
   #urlClicks = false
-  #layoutReveal = false
+  #layoutReveal: ILayout | undefined
   #revealing = false
   #pendingCollapsed = new Map<string, boolean>()
   /** This client's details-track chrome. Host `collapsed` is not applied here. */
@@ -338,10 +338,8 @@ export class SidebarController {
   }
 
   #installLayoutReveal(): void {
-    if (this.#layoutReveal) return
     const layout = this.#layoutFace() as ILayout & { openDetails?: () => void }
-    if (typeof layout.openDetails !== 'function') return
-    this.#layoutReveal = true
+    if (this.#layoutReveal === layout || typeof layout.openDetails !== 'function') return
     const original = layout.openDetails.bind(layout)
     const wrapped = (): void => {
       original()
@@ -351,11 +349,13 @@ export class SidebarController {
     }
     try {
       layout.openDetails = wrapped
+      this.#layoutReveal = layout
     } catch {
       try {
         Object.defineProperty(layout, 'openDetails', { value: wrapped, writable: true, configurable: true })
+        this.#layoutReveal = layout
       } catch {
-        this.#layoutReveal = false
+        // A replacement layout may appear later; the next reveal retries.
       }
     }
   }
@@ -489,11 +489,23 @@ export class SidebarController {
   }
 
   #layoutFace(): ILayout {
-    return this.#ctx.layout ?? this.#layout
+    try {
+      const current = this.#ctx.get('layout') as unknown
+      if (isLayoutFace(current)) return current
+    } catch {
+      // Fall through to the injected property and the boot-time face.
+    }
+    try {
+      if (isLayoutFace(this.#ctx.layout)) return this.#ctx.layout
+    } catch {
+      // The injected provider can be between Cordis lifecycles on Mobile reconnect.
+    }
+    return this.#layout
   }
 
   #applyTrack(collapsed: boolean | undefined): void {
     try {
+      if (this.#layoutReveal !== undefined) this.#installLayoutReveal()
       applyDetailsTrack(this.#layoutFace(), collapsed)
     } catch {
       // layout face is missing until AppFrame mounts
@@ -642,6 +654,13 @@ function browserEvidence(value: unknown): value is BrowserEvidence {
     && typeof value.height === 'number'
 }
 
+
+function isLayoutFace(value: unknown): value is ILayout {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as { openDetails?: unknown }).openDetails === 'function'
+    && typeof (value as { closeDetails?: unknown }).closeDetails === 'function'
+}
 
 function relativize(path: string, cwd: string): string {
   if (cwd.length === 0) return path

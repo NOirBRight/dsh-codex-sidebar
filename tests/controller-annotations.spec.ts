@@ -388,6 +388,49 @@ describe('annotation effect prompts', () => {
     expect(controller.snap('sess-a')?.collapsed).toBe(false)
   })
 
+  it('reveals the replacement Mobile layout provider after desktop boot', async () => {
+    const box = createSidebarSession({
+      sessionId: 'sess-a',
+      files,
+      persist: { load: () => undefined, save: () => undefined },
+      isBusy: () => false,
+    })
+    const session = {
+      getSnapshot: () => ({ running: false, messages: [] }),
+      prompt: async () => 'accepted',
+    }
+    const desktopOpen = vi.fn()
+    const mobileOpen = vi.fn()
+    const desktop = { openDetails: desktopOpen, closeDetails: vi.fn() }
+    const mobile = { openDetails: mobileOpen, closeDetails: vi.fn() }
+    let currentLayout = desktop
+    const call = async (_channel: string, endpoint: string, payload?: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+        const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+        const effects = box.dispatch(intent)
+        return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      }
+      return { ok: false }
+    }
+    const base = controllerContext(session, call as never)
+    const controller = new SidebarController({
+      ...base,
+      layout: desktop,
+      get: (name: string) => name === 'layout' ? currentLayout : { rpc: { call } },
+    } as never)
+    await controller.refresh('sess-a')
+    controller.installPathTakeover()
+    desktopOpen.mockClear()
+    currentLayout = mobile
+
+    await controller.dispatch('sess-a', { type: 'open-url', url: 'https://example.test' })
+
+    expect(mobileOpen).toHaveBeenCalled()
+    expect(desktopOpen).not.toHaveBeenCalled()
+    expect(controller.snap('sess-a')?.collapsed).toBe(false)
+  })
+
   it('still intercepts layout.details and transcript URLs when openPath is missing', () => {
     const openDetails = vi.fn()
     const layout = { openDetails, closeDetails: vi.fn() }
