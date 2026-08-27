@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BrowserVideoSurface, browserWebRtcVideoAvailable, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
+import { BrowserVideoPresentationSwitch, BrowserVideoSurface, browserWebRtcVideoAvailable, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
 
 class FakeVideo {
+  hidden = false
   muted = false
   autoplay = false
   playsInline = false
@@ -93,5 +94,52 @@ describe('managed Browser WebRTC DOM adapter', () => {
     await handleBrowserVideoPresentation(Promise.reject(new Error('stale present')), () => false, ready, fallback)
     expect(ready).not.toHaveBeenCalled()
     expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('keeps the last DOM video visible until a staged frame atomically replaces it', async () => {
+    const firstVideo = new FakeVideo()
+    const secondVideo = new FakeVideo()
+    const canvas = { style: { opacity: '' } }
+    const presentation = new BrowserVideoPresentationSwitch(
+      [firstVideo as never, secondVideo as never],
+      canvas,
+      (tracks) => ({ tracks }),
+    )
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
+
+    const first = presentation.stage(1_000)
+    const firstReady = first.surface.present({ kind: 'video', stop() {} })
+    firstVideo.videoWidth = 1280
+    firstVideo.videoHeight = 800
+    firstVideo.frame?.()
+    await expect(firstReady).resolves.toEqual({ width: 1280, height: 800 })
+    expect(firstVideo.hidden).toBe(true)
+    expect(presentation.commit(first)).toBe(true)
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+
+    secondVideo.playResult = Promise.reject(new Error('new generation failed'))
+    const failed = presentation.stage(1_000)
+    await expect(failed.surface.present({ kind: 'video', stop() {} })).resolves.toBeUndefined()
+    expect(presentation.discard(failed)).toBe(true)
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect(firstVideo.pauseCalls).toBe(0)
+
+    secondVideo.playResult = Promise.resolve()
+    const next = presentation.stage(1_000)
+    const nextReady = next.surface.present({ kind: 'video', stop() {} })
+    secondVideo.videoWidth = 390
+    secondVideo.videoHeight = 844
+    secondVideo.frame?.()
+    await expect(nextReady).resolves.toEqual({ width: 390, height: 844 })
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect(presentation.commit(next)).toBe(true)
+    expect(presentation.commit(failed)).toBe(false)
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, false, '0'])
+    expect(firstVideo.pauseCalls).toBe(1)
+
+    const pausesBeforeCanvas = secondVideo.pauseCalls
+    presentation.showCanvas()
+    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
+    expect(secondVideo.pauseCalls).toBe(pausesBeforeCanvas + 1)
   })
 })

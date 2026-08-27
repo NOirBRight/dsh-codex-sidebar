@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
-import { BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
+import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
 import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 import type { BrowserDevice } from '../browser.ts'
@@ -38,7 +38,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const rootRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const firstVideoRef = useRef<HTMLVideoElement>(null)
+  const secondVideoRef = useRef<HTMLVideoElement>(null)
   const ticketRef = useRef(requestTicket)
   const stateRef = useRef(onState)
   const deviceRef = useRef(device)
@@ -46,7 +47,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const layoutRef = useRef<ManagedBrowserLayoutClient | null>(null)
   const layoutTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const receiverRef = useRef<ManagedBrowserWebRtcReceiver | null>(null)
-  const videoSurfaceRef = useRef<BrowserVideoSurface | null>(null)
+  const activeReceiverRef = useRef<ManagedBrowserWebRtcReceiver | null>(null)
+  const videoPresentationRef = useRef<BrowserVideoPresentationSwitch | null>(null)
   const readyRef = useRef<BrowserReadyMessage | null>(null)
   const visibilityGraceRef = useRef<BrowserVisibilityGrace | null>(null)
   const fallbackRetryRef = useRef<BrowserMediaRetryState>()
@@ -125,6 +127,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const updateSurface = (): void => {
     const surface = layoutRef.current?.surfaceSize()
     if (surface === undefined) return
+    if (surfaceRef.current !== null) {
+      surfaceRef.current.style.width = surface.width + 'px'
+      surfaceRef.current.style.height = surface.height + 'px'
+    }
     setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
   }
 
@@ -232,12 +238,33 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       return () => { inputQueueRef.current?.cancel() }
     }
 
+    const videoPresentation = (): BrowserVideoPresentationSwitch | undefined => {
+      if (videoPresentationRef.current !== null) return videoPresentationRef.current
+      const first = firstVideoRef.current
+      const second = secondVideoRef.current
+      const canvas = canvasRef.current
+      if (first === null || second === null || canvas === null) return undefined
+      const presentation = new BrowserVideoPresentationSwitch([first, second], canvas)
+      videoPresentationRef.current = presentation
+      return presentation
+    }
+
     const disposeMedia = (route: BrowserMediaPresentationRoute = 'unavailable'): void => {
-      receiverRef.current?.dispose()
+      const receiver = receiverRef.current
+      const activeReceiver = activeReceiverRef.current
+      receiver?.dispose()
+      if (activeReceiver !== receiver) activeReceiver?.dispose()
       receiverRef.current = null
-      videoSurfaceRef.current?.clear()
-      videoSurfaceRef.current = null
+      activeReceiverRef.current = null
+      videoPresentationRef.current?.clear()
       publishMediaRoute(route)
+    }
+
+    const prepareMediaGeneration = (): void => {
+      const receiver = receiverRef.current
+      if (receiver !== activeReceiverRef.current) receiver?.dispose()
+      receiverRef.current = null
+      videoPresentationRef.current?.discardPending()
     }
 
     const drawLatest = async (): Promise<void> => {
@@ -269,6 +296,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 const presented = layoutRef.current?.snapshot().presented
                 if (presented !== undefined) viewportRef.current = presented.viewport
                 updateSurface()
+                videoPresentationRef.current?.showCanvas()
+                const activeReceiver = activeReceiverRef.current
+                activeReceiverRef.current = null
+                if (activeReceiver !== receiverRef.current) activeReceiver?.dispose()
                 setStatus('ready')
               }
               return accepted
@@ -377,7 +408,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (layoutCommit !== undefined) {
           if (layoutRef.current?.acceptCommit(layoutCommit.layout)) {
             inputQueueRef.current?.cancel()
-            disposeMedia('reconnecting')
+            prepareMediaGeneration()
+            publishMediaRoute('reconnecting')
             const ready = readyRef.current
             if (ready === null) earlyCandidates.clear()
             else earlyCandidates.setIdentity({
@@ -392,10 +424,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         const mediaRouteMessage = decodeBrowserMediaRoute(text)
         if (mediaRouteMessage !== undefined) {
           const route = browserMediaRouteFromHost(mediaRouteMessage, mediaRouteRef.current)
-          if (mediaRouteMessage.route === 'unavailable') disposeMedia(route)
-          else if (mediaRouteMessage.route === 'jpeg-fallback') {
+          if (mediaRouteMessage.route === 'unavailable') {
+            prepareMediaGeneration()
+            publishMediaRoute(route)
+          } else if (mediaRouteMessage.route === 'jpeg-fallback') {
             receiverRef.current?.useFallback('host-fallback')
-            videoSurfaceRef.current?.clear()
             publishMediaRoute(route)
           } else {
             publishMediaRoute(route)
@@ -407,13 +440,16 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (hostMessage?.type === 'rtc-offer') {
           const ready = readyRef.current
           const committed = layoutRef.current?.snapshot().committed
-          if (ready === null || videoRef.current === null || hostMessage.ownerId !== ready.ownerId
+          const presentation = videoPresentation()
+          if (ready === null || presentation === undefined || hostMessage.ownerId !== ready.ownerId
             || committed?.revision !== hostMessage.revision || committed.mediaGeneration !== hostMessage.mediaGeneration) return
-          disposeMedia('reconnecting')
+          const previousReceiver = receiverRef.current
+          if (previousReceiver !== activeReceiverRef.current) previousReceiver?.dispose()
+          presentation.discardPending()
           earlyCandidates.setIdentity(hostMessage)
           const identity: BrowserMediaIdentity = hostMessage
-          const surface = new BrowserVideoSurface(videoRef.current, undefined, ready.media.negotiationTimeoutMs)
-          videoSurfaceRef.current = surface
+          const stage = presentation.stage(ready.media.negotiationTimeoutMs)
+          const surface = stage.surface
           let videoSize: Size | undefined
           const receiver = new ManagedBrowserWebRtcReceiver({
             identity,
@@ -442,14 +478,19 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
                 )
               } else if (event.event.type === 'generation-ready') {
                 const current = layoutRef.current?.snapshot().committed
-                if (current === undefined || videoSize === undefined) return
+                if (current === undefined || videoSize === undefined || !presentation.canCommit(stage)
+                  || event.ownerId !== ready.ownerId || event.revision !== current.revision
+                  || event.mediaGeneration !== current.mediaGeneration) return
                 const accepted = layoutRef.current?.acceptFrame({
-                  revision: current.revision,
-                  mediaGeneration: current.mediaGeneration,
+                  revision: event.revision,
+                  mediaGeneration: event.mediaGeneration,
                   viewport: current.viewport,
                   encodedSize: videoSize,
                 }).accepted
-                if (accepted) {
+                if (accepted && presentation.commit(stage)) {
+                  const previousActive = activeReceiverRef.current
+                  activeReceiverRef.current = receiver
+                  if (previousActive !== receiver) previousActive?.dispose()
                   viewportRef.current = current.viewport
                   updateSurface()
                   publishMediaRoute('direct-video')
@@ -460,7 +501,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
               } else if (event.event.type === 'route') {
                 publishMediaRoute(browserMediaRouteFromReceiver(event.event.route))
                 if (event.event.route === 'jpeg-fallback') {
-                  surface.clear()
+                  presentation.discard(stage)
                   declineMedia(event, event.event.reason)
                 }
               }
@@ -472,7 +513,10 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
             negotiation = receiver.acceptOffer(identity, hostMessage.description)
           } catch {
             declineMedia(hostMessage, 'negotiation-error')
-            disposeMedia('low-bandwidth-fallback')
+            presentation.discard(stage)
+            if (receiverRef.current === receiver) receiverRef.current = null
+            receiver.dispose()
+            publishMediaRoute('low-bandwidth-fallback')
             return
           }
           const pendingCandidates = earlyCandidates.drain(hostMessage)
@@ -736,18 +780,28 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     <div className="dcs-managed-browser" ref={rootRef}>
       <div className="dcs-managed-browser-surface" ref={surfaceRef} style={surfaceStyle}>
         <video
-          ref={videoRef}
+          ref={firstVideoRef}
           className="dcs-managed-browser-video"
           muted
           autoPlay
           playsInline
-          style={{ display: mediaRoute === 'direct-video' ? 'block' : 'none', position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+          hidden
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+        />
+        <video
+          ref={secondVideoRef}
+          className="dcs-managed-browser-video"
+          muted
+          autoPlay
+          playsInline
+          hidden
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <canvas
           ref={canvasRef}
           className="dcs-managed-browser-canvas"
           tabIndex={-1}
-          style={{ opacity: mediaRoute === 'direct-video' ? 0 : 1, position: 'relative', zIndex: 1 }}
+          style={{ opacity: 1, position: 'relative', zIndex: 1 }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

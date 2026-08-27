@@ -48,6 +48,9 @@ type PendingPresentation = {
 }
 
 type PresentedVideoSize = { width: number; height: number }
+type PresentationVideo = VideoLike & { hidden: boolean }
+type PresentationCanvas = { style: { opacity: string } }
+type BrowserVideoStage = { readonly slot: 0 | 1; readonly surface: BrowserVideoSurface }
 
 /** Settle every video presentation outcome only while its media identity remains current. */
 export async function handleBrowserVideoPresentation(
@@ -65,6 +68,90 @@ export async function handleBrowserVideoPresentation(
   if (!isCurrent()) return
   if (size === undefined) onUnavailable()
   else onReady(size)
+}
+
+/** Double-buffer video DOM attachment and preserve the last presented surface until commit. */
+export class BrowserVideoPresentationSwitch {
+  #videos: readonly [PresentationVideo, PresentationVideo]
+  #canvas: PresentationCanvas
+  #createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown
+  #active: BrowserVideoStage | undefined
+  #pending: BrowserVideoStage | undefined
+
+  constructor(
+    videos: readonly [PresentationVideo, PresentationVideo],
+    canvas: PresentationCanvas,
+    createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown = (tracks) => new MediaStream(tracks as MediaStreamTrack[]),
+  ) {
+    this.#videos = videos
+    this.#canvas = canvas
+    this.#createStream = createStream
+    videos[0].hidden = true
+    videos[1].hidden = true
+    canvas.style.opacity = '1'
+  }
+
+  /** Attach a candidate track to the hidden slot without changing the visible presentation. */
+  stage(timeoutMs: number): BrowserVideoStage {
+    if (this.#pending !== undefined) this.discard(this.#pending)
+    const slot: 0 | 1 = this.#active?.slot === 0 ? 1 : 0
+    const surface = new BrowserVideoSurface(this.#videos[slot], this.#createStream, timeoutMs)
+    const stage = { slot, surface } as const
+    this.#videos[slot].hidden = true
+    this.#pending = stage
+    return stage
+  }
+
+  /** Reveal one ready stage and release the previous video only after the reveal. */
+  commit(stage: BrowserVideoStage): boolean {
+    if (this.#pending !== stage) return false
+    const previous = this.#active
+    this.#videos[stage.slot].hidden = false
+    this.#canvas.style.opacity = '0'
+    this.#active = stage
+    this.#pending = undefined
+    if (previous !== undefined && previous !== stage) {
+      this.#videos[previous.slot].hidden = true
+      previous.surface.clear()
+    }
+    return true
+  }
+
+  /** Drop only the matching staged attachment and leave the last presentation untouched. */
+  discard(stage: BrowserVideoStage): boolean {
+    if (this.#pending !== stage) return false
+    this.#pending = undefined
+    this.#videos[stage.slot].hidden = true
+    stage.surface.clear()
+    return true
+  }
+
+  /** Drop the current staged attachment, if any. */
+  discardPending(): void {
+    if (this.#pending !== undefined) this.discard(this.#pending)
+  }
+
+  /** Report whether a stage can still commit without replacing a newer candidate. */
+  canCommit(stage: BrowserVideoStage): boolean {
+    return this.#pending === stage
+  }
+
+  /** Reveal an already-painted fallback canvas before releasing the previous video. */
+  showCanvas(): void {
+    this.#canvas.style.opacity = '1'
+    const active = this.#active
+    this.#active = undefined
+    if (active !== undefined) {
+      this.#videos[active.slot].hidden = true
+      active.surface.clear()
+    }
+  }
+
+  /** Release both visible and staged video attachments. */
+  clear(): void {
+    this.discardPending()
+    this.showCanvas()
+  }
 }
 
 /** Owns one video element attachment and resolves only after its first decoded frame. */
