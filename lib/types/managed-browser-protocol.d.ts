@@ -90,6 +90,9 @@ export type BrowserClientMessage = {
 } & BrowserMediaIdentity) | ({
     type: 'media-decline';
     reason: 'presentation-failed';
+} & BrowserMediaIdentity) | ({
+    type: 'surface-visibility';
+    visible: boolean;
 } & BrowserMediaIdentity) | {
     type: 'outline';
 };

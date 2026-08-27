@@ -101,6 +101,7 @@ export type ManagedBrowserStreamOptions = {
     webrtcNegotiationTimeoutMs?: number;
     webrtcRetryCooldownMs?: number;
     maxMediaPeers?: number;
+    maxEncoderPages?: number;
     directVideoFrameRate?: number;
     directVideoMaxBitrate?: number;
     directVideoCaptureQuality?: number;
