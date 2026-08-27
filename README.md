@@ -12,7 +12,7 @@ Open a session, then use the sidebar toggle in the conversation header. The draw
 
 - **Files** — read-only preview (source, Markdown, images) and a workspace tree. Click a path in the transcript to fill it.
 - **Review** — this turn's changes from the session log, then leftover working-tree diffs. Read-only: no stage, revert, or commit.
-- **Browser** — a managed Chromium document in that tab. The session can call `browser_tabs`, `browser_open`, `browser_snapshot`, `browser_click`, and `browser_fill` on loopback HTTP pages whether the sidebar is open or closed. Desktop streams use binary frames; the Origin-less Mobile tunnel uses JSON Base64. Paint acknowledgements bound capture and delivery work. Idle tabs are closed; opening the DSH web GUI inside this browser is rejected.
+- **Browser** — a managed Chromium document in that tab. The session can call `browser_tabs`, `browser_open`, `browser_snapshot`, `browser_click`, and `browser_fill` on loopback HTTP pages whether the sidebar is open or closed. The Host owns the revisioned page viewport, so media dimensions cannot resize the page or move input coordinates. Direct video uses a Browser-owned, STUN-only WebRTC peer when available; the authenticated control WebSocket retains a bounded JPEG fallback for constrained Mobile tunnels. Idle tabs are closed; opening the DSH web GUI inside this browser is rejected.
 - **Terminal** — a human pty (`script` when present), not an agent shell.
 - **Annotations** — click a line or a page to write a note at the mark. Send keeps the official user bubble; numbered chips sit under it. Locators and screenshots go to the model as evidence on that same user message.
 - **Edit +/−** — each edit/write tool row shows the increment for that call, after the filename.
@@ -48,14 +48,28 @@ Since 0.3.0, Review/Files workspace projection is asynchronous and demand-driven
 
 Do not list `@deepseek-ai/dsh-tools` (or other host singletons) as a plugin `dependency`. A hoisted copy shadows the host ToolRuntime and every tool call dies on `.prepare`.
 
-The managed Chromium profile has a 256 MiB derived-cache budget by default. Configure it in the plugin loader entry when another limit is required:
+The managed Chromium profile has a 256 MiB derived-cache budget by default. Managed Browser layout, direct media, and fallback limits are also validated loader configuration:
 
 ```yaml
 - name: dsh-codex-sidebar
   config:
     managedBrowser:
       cacheBudgetBytes: 268435456
+      layoutSettleMs: 180
+      layoutHysteresisPx: 8
+      preferredMediaRoute: webrtc-preferred
+      stunUrls: []
+      webrtcNegotiationTimeoutMs: 5000
+      webrtcRetryCooldownMs: 30000
+      maxMediaPeers: 3
+      maxEncoderPages: 3
+      desktopJpegMaxRawBytes: 491520
+      mobileJpegMaxRawBytes: 98304
 ```
+
+The fixed phone, tablet, and laptop presets remain `390×844`, `768×1024`, and `1280×800`. Fit mode proposes one clamped viewport only after the container settles; fixed presets never consume container resize observations. WebRTC carries video only and does not request camera, microphone, or audio. `stunUrls` accepts only `stun:` URLs; TURN is rejected. An empty list still permits host ICE candidates, while deployments that need NAT discovery must configure approved STUN servers. `jpeg-only` is available as a diagnostic `preferredMediaRoute`.
+
+The Origin-less Mobile tunnel wraps the Browser JSON frame in another Base64 envelope. Its default 96 KiB limit applies to the encoded JPEG bytes and leaves the complete tunnel plaintext below the 200 KiB ceiling. The fallback may lower JPEG quality or encoded resolution, but it never changes the committed CSS viewport. Each connection retains at most one capture, one unacknowledged frame, and one latest dirty request.
 
 Before launch, the plugin performs a read-only, no-follow size estimate over allowlisted derived-cache directories. Chromium's persistent-context startup owns singleton arbitration; the plugin does not rename, remove, or repair profile paths. After a context starts successfully, an over-budget estimate triggers one temporary blank Page and CDP session that run `Network.enable` and `Network.clearBrowserCache`, then always detach and close. Clear failures warn without discarding the context. Chromium's cache API leaves cookies, Local Storage, and IndexedDB intact, while disk and media cache launch arguments limit future growth.
 

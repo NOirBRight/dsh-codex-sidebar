@@ -1,0 +1,11 @@
+# Managed Browser has one layout authority and separate control and media planes
+
+The Host owns one revisioned `BrowserLayout` for each Browser Tab. It commits the selected mode, CSS viewport, and media generation only after Chromium accepts the viewport. The client keeps its local container size, the committed CSS viewport, and encoded media dimensions as separate values. Fixed presets do not consume container measurements; fit measurements settle before one proposal. A media frame, Canvas backing size, WebRTC video size, or `Page.screencastFrame` device metadata cannot resize Chromium or replace the committed viewport.
+
+The authenticated Browser WebSocket is the always-available control plane. It carries protocol negotiation, layout proposals and commits, revisioned input, page state, WebRTC signaling, route state, and bounded JPEG fallback. A matching revision is required for input, and a matching revision plus media generation is required for fallback acknowledgements. The client retains the last good presentation across a layout change and switches presentation and coordinate mapping together after media for the new generation is ready.
+
+Direct media uses a Browser-owned, video-only WebRTC peer when STUN-only ICE succeeds. It is independent from Mobile Pairing and never requests camera, microphone, or audio. The Host encoder is isolated from the target Page and receives pixels only. Negotiation failure selects JPEG fallback without interrupting control. Retry is bounded by cooldown and an explicit lifecycle signal; TURN and continuous retry are rejected.
+
+JPEG fallback is an interaction-first route for constrained Mobile tunnels. Every connection retains at most one capture, one unacknowledged frame, and one latest dirty request. Encoding may lower JPEG quality or encoded resolution to meet the configured byte ceiling, but it cannot change the committed CSS viewport. Exact Browser evidence remains a separate capture from the target Page.
+
+The older model, where screencast device dimensions selected screenshot and client viewport dimensions, was rejected because CDP reports device screen dimensions rather than the controlled Page layout viewport. WebRTC without the revisioned layout model was also rejected because replacing the carrier would preserve the geometry feedback loop.

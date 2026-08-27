@@ -12,7 +12,7 @@
 
 - **Files（文件）** — 只读预览（源码、Markdown、图片）和工作区树。点对话里的路径会填进来。
 - **Review（审查）** — 先看本轮变更，再看工作区剩余差异。只读：不能暂存、还原或提交。
-- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作本机网页，侧栏开着或关着都行。桌面流使用二进制帧，无 Origin 的 Mobile 隧道使用 JSON Base64；绘制确认会限制截图和传输压力。空闲页会回收；禁止在里面再打开 DSH Web 自己。
+- **Browser（浏览器）** — 该标签里的托管 Chromium。主会话可用 `browser_tabs`、`browser_open`、`browser_snapshot`、`browser_click`、`browser_fill` 操作本机网页，侧栏开着或关着都行。Host 独占带 revision 的页面 viewport，媒体尺寸不能再改变页面大小或输入坐标。可直连时使用 Browser 自有、仅 STUN 的 WebRTC 视频；受限 Mobile 隧道继续通过已认证控制 WebSocket 使用有界 JPEG fallback。空闲页会回收；禁止在里面再打开 DSH Web 自己。
 - **Terminal（终端）** — 给人用的伪终端（有 `script` 就用），不是智能体的命令行。
 - **批注** — 点文件行或页面写备注。发送后官方气泡保持原样，编号标签在气泡下方。定位信息和截图作为同一条用户消息的模型证据，不塞进气泡。
 - **编辑行的 +/−** — 每一行 edit/write 显示这一次的增减，跟在文件名后面。
@@ -48,14 +48,28 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
 
 不要把 `@deepseek-ai/dsh-tools` 等宿主单例写进插件的 `dependencies`。提升进配置目录会盖住宿主的工具运行时，所有工具都会在 `.prepare` 上失败。
 
-托管 Chromium 配置文件的派生缓存预算默认为 256 MiB。需要其他上限时，在插件加载项中配置：
+托管 Chromium 配置文件的派生缓存预算默认为 256 MiB。托管 Browser 的布局、直连媒体与 fallback 上限也都通过加载配置校验：
 
 ```yaml
 - name: dsh-codex-sidebar
   config:
     managedBrowser:
       cacheBudgetBytes: 268435456
+      layoutSettleMs: 180
+      layoutHysteresisPx: 8
+      preferredMediaRoute: webrtc-preferred
+      stunUrls: []
+      webrtcNegotiationTimeoutMs: 5000
+      webrtcRetryCooldownMs: 30000
+      maxMediaPeers: 3
+      maxEncoderPages: 3
+      desktopJpegMaxRawBytes: 491520
+      mobileJpegMaxRawBytes: 98304
 ```
+
+phone、tablet、laptop 三个固定预设仍为 `390×844`、`768×1024`、`1280×800`。fit 模式只在容器稳定后提交一次受限 viewport；固定预设不读取容器 resize。WebRTC 只传视频，不请求摄像头、麦克风或音频。`stunUrls` 只接受 `stun:` URL，拒绝 TURN；空列表仍可使用 Host ICE candidate，需要 NAT discovery 的部署必须配置获准的 STUN 服务。诊断时可把 `preferredMediaRoute` 设为 `jpeg-only`。
+
+无 Origin 的 Mobile 隧道会在 Browser JSON frame 外再套一层 Base64。默认 96 KiB 上限针对编码后的 JPEG 字节，完整 tunnel plaintext 仍低于 200 KiB 限制。Fallback 可以降低 JPEG quality 或编码分辨率，但绝不改变已提交的 CSS viewport。每条连接最多保留一个 capture、一个未确认 frame 和一个 latest dirty request。
 
 Chromium 启动前，插件只会对允许列表中的派生缓存目录执行只读且不跟随符号链接的容量估算。Persistent Context 启动过程由 Chromium 自身仲裁单例；插件不会重命名、删除或修复配置文件路径。Context 成功启动后，超预算估算会触发一次临时空白 Page 和 CDP session，依次执行 `Network.enable` 与 `Network.clearBrowserCache`，并始终 detach、close。清理失败只记录警告，不会丢弃 Context。Chromium 缓存 API 不影响 Cookie、Local Storage 和 IndexedDB；磁盘与媒体缓存启动参数继续限制后续增长。
 
