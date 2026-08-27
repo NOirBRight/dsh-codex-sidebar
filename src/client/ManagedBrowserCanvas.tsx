@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
-import { browserDeviceViewport, type BrowserDevice } from '../browser.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
+import type { BrowserInput, BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import type { BrowserDevice } from '../browser.ts'
 import type { AnnotationRect } from '../session.ts'
 
 type StreamTicket = { path: string; expiresAt: number }
@@ -28,6 +30,7 @@ type ManagedBrowserCanvasProps = {
 type Point = { x: number; y: number }
 type Size = { width: number; height: number }
 type TouchGesture = BrowserTouchGesture & { pointerId: number }
+type RevisionedInput = BrowserInput & { revision: number }
 
 export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -37,6 +40,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const stateRef = useRef(onState)
   const deviceRef = useRef(device)
   const viewportRef = useRef<Size>({ width: 720, height: 860 })
+  const layoutRef = useRef<ManagedBrowserLayoutClient | null>(null)
+  const layoutTimerRef = useRef<ReturnType<typeof setTimeout>>()
   ticketRef.current = requestTicket
   stateRef.current = onState
   deviceRef.current = device
@@ -53,7 +58,8 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   const inputQueueRef = useRef<ReturnType<typeof createBrowserInputCoalescer> | null>(null)
   if (inputQueueRef.current === null) {
     inputQueueRef.current = createBrowserInputCoalescer((input) => {
-      send(socketRef.current, { type: 'input', input })
+      const { revision, ...payload } = input as RevisionedInput
+      send(socketRef.current, { type: 'input', revision, input: payload })
     })
   }
   const [selection, setSelection] = useState<AnnotationRect | null>(null)
@@ -74,22 +80,36 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     }, delay)
   }
 
-  const sendLayout = (socket: WebSocket | null = socketRef.current): void => {
+  const updateSurface = (): void => {
+    const surface = layoutRef.current?.surfaceSize()
+    if (surface === undefined) return
+    setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
+  }
+
+  const sendLayoutProposal = (proposal: ReturnType<ManagedBrowserLayoutClient['pollProposal']>, socket: WebSocket | null = socketRef.current): void => {
+    if (proposal !== undefined) send(socket, { type: 'layout-propose', ...proposal })
+  }
+
+  const armLayoutTimer = (): void => {
+    if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
+    layoutTimerRef.current = undefined
+    const dueAt = layoutRef.current?.proposalDueAt()
+    if (dueAt === undefined) return
+    layoutTimerRef.current = setTimeout(() => {
+      layoutTimerRef.current = undefined
+      sendLayoutProposal(layoutRef.current?.pollProposal(performance.now()))
+      armLayoutTimer()
+    }, Math.max(0, dueAt - performance.now()))
+  }
+
+  const observeContainer = (): void => {
     const root = rootRef.current
     if (root === null) return
     const bounds = root.getBoundingClientRect()
     if (bounds.width <= 0 || bounds.height <= 0) return
-    const fixed = browserDeviceViewport(deviceRef.current)
-    const viewport = fixed ?? {
-      width: clamp(Math.round(bounds.width), 320, 1920),
-      height: clamp(Math.round(bounds.height), 240, 1440),
-    }
-    viewportRef.current = viewport
-    const surface = fixed === null
-      ? { width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)) }
-      : fitSurface(bounds.width, bounds.height, fixed)
-    setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
-    send(socket, { type: 'resize', width: viewport.width, height: viewport.height })
+    layoutRef.current?.observeContainer({ width: bounds.width, height: bounds.height }, performance.now())
+    updateSurface()
+    armLayoutTimer()
   }
 
   useEffect(() => {
@@ -119,10 +139,17 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
   useEffect(() => {
     const root = rootRef.current
     if (root === null) return
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => { sendLayout() })
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => { observeContainer() })
     observer?.observe(root)
-    sendLayout()
+    observeContainer()
     return () => { observer?.disconnect() }
+  }, [tabId])
+
+  useEffect(() => {
+    const layout = layoutRef.current
+    if (layout === null) return
+    sendLayoutProposal(layout.selectMode(device, performance.now()))
+    observeContainer()
   }, [device, tabId])
 
   useEffect(() => {
@@ -146,7 +173,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     let attempt = 0
     let decoding = false
     let connectionGeneration = 0
-    let latest: { sequence: number; jpeg: Uint8Array; socket: WebSocket; generation: number } | undefined
+    let latest: { frame: BrowserStreamFrameV2; socket: WebSocket; generation: number } | undefined
 
     if (!visible) {
       setStatus('connecting')
@@ -162,10 +189,30 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
           latest = undefined
           const canvas = canvasRef.current
           if (canvas === null) return
+          const identity = { sequence: frame.frame.sequence, revision: frame.frame.revision, mediaGeneration: frame.frame.mediaGeneration }
+          const frameCurrent = (): boolean => {
+            const committed = layoutRef.current?.snapshot().committed
+            return committed !== undefined
+              && committed.revision === frame.frame.revision
+              && committed.mediaGeneration === frame.frame.mediaGeneration
+              && committed.viewport.width === frame.frame.viewport.width
+              && committed.viewport.height === frame.frame.viewport.height
+          }
           await paintBrowserFrameForConnection(
-            frame.sequence,
-            () => createImageBitmap(new Blob([frame.jpeg], { type: 'image/jpeg' })),
+            identity,
+            () => createImageBitmap(new Blob([frame.frame.jpeg], { type: 'image/jpeg' })),
             () => !stopped && socketRef.current === frame.socket && connectionGeneration === frame.generation,
+            frameCurrent,
+            () => {
+              const accepted = layoutRef.current?.acceptFrame(frame.frame).accepted === true
+              if (accepted) {
+                const presented = layoutRef.current?.snapshot().presented
+                if (presented !== undefined) viewportRef.current = presented.viewport
+                updateSurface()
+                setStatus('ready')
+              }
+              return accepted
+            },
             (bitmap) => {
               if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
                 canvas.width = bitmap.width
@@ -174,10 +221,9 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
               const context = canvas.getContext('bitmaprenderer')
               if (context !== null) context.transferFromImageBitmap(bitmap)
               else canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
-              setStatus('ready')
             },
             (bitmap) => { bitmap.close() },
-            (sequence) => { send(frame.socket, { type: 'frame-ack', sequence }) },
+            (ack) => { send(frame.socket, { type: 'frame-ack', ...ack }) },
           )
         }
       } catch {
@@ -204,36 +250,26 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (!isCurrent()) return
         attempt = 0
         send(socket, browserStreamHello())
-        sendLayout(socket)
         if (annotateRef.current) requestOutline()
       }
-      const acceptJpeg = (sequence: number, jpeg: Uint8Array, css?: { width: number; height: number }): void => {
+      const acceptJpeg = (frame: BrowserStreamFrameV2): void => {
         if (!isCurrent()) return
-        if (css !== undefined && css.width > 0 && css.height > 0) {
-          viewportRef.current = css
-          const root = rootRef.current
-          if (root !== null) {
-            const bounds = root.getBoundingClientRect()
-            if (bounds.width > 0 && bounds.height > 0) {
-              const surface = browserStreamFitSurface(
-                { width: bounds.width, height: bounds.height },
-                css,
-              )
-              setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
-            }
-          }
-        }
-        latest = { sequence, jpeg, socket, generation }
+        const committed = layoutRef.current?.snapshot().committed
+        if (committed === undefined || committed.revision !== frame.revision || committed.mediaGeneration !== frame.mediaGeneration
+          || committed.viewport.width !== frame.viewport.width || committed.viewport.height !== frame.viewport.height) return
+        latest = { frame, socket, generation }
         void drawLatest()
       }
       const acceptBinary = (buffer: ArrayBuffer): void => {
         try {
           const frame = decodeBrowserFrame(buffer)
-          if (frame.version === 1) acceptJpeg(frame.sequence, frame.jpeg, { width: frame.width, height: frame.height })
-          else if (isCurrent()) send(socket, { type: 'frame-ack', sequence: frame.sequence })
+          acceptJpeg(frame)
         } catch {
-          const sequence = browserBinaryFrameSequence(buffer)
-          if (sequence !== undefined && isCurrent()) send(socket, { type: 'frame-ack', sequence })
+          const identity = browserBinaryFrameIdentity(buffer)
+          const committed = layoutRef.current?.snapshot().committed
+          if (identity !== undefined && committed?.revision === identity.revision && committed.mediaGeneration === identity.mediaGeneration && isCurrent()) {
+            send(socket, { type: 'frame-ack', ...identity })
+          }
         }
       }
       socket.onmessage = (event) => {
@@ -253,15 +289,21 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         if (text === undefined) return
         const jpegFrame = decodeBrowserJpegJson(text)
         if (jpegFrame !== undefined) {
-          acceptJpeg(jpegFrame.sequence, jpegFrame.jpeg, { width: jpegFrame.width, height: jpegFrame.height })
+          acceptJpeg(jpegFrame)
           return
         }
-        const failedFrame = browserJsonFrameSequence(text)
-        if (failedFrame !== undefined) {
-          send(socket, { type: 'frame-ack', sequence: failedFrame })
+        const failedFrame = browserJsonFrameIdentity(text)
+        const committed = layoutRef.current?.snapshot().committed
+        if (failedFrame !== undefined && committed?.revision === failedFrame.revision && committed.mediaGeneration === failedFrame.mediaGeneration) {
+          send(socket, { type: 'frame-ack', ...failedFrame })
           return
         }
         if (browserStreamSignalsReady(text)) setStatus('ready')
+        const layoutCommit = decodeBrowserLayoutCommit(text)
+        if (layoutCommit !== undefined) {
+          if (layoutRef.current?.acceptCommit(layoutCommit.layout)) inputQueueRef.current?.cancel()
+          return
+        }
         const tracked = decodeBrowserTrackedRect(text)
         if (tracked !== undefined) {
           if ((documentRef.current === undefined || documentRef.current === tracked.documentId) && selectedSelectorRef.current === tracked.selector) {
@@ -282,8 +324,19 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         try {
           const message = JSON.parse(text) as { type?: unknown; projection?: unknown }
           if (message.type === 'ready') {
-            if (browserStreamReady(text) === undefined) socket.close(1002, 'Unsupported Browser stream protocol')
-            else setStatus('ready')
+            const ready = browserStreamReady(text)
+            if (ready === undefined) socket.close(1002, 'Unsupported Browser stream protocol')
+            else {
+              layoutRef.current = new ManagedBrowserLayoutClient({
+                mode: deviceRef.current,
+                settleMs: ready.layoutPolicy.settleMs,
+                hysteresisPx: ready.layoutPolicy.hysteresisPx,
+                viewportLimits: { min: ready.layoutPolicy.minViewport, max: ready.layoutPolicy.maxViewport },
+              })
+              observeContainer()
+              sendLayoutProposal(layoutRef.current.selectMode(deviceRef.current, performance.now()), socket)
+              armLayoutTimer()
+            }
           }
           if (message.type === 'state' && managedProjection(message.projection)) {
             if (documentRef.current !== undefined && documentRef.current !== message.projection.documentId) {
@@ -302,7 +355,14 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       socket.onerror = () => { if (isCurrent()) setStatus('error') }
       socket.onclose = () => {
         const wasCurrent = socketRef.current === socket
-        if (wasCurrent) socketRef.current = null
+        if (wasCurrent) {
+          socketRef.current = null
+          layoutRef.current = null
+          inputQueueRef.current?.cancel()
+          if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
+          layoutTimerRef.current = undefined
+          setStatus('connecting')
+        }
         if (wasCurrent && !stopped) reconnect = setTimeout(() => { void connect() }, Math.min(2000, 250 * 2 ** attempt++))
       }
     }
@@ -311,29 +371,36 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     return () => {
       stopped = true
       if (reconnect !== undefined) clearTimeout(reconnect)
+      if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
+      layoutTimerRef.current = undefined
+      layoutRef.current = null
       socketRef.current?.close(1000, 'Browser surface hidden')
       socketRef.current = null
       inputQueueRef.current?.cancel()
     }
   }, [tabId, visible])
 
-  const point = (event: { clientX: number; clientY: number }): Point => {
+  const point = (event: { clientX: number; clientY: number }): (Point & { revision: number }) | undefined => {
     const canvas = canvasRef.current
-    if (canvas === null) return { x: 0, y: 0 }
+    if (canvas === null) return undefined
     const bounds = canvas.getBoundingClientRect()
-    const viewport = viewportRef.current
-    return {
-      x: (event.clientX - bounds.left) * viewport.width / Math.max(1, bounds.width),
-      y: (event.clientY - bounds.top) * viewport.height / Math.max(1, bounds.height),
-    }
+    return layoutRef.current?.mapPoint(
+      { x: event.clientX, y: event.clientY },
+      { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height },
+    )
   }
 
-  const input = (value: { type: string; [key: string]: unknown }): void => { inputQueueRef.current?.push(value) }
+  const input = (value: BrowserInput, revision?: number): void => {
+    const resolved = revision ?? (layoutRef.current?.inputHeld() === false ? layoutRef.current.snapshot().presented?.revision : undefined)
+    if (resolved !== undefined) inputQueueRef.current?.push({ ...value, revision: resolved })
+  }
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     const at = point(event)
+    if (at === undefined) return
+    const { revision, ...coordinates } = at
     if (annotate) {
       dragRef.current = { point: at, pointerId: event.pointerId }
       setHovered(null)
@@ -354,11 +421,13 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       return
     }
     if (browserPointerShouldFocusIme(event.pointerType)) inputRef.current?.focus({ preventScroll: true })
-    input({ type: 'down', ...at, pressed: true })
+    input({ type: 'down', ...coordinates, pressed: true }, revision)
   }
 
   const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
     const at = point(event)
+    if (at === undefined) return
+    const { revision, ...coordinates } = at
     const drag = dragRef.current
     if (annotate) {
       if (drag?.pointerId === event.pointerId) setSelection(rectFrom(drag.point, at))
@@ -371,15 +440,17 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       const update = browserTouchGestureMove(touch, event.clientX, event.clientY)
       touchRef.current = { ...update.gesture, pointerId: event.pointerId }
       if (update.moved && (update.deltaX !== 0 || update.deltaY !== 0)) {
-        input({ type: 'wheel', ...at, deltaX: update.deltaX, deltaY: update.deltaY })
+        input({ type: 'wheel', ...coordinates, deltaX: update.deltaX, deltaY: update.deltaY }, revision)
       }
       return
     }
-    input({ type: 'move', ...at, pressed: event.buttons === 1 })
+    input({ type: 'move', ...coordinates, pressed: event.buttons === 1 }, revision)
   }
 
   const onPointerUp = (event: PointerEvent<HTMLCanvasElement>): void => {
     const at = point(event)
+    if (at === undefined) return
+    const { revision, ...coordinates } = at
     const drag = dragRef.current
     if (annotate && drag?.pointerId === event.pointerId) {
       const rect = rectFrom(drag.point, at)
@@ -398,15 +469,17 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     if (touch?.pointerId === event.pointerId) {
       event.preventDefault()
       touchRef.current = null
-      if (!touch.moved) input({ type: 'tap', ...at })
+      if (!touch.moved) input({ type: 'tap', ...coordinates }, revision)
       return
     }
-    input({ type: 'up', ...at, pressed: false })
+    input({ type: 'up', ...coordinates, pressed: false }, revision)
   }
 
   const onWheel = (event: WheelEvent<HTMLCanvasElement>): void => {
     event.preventDefault()
     const at = point(event)
+    if (at === undefined) return
+    const { revision, ...coordinates } = at
     if (annotate) {
       setOutlineNodes([])
       setHovered(null)
@@ -414,7 +487,7 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
       requestOutline(180)
     }
     const selector = selectedSelectorRef.current
-    input({ type: 'wheel', ...at, deltaX: event.deltaX, deltaY: event.deltaY, ...selector === null ? {} : { selector } })
+    input({ type: 'wheel', ...coordinates, deltaX: event.deltaX, deltaY: event.deltaY, ...selector === null ? {} : { selector } }, revision)
   }
 
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>, type: 'keyDown' | 'keyUp'): void => {
@@ -422,6 +495,11 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
     if (event.key === 'Tab' || event.key === 'Backspace' || event.key === 'Enter' || event.metaKey || event.ctrlKey || event.altKey) {
       event.preventDefault()
     }
+  }
+
+  const setImeVisible = (visible: boolean): void => {
+    layoutRef.current?.setImeVisible(visible, performance.now())
+    armLayoutTimer()
   }
 
   const highlights = browserAnnotationHighlightRects(selectedLiveRect, hovered)
@@ -452,6 +530,9 @@ export function ManagedBrowserCanvas({ tabId, device, annotate, selectedRect, se
         ref={inputRef}
         className="dcs-managed-ime"
         aria-label="Browser keyboard input"
+        onFocus={() => { setImeVisible(true) }}
+        onBlur={() => { setImeVisible(false) }}
+        onCompositionStart={() => { setImeVisible(true) }}
         onKeyDown={(event) => { onKey(event, 'keyDown') }}
         onKeyUp={(event) => { onKey(event, 'keyUp') }}
         onInput={(event) => {
@@ -494,16 +575,4 @@ function selectionStyle(rect: AnnotationRect, viewport: Size): Record<string, st
     width: rect.w / Math.max(1, viewport.width) * 100 + '%',
     height: rect.h / Math.max(1, viewport.height) * 100 + '%',
   }
-}
-
-function fitSurface(containerWidth: number, containerHeight: number, viewport: Size): Size {
-  const scale = Math.min(containerWidth / Math.max(1, viewport.width), containerHeight / Math.max(1, viewport.height))
-  return {
-    width: Math.max(1, Math.round(viewport.width * scale)),
-    height: Math.max(1, Math.round(viewport.height * scale)),
-  }
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
 }

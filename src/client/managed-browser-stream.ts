@@ -1,3 +1,5 @@
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserLayoutCommitMessage, type BrowserReadyMessage, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
   return pageVisible && intersecting
 }
@@ -44,40 +46,49 @@ export function browserStreamFitSurface(container: BrowserStreamSize, content: B
   }
 }
 
-export const BROWSER_STREAM_HEADER_BYTES = 17
-
-export type DecodedBrowserFrame = {
-  version: number
-  sequence: number
-  sentAt: number
-  width: number
-  height: number
-  jpeg: Uint8Array
-}
-
-export type BrowserStreamFrameEncoding = 'binary-v1' | 'json-base64-v1'
+export const BROWSER_STREAM_HEADER_BYTES = BROWSER_STREAM_V2_HEADER_BYTES
+export type DecodedBrowserFrame = BrowserStreamFrameV2
+export type BrowserStreamFrameEncoding = 'binary-v2' | 'json-base64-v2'
+export type BrowserFrameIdentity = Pick<BrowserStreamFrameV2, 'sequence' | 'revision' | 'mediaGeneration'>
 
 /** Declare the encodings and flow control understood by the Canvas client. */
-export function browserStreamHello(): {
+export function browserStreamHello(webrtcVideo = false): {
   type: 'hello'
-  version: 1
+  version: 2
   frameEncodings: BrowserStreamFrameEncoding[]
-  flowControl: ['frame-ack-v1']
+  flowControl: ['frame-ack-v2']
+  media: { webrtcVideo: boolean }
 } {
   return {
     type: 'hello',
-    version: 1,
-    frameEncodings: ['binary-v1', 'json-base64-v1'],
-    flowControl: ['frame-ack-v1'],
+    version: 2,
+    frameEncodings: ['binary-v2', 'json-base64-v2'],
+    flowControl: ['frame-ack-v2'],
+    media: { webrtcVideo },
   }
 }
 
-export function browserStreamReady(value: string): { frameEncoding: BrowserStreamFrameEncoding; flowControl: 'frame-ack-v1' } | undefined {
+export function browserStreamReady(value: string): BrowserReadyMessage | undefined {
   try {
-    const message = JSON.parse(value) as { type?: unknown; version?: unknown; frameEncoding?: unknown; flowControl?: unknown }
-    if (message.type !== 'ready' || message.version !== 1 || message.flowControl !== 'frame-ack-v1') return undefined
-    if (message.frameEncoding !== 'binary-v1' && message.frameEncoding !== 'json-base64-v1') return undefined
-    return { frameEncoding: message.frameEncoding, flowControl: message.flowControl }
+    const message = JSON.parse(value) as BrowserReadyMessage
+    if (message.type !== 'ready' || message.version !== 2 || message.flowControl !== 'frame-ack-v2') return undefined
+    if (message.frameEncoding !== 'binary-v2' && message.frameEncoding !== 'json-base64-v2') return undefined
+    if (!validSize(message.layoutPolicy?.minViewport) || !validSize(message.layoutPolicy?.maxViewport)
+      || !finiteNonnegative(message.layoutPolicy?.settleMs) || !finiteNonnegative(message.layoutPolicy?.hysteresisPx)
+      || !finiteNonnegative(message.fallback?.maxRawBytes)) return undefined
+    return message
+  } catch {
+    return undefined
+  }
+}
+
+export function decodeBrowserLayoutCommit(value: string): BrowserLayoutCommitMessage | undefined {
+  try {
+    const message = JSON.parse(value) as BrowserLayoutCommitMessage
+    const layout = message.layout
+    if (message.type !== 'layout-commit' || !positiveInteger(layout?.revision) || !positiveInteger(layout?.mediaGeneration)
+      || !validSize(layout?.viewport) || !['fit', 'phone', 'tablet', 'laptop'].includes(layout?.mode)) return undefined
+    return message
   } catch {
     return undefined
   }
@@ -85,50 +96,48 @@ export function browserStreamReady(value: string): { frameEncoding: BrowserStrea
 
 /**
  * Decode and paint one frame only while its originating connection remains current.
- * @param sequence Host frame sequence to acknowledge.
+ * @param identity Host frame and layout identity to acknowledge.
  * @param decode Deferred frame decoder.
- * @param isCurrent Whether the originating socket generation is still active.
+ * @param isConnectionCurrent Whether the originating socket generation is still active.
+ * @param isFrameCurrent Whether the frame still belongs to the committed layout.
+ * @param acceptFrame Atomically publishes the layout after a successful paint.
  * @param paint Synchronous Canvas paint operation.
  * @param dispose Decoded-frame resource disposer.
  * @param acknowledge ACK sender bound to the originating socket.
  * @returns A promise that settles after decode, optional paint, disposal, and optional ACK.
  */
 export async function paintBrowserFrameForConnection<T>(
-  sequence: number,
+  identity: BrowserFrameIdentity,
   decode: () => Promise<T>,
-  isCurrent: () => boolean,
+  isConnectionCurrent: () => boolean,
+  isFrameCurrent: () => boolean,
+  acceptFrame: () => boolean,
   paint: (decoded: T) => void,
   dispose: (decoded: T) => void,
-  acknowledge: (sequence: number) => void,
+  acknowledge: (identity: BrowserFrameIdentity) => void,
 ): Promise<void> {
   let disposeDecoded: (() => void) | undefined
   try {
     const decoded = await decode()
     disposeDecoded = () => { dispose(decoded) }
-    if (!isCurrent()) return
+    if (!isConnectionCurrent() || !isFrameCurrent()) return
     paint(decoded)
+    acceptFrame()
   } finally {
     disposeDecoded?.()
-    if (isCurrent()) acknowledge(sequence)
+    if (isConnectionCurrent() && isFrameCurrent()) acknowledge(identity)
   }
 }
 
 export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
-  if (value.byteLength < BROWSER_STREAM_HEADER_BYTES) throw new Error('Browser frame header is truncated')
-  const view = new DataView(value)
-  return {
-    version: view.getUint8(0),
-    sequence: view.getUint32(1),
-    sentAt: view.getFloat64(5),
-    width: view.getUint16(13),
-    height: view.getUint16(15),
-    jpeg: new Uint8Array(value, BROWSER_STREAM_HEADER_BYTES),
-  }
+  return decodeBrowserStreamFrameV2(value)
 }
 
-export function browserBinaryFrameSequence(value: ArrayBuffer): number | undefined {
-  if (value.byteLength < 5) return undefined
-  return new DataView(value).getUint32(1)
+export function browserBinaryFrameIdentity(value: ArrayBuffer): BrowserFrameIdentity | undefined {
+  if (value.byteLength < 21 || new DataView(value).getUint8(0) !== MANAGED_BROWSER_PROTOCOL_VERSION) return undefined
+  const view = new DataView(value)
+  const identity = { sequence: view.getUint32(1), revision: view.getUint32(13), mediaGeneration: view.getUint32(17) }
+  return positiveInteger(identity.sequence) && positiveInteger(identity.revision) && positiveInteger(identity.mediaGeneration) ? identity : undefined
 }
 
 function looksLikeJsonText(value: string): boolean {
@@ -151,7 +160,7 @@ export function browserStreamFrameBuffer(data: unknown): ArrayBuffer | undefined
   }
   if (typeof data !== 'string' || looksLikeJsonText(data) || data.length < BROWSER_STREAM_HEADER_BYTES) return undefined
   const buffer = latin1Buffer(data)
-  return new Uint8Array(buffer)[0] === 1 ? buffer : undefined
+  return new Uint8Array(buffer)[0] === MANAGED_BROWSER_PROTOCOL_VERSION ? buffer : undefined
 }
 
 export function browserStreamTextMessage(data: unknown): string | undefined {
@@ -255,48 +264,19 @@ function browserOutlineNode(value: unknown): value is BrowserOutlineNode {
 }
 
 export function decodeBrowserJpegJson(value: string): DecodedBrowserFrame | undefined {
-  try {
-    const message = JSON.parse(value) as {
-      type?: unknown
-      version?: unknown
-      sequence?: unknown
-      sentAt?: unknown
-      width?: unknown
-      height?: unknown
-      jpeg?: unknown
-    }
-    if (message.type !== 'frame' || message.version !== 1 || typeof message.jpeg !== 'string') return undefined
-    if (typeof message.sequence !== 'number' || typeof message.sentAt !== 'number') return undefined
-    if (typeof message.width !== 'number' || typeof message.height !== 'number') return undefined
-    return {
-      version: 1,
-      sequence: message.sequence,
-      sentAt: message.sentAt,
-      width: message.width,
-      height: message.height,
-      jpeg: decodeBase64Bytes(message.jpeg),
-    }
-  } catch {
-    return undefined
-  }
+  return decodeBrowserStreamJsonFrameV2(value)
 }
 
-export function browserJsonFrameSequence(value: string): number | undefined {
+export function browserJsonFrameIdentity(value: string): BrowserFrameIdentity | undefined {
   try {
-    const message = JSON.parse(value) as { type?: unknown; sequence?: unknown }
-    return message.type === 'frame' && typeof message.sequence === 'number' && Number.isSafeInteger(message.sequence) && message.sequence > 0
-      ? message.sequence
+    const message = JSON.parse(value) as { type?: unknown; version?: unknown; sequence?: unknown; revision?: unknown; mediaGeneration?: unknown }
+    return message.type === 'frame' && message.version === 2 && positiveInteger(message.sequence)
+      && positiveInteger(message.revision) && positiveInteger(message.mediaGeneration)
+      ? { sequence: message.sequence, revision: message.revision, mediaGeneration: message.mediaGeneration }
       : undefined
   } catch {
     return undefined
   }
-}
-
-function decodeBase64Bytes(value: string): Uint8Array {
-  const bin = atob(value)
-  const bytes = new Uint8Array(bin.length)
-  for (let index = 0; index < bin.length; index += 1) bytes[index] = bin.charCodeAt(index)
-  return bytes
 }
 
 export function browserStreamSignalsReady(value: unknown): boolean {
@@ -305,12 +285,27 @@ export function browserStreamSignalsReady(value: unknown): boolean {
   try {
     const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
     if (message.type === 'ready') return browserStreamReady(value) !== undefined
-    if (message.type === 'frame') return true
+    if (message.type === 'frame') return message.version === 2
     if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false
     return (message.projection as { status?: unknown }).status === 'ready'
   } catch {
     return false
   }
+}
+
+function validSize(value: unknown): value is BrowserStreamSize {
+  if (typeof value !== 'object' || value === null) return false
+  const size = value as { width?: unknown; height?: unknown }
+  return typeof size.width === 'number' && Number.isFinite(size.width) && size.width > 0
+    && typeof size.height === 'number' && Number.isFinite(size.height) && size.height > 0
+}
+
+function finiteNonnegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function positiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 export function browserWebSocketUrl(path: string, locationLike: Pick<Location, 'protocol' | 'host'> = window.location): string {

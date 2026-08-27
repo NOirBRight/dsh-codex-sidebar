@@ -1,51 +1,96 @@
 import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameSequence, browserJsonFrameSequence, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
-import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
+import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
+import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
 describe('managed Browser stream client', () => {
   it('offers both frame carriers and frame ACK flow control in hello', () => {
-    expect(browserStreamHello()).toEqual({
+    expect(browserStreamHello(true)).toEqual({
       type: 'hello',
-      version: 1,
-      frameEncodings: ['binary-v1', 'json-base64-v1'],
-      flowControl: ['frame-ack-v1'],
+      version: 2,
+      frameEncodings: ['binary-v2', 'json-base64-v2'],
+      flowControl: ['frame-ack-v2'],
+      media: { webrtcVideo: true },
     })
-    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1, frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' }))).toEqual({
-      frameEncoding: 'binary-v1',
-      flowControl: 'frame-ack-v1',
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { webrtcVideo: true }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
+      type: 'ready',
+      version: 2,
+      frameEncoding: 'binary-v2',
+      flowControl: 'frame-ack-v2',
+      ownerId: 'owner-1',
+      media: { webrtcVideo: true },
+      fallback: { maxRawBytes: 1024 },
+      layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })
     expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1 }))).toBeUndefined()
   })
 
+  it('keeps laptop geometry authoritative while delayed and mismatched JPEG metadata alternates', () => {
+    const layout = new ManagedBrowserLayoutClient({
+      mode: 'laptop', settleMs: 120, hysteresisPx: 8,
+      viewportLimits: { min: { width: 320, height: 240 }, max: { width: 1920, height: 1440 } },
+    })
+    layout.observeContainer({ width: 640, height: 600 }, 0)
+    expect(layout.selectMode('laptop', 0)).toEqual({ proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    const commit = decodeBrowserLayoutCommit(JSON.stringify({ type: 'layout-commit', layout: { revision: 4, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 9 } }))
+    expect(commit).toBeDefined()
+    expect(layout.acceptCommit(commit!.layout)).toBe(true)
+
+    expect(layout.acceptFrame({ revision: 3, mediaGeneration: 8, viewport: { width: 640, height: 600 }, encodedSize: { width: 960, height: 900 }, deviceSize: { width: 1280, height: 800 } })).toEqual({ accepted: false, switched: false })
+    expect(layout.acceptFrame({ revision: 4, mediaGeneration: 9, viewport: { width: 1280, height: 800 }, encodedSize: { width: 1920, height: 1200 }, deviceSize: { width: 960, height: 900 } })).toEqual({ accepted: true, switched: true })
+    expect(layout.surfaceSize()).toEqual({ width: 640, height: 400 })
+    expect(layout.mapPoint({ x: 320, y: 200 }, { x: 0, y: 0, width: 640, height: 400 })).toEqual({ revision: 4, x: 640, y: 400 })
+  })
+
   it('ACKs only after Canvas paint settles and also ACKs a decode failure', async () => {
     const events: string[] = []
+    const identity = { sequence: 7, revision: 4, mediaGeneration: 9 }
     let finish: ((value: string) => void) | undefined
     const painting = paintBrowserFrameForConnection(
-      7,
+      identity,
       () => new Promise<string>((resolve) => { finish = resolve }),
+      () => true,
+      () => true,
       () => true,
       (value) => { events.push('paint:' + value) },
       (value) => { events.push('dispose:' + value) },
-      (sequence) => { events.push('ack:' + sequence) },
+      (frame) => { events.push('ack:' + frame.sequence + ':' + frame.revision + ':' + frame.mediaGeneration) },
     )
     expect(events).toEqual([])
     finish?.('bitmap')
     await painting
-    expect(events).toEqual(['paint:bitmap', 'dispose:bitmap', 'ack:7'])
+    expect(events).toEqual(['paint:bitmap', 'dispose:bitmap', 'ack:7:4:9'])
 
     await expect(paintBrowserFrameForConnection(
-      8,
+      { ...identity, sequence: 8 },
       async () => { throw new Error('bad jpeg') },
+      () => true,
+      () => true,
       () => true,
       () => { throw new Error('must not paint') },
       () => { throw new Error('must not dispose') },
-      (sequence) => { events.push('ack:' + sequence) },
+      (frame) => { events.push('ack:' + frame.sequence) },
     )).rejects.toThrow('bad jpeg')
     expect(events.at(-1)).toBe('ack:8')
-    const truncated = new ArrayBuffer(5)
-    new DataView(truncated).setUint32(1, 9)
-    expect(browserBinaryFrameSequence(truncated)).toBe(9)
-    expect(browserJsonFrameSequence('{"type":"frame","sequence":10,"jpeg":"bad"}')).toBe(10)
+
+    let accepted = false
+    await expect(paintBrowserFrameForConnection(
+      { ...identity, sequence: 9 },
+      async () => 'bitmap',
+      () => true,
+      () => true,
+      () => { accepted = true; return true },
+      () => { throw new Error('paint failed') },
+      () => {},
+      (frame) => { events.push('ack:' + frame.sequence) },
+    )).rejects.toThrow('paint failed')
+    expect(accepted).toBe(false)
+    expect(events.at(-1)).toBe('ack:9')
+    const truncated = new ArrayBuffer(21)
+    const view = new DataView(truncated)
+    view.setUint8(0, 2); view.setUint32(1, 9); view.setUint32(13, 4); view.setUint32(17, 5)
+    expect(browserBinaryFrameIdentity(truncated)).toEqual({ sequence: 9, revision: 4, mediaGeneration: 5 })
+    expect(browserJsonFrameIdentity('{"type":"frame","version":2,"sequence":10,"revision":4,"mediaGeneration":5,"jpeg":"bad"}')).toEqual({ sequence: 10, revision: 4, mediaGeneration: 5 })
   })
 
   it('drops a delayed decode after reconnect without painting or ACKing the new socket', async () => {
@@ -56,14 +101,16 @@ describe('managed Browser stream client', () => {
     let activeConnection = 'old'
     let finishDecode: ((value: string) => void) | undefined
     const work = paintBrowserFrameForConnection(
-      11,
+      { sequence: 11, revision: 4, mediaGeneration: 9 },
       () => new Promise<string>((resolve) => { finishDecode = resolve }),
       () => activeConnection === 'old',
+      () => true,
+      () => true,
       (value) => { paints.push(value) },
       (value) => { disposals.push(value) },
-      (sequence) => {
-        if (activeConnection === 'old') oldAcks.push(sequence)
-        else newAcks.push(sequence)
+      (identity) => {
+        if (activeConnection === 'old') oldAcks.push(identity.sequence)
+        else newAcks.push(identity.sequence)
       },
     )
 
@@ -104,21 +151,25 @@ describe('managed Browser stream client', () => {
     expect(browserStreamShouldRun(true, false)).toBe(false)
   })
   it('decodes the host binary frame and derives same-origin ws URLs', () => {
-    const encoded = encodeBrowserStreamFrame({
-      version: 1,
+    const encoded = encodeBrowserStreamFrameV2({
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 1280, height: 800 },
+      encodedSize: { width: 1920, height: 1200 },
       jpeg: new Uint8Array([1, 2, 3]),
     })
     const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer
     expect(decodeBrowserFrame(buffer)).toEqual({
-      version: 1,
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 1280, height: 800 },
+      encodedSize: { width: 1920, height: 1200 },
       jpeg: new Uint8Array([1, 2, 3]),
     })
     expect(browserWebSocketUrl('/cast', { protocol: 'http:', host: '127.0.0.1:3082' } as Location)).toBe('ws://127.0.0.1:3082/cast')
@@ -128,42 +179,49 @@ describe('managed Browser stream client', () => {
 
 
   it('removes the Connecting overlay when a frame or ready projection arrives', () => {
-    expect(browserStreamSignalsReady(new ArrayBuffer(17))).toBe(true)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 1, frameEncoding: 'binary-v1', flowControl: 'frame-ack-v1' }))).toBe(true)
+    expect(browserStreamSignalsReady(new ArrayBuffer(29))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(false)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
     expect(browserStreamSignalsReady('not json')).toBe(false)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'frame', version: 1, jpeg: 'abc' }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'frame', version: 2, jpeg: 'abc' }))).toBe(true)
   })
 
   it('decodes JSON JPEG frames that DSH Mobile delivers as strings', () => {
-    const encoded = encodeBrowserStreamJsonFrame({
-      version: 1,
+    const frame: BrowserStreamFrameV2 = {
+      version: 2,
       sequence: 9,
       sentAt: 12,
-      width: 720,
-      height: 860,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 720, height: 860 },
+      encodedSize: { width: 1080, height: 1290 },
       jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
-    })
+    }
+    const encoded = encodeBrowserStreamJsonFrameV2(frame)
     expect(browserStreamTextMessage(encoded)).toBe(encoded)
     expect(decodeBrowserJpegJson(encoded)).toEqual({
-      version: 1,
+      version: 2,
       sequence: 9,
       sentAt: 12,
-      width: 720,
-      height: 860,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 720, height: 860 },
+      encodedSize: { width: 1080, height: 1290 },
       jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
     })
   })
 
   it('recovers JPEG frames that an APP WebView delivers as binary strings', () => {
-    const encoded = encodeBrowserStreamFrame({
-      version: 1,
+    const encoded = encodeBrowserStreamFrameV2({
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 640, height: 480 },
+      encodedSize: { width: 960, height: 720 },
       jpeg: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
     })
     const binaryString = Array.from(encoded, (byte) => String.fromCharCode(byte)).join('')
