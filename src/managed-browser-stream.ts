@@ -42,6 +42,8 @@ export const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4
 const HIGH_DENSITY_SCALE = 1.5
 export const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES = 96 * 1024
 export const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES = 480 * 1024
+export const MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES = 20
+export const MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES = 4
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
 export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
@@ -53,6 +55,7 @@ export type BrowserStreamTransportProfile = {
   maxScale: number
   frameIntervalMs: number
   everyNthFrame: number
+  interactionBurstFrames: number
   maxRawBytes: number
 }
 
@@ -62,11 +65,13 @@ export type BrowserStreamProfileConfig = {
   desktopJpegFrameIntervalMs?: number | undefined
   desktopJpegMaxScale?: number | undefined
   desktopScreencastEveryNthFrame?: number | undefined
+  desktopJpegInteractionBurstFrames?: number | undefined
   mobileJpegMaxRawBytes?: number | undefined
   mobileJpegQuality?: number | undefined
   mobileJpegFrameIntervalMs?: number | undefined
   mobileJpegMaxScale?: number | undefined
   mobileScreencastEveryNthFrame?: number | undefined
+  mobileJpegInteractionBurstFrames?: number | undefined
 }
 
 export function browserStreamTransportProfile(
@@ -80,6 +85,7 @@ export function browserStreamTransportProfile(
         maxScale: jpegScale(config.mobileJpegMaxScale, 1, 'mobileJpegMaxScale'),
         frameIntervalMs: positiveStreamInteger(config.mobileJpegFrameIntervalMs, MANAGED_BROWSER_MOBILE_FRAME_INTERVAL_MS, 'mobileJpegFrameIntervalMs'),
         everyNthFrame: positiveStreamInteger(config.mobileScreencastEveryNthFrame, MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME, 'mobileScreencastEveryNthFrame'),
+        interactionBurstFrames: boundedStreamInteger(config.mobileJpegInteractionBurstFrames, MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES, 0, 600, 'mobileJpegInteractionBurstFrames'),
         maxRawBytes: rawByteBudget(config.mobileJpegMaxRawBytes, MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES),
       }
     : {
@@ -88,8 +94,44 @@ export function browserStreamTransportProfile(
         maxScale: jpegScale(config.desktopJpegMaxScale, HIGH_DENSITY_SCALE, 'desktopJpegMaxScale'),
         frameIntervalMs: positiveStreamInteger(config.desktopJpegFrameIntervalMs, MANAGED_BROWSER_STREAM_FRAME_INTERVAL_MS, 'desktopJpegFrameIntervalMs'),
         everyNthFrame: positiveStreamInteger(config.desktopScreencastEveryNthFrame, MANAGED_BROWSER_STREAM_EVERY_NTH_FRAME, 'desktopScreencastEveryNthFrame'),
+        interactionBurstFrames: boundedStreamInteger(config.desktopJpegInteractionBurstFrames, MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES, 0, 600, 'desktopJpegInteractionBurstFrames'),
         maxRawBytes: rawByteBudget(config.desktopJpegMaxRawBytes, MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES),
       }
+}
+
+/** Calculates the next capture delay without allowing priority requests to bypass the route FPS ceiling. */
+export function browserStreamCaptureDelay(
+  lastCapturedAt: number | undefined,
+  now: number,
+  frameIntervalMs: number,
+): number {
+  if (lastCapturedAt === undefined) return 0
+  return Math.max(0, frameIntervalMs - (now - lastCapturedAt))
+}
+
+/** Bounds passive screencast-driven fallback frames after explicit Browser activity. */
+export class BrowserFallbackActivityBudget {
+  #limit: number
+  #remaining = 0
+
+  constructor(limit: number) {
+    this.#limit = boundedStreamInteger(limit, 0, 0, 600, 'jpegInteractionBurstFrames')
+  }
+
+  activate(): void {
+    this.#remaining = this.#limit
+  }
+
+  takePassive(directVideo = false): boolean {
+    if (directVideo) return true
+    if (this.#remaining === 0) return false
+    this.#remaining -= 1
+    return true
+  }
+
+  remaining(): number {
+    return this.#remaining
+  }
 }
 export const MANAGED_BROWSER_STREAM_MAX_WIDTH = 2560
 export const MANAGED_BROWSER_STREAM_MAX_HEIGHT = 2048
@@ -125,10 +167,12 @@ export type ManagedBrowserStreamOptions = {
   desktopJpegFrameIntervalMs?: number
   desktopJpegMaxScale?: number
   desktopScreencastEveryNthFrame?: number
+  desktopJpegInteractionBurstFrames?: number
   mobileJpegQuality?: number
   mobileJpegFrameIntervalMs?: number
   mobileJpegMaxScale?: number
   mobileScreencastEveryNthFrame?: number
+  mobileJpegInteractionBurstFrames?: number
   preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
   stunUrls?: string[]
   webrtcNegotiationTimeoutMs?: number
@@ -216,11 +260,13 @@ export class ManagedBrowserStream {
       desktopJpegFrameIntervalMs: opts.desktopJpegFrameIntervalMs,
       desktopJpegMaxScale: opts.desktopJpegMaxScale,
       desktopScreencastEveryNthFrame: opts.desktopScreencastEveryNthFrame,
+      desktopJpegInteractionBurstFrames: opts.desktopJpegInteractionBurstFrames,
       mobileJpegMaxRawBytes: opts.mobileMaxRawBytes,
       mobileJpegQuality: opts.mobileJpegQuality,
       mobileJpegFrameIntervalMs: opts.mobileJpegFrameIntervalMs,
       mobileJpegMaxScale: opts.mobileJpegMaxScale,
       mobileScreencastEveryNthFrame: opts.mobileScreencastEveryNthFrame,
+      mobileJpegInteractionBurstFrames: opts.mobileJpegInteractionBurstFrames,
     }
     this.#profiles = {
       desktop: browserStreamTransportProfile('desktop', profileConfig),
@@ -323,12 +369,12 @@ export class ManagedBrowserStream {
     this.#sockets.add(socket)
     this.#runtime.touch(tab)
     let sequence = 0
-    let lastFrameAt = 0
+    let lastFrameAt: number | undefined
     let lastProjection = ''
     let lastLayout = ''
     let captureInFlight = false
     let unacked: { sequence: number; revision: number; mediaGeneration: number } | undefined
-    let dirty: { force: boolean } | undefined
+    let dirty: { kind: 'activity' | 'passive' } | undefined
     let frameTimer: ReturnType<typeof setTimeout> | undefined
     let sourceAttached = false
     let handshaken = false
@@ -344,16 +390,18 @@ export class ManagedBrowserStream {
     let mediaIdleSuspended = false
     let mediaTransition = Promise.resolve()
     let noteMediaActivity = (): void => {}
+    const fallbackActivity = new BrowserFallbackActivityBudget(profile.interactionBurstFrames)
     const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
     const releaseLease = this.#runtime.acquire(tab)
-    const sendProjection = (): void => {
-      if (socket.readyState !== WebSocket.OPEN) return
+    const sendProjection = (): boolean => {
+      if (socket.readyState !== WebSocket.OPEN) return false
       const projection = this.#runtime.projection(tab)
-      if (projection === undefined) return
+      if (projection === undefined) return false
       const signature = projection.documentId + ':' + projection.status + ':' + projection.url + ':' + projection.title
-      if (signature === lastProjection) return
+      if (signature === lastProjection) return false
       lastProjection = signature
       socket.send(JSON.stringify({ type: 'state', projection }))
+      return true
     }
     const sendLayout = (layout: BrowserLayout): void => {
       const signature = layout.revision + ':' + layout.mediaGeneration
@@ -397,7 +445,8 @@ export class ManagedBrowserStream {
       const activeFrameIntervalMs = mediaAttempt?.connected === true
         ? Math.ceil(1000 / this.#directVideoFrameRate)
         : profile.frameIntervalMs
-      const delay = dirty.force ? 0 : activeFrameIntervalMs - (this.#now() - lastFrameAt)
+      const directVideo = mediaAttempt?.connected === true
+      const delay = browserStreamCaptureDelay(lastFrameAt, this.#now(), activeFrameIntervalMs)
       if (delay > 0) {
         armFrameTimer(delay, pump)
         return
@@ -409,6 +458,10 @@ export class ManagedBrowserStream {
       }
       if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
         armFrameTimer(activeFrameIntervalMs, pump)
+        return
+      }
+      if (dirty.kind === 'passive' && !fallbackActivity.takePassive(directVideo)) {
+        dirty = undefined
         return
       }
       dirty = undefined
@@ -448,7 +501,7 @@ export class ManagedBrowserStream {
         }
         if (attempt?.connected === true && sameMediaLayout(attempt.layout, capturedLayout)) return
         if (!sendFrame(capture, capturedLayout)) {
-          dirty = { force: true }
+          dirty = { kind: 'activity' }
         }
       }).finally(() => {
         captureInFlight = false
@@ -457,9 +510,10 @@ export class ManagedBrowserStream {
       })
       this.#track(task)
     }
-    const requestFrame = (force = false): void => {
+    const requestFrame = (kind: 'activity' | 'passive'): void => {
       if (detached || socket.readyState !== WebSocket.OPEN) return
-      dirty = { force: force || dirty?.force === true }
+      if (kind === 'activity') fallbackActivity.activate()
+      dirty = { kind: kind === 'activity' || dirty?.kind === 'activity' ? 'activity' : 'passive' }
       pump()
     }
     const clearMediaTimer = (attempt: BrowserMediaAttempt, field: 'negotiationTimer' | 'idleTimer'): void => {
@@ -489,7 +543,7 @@ export class ManagedBrowserStream {
       await releaseMediaAttempt(attempt)
       if (detached) return
       sendMediaRoute('jpeg-fallback', 'degraded', reason)
-      requestFrame(true)
+      requestFrame('activity')
     }
     const handleMediaSignal = (attempt: BrowserMediaAttempt, message: BrowserMediaSignal): void => {
       if (mediaAttempt !== attempt || detached || message.ownerId !== ownerId || message.generation !== attempt.layout.mediaGeneration) return
@@ -511,7 +565,7 @@ export class ManagedBrowserStream {
             this.#unackedCount -= 1
           }
           sendMediaRoute('webrtc-direct', 'active')
-          requestFrame(true)
+          requestFrame('activity')
         } else if (signal.state === 'disconnected' || signal.state === 'failed' || signal.state === 'closed') {
           this.#track(failMediaAttempt(attempt, 'peer-' + signal.state))
         }
@@ -524,7 +578,7 @@ export class ManagedBrowserStream {
       if (this.#peerCount >= this.#maxMediaPeers) {
         lastMediaFailureAt = this.#now()
         sendMediaRoute('jpeg-fallback', 'degraded', 'local-capacity')
-        requestFrame(true)
+        requestFrame('activity')
         return
       }
       let attempt: BrowserMediaAttempt
@@ -601,15 +655,15 @@ export class ManagedBrowserStream {
       }
       sendLayout(layout)
       replaceMediaAttempt(layout)
-      requestFrame(true)
+      requestFrame('activity')
     }
     const onFrame = (value: unknown): void => {
       const payload = value as ScreencastPayload
-      sendProjection()
+      const projectionChanged = sendProjection()
       if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
       this.#runtime.touch(tab)
       if (typeof payload.data === 'string') noteMediaActivity()
-      if (typeof payload.data === 'string') requestFrame()
+      if (typeof payload.data === 'string') requestFrame(projectionChanged ? 'activity' : 'passive')
     }
     const detach = async (): Promise<void> => {
       if (detached) return
@@ -675,7 +729,7 @@ export class ManagedBrowserStream {
         })
         if (detached) return
         // A settled page may not emit a screencast frame until it repaints.
-        requestFrame(true)
+        requestFrame('activity')
       } catch (error) {
         if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
       }
@@ -782,7 +836,7 @@ export class ManagedBrowserStream {
     tab: ManagedTabKey,
     cdp: ManagedCdpSession,
     message: Exclude<ReturnType<typeof decodeBrowserClientMessage>, undefined | { type: 'hello' } | { type: 'frame-ack' }>,
-    requestFrame: (force?: boolean) => void,
+    requestFrame: (kind: 'activity' | 'passive') => void,
     commitLayout: (layout: BrowserLayout) => void,
     currentLayout: () => BrowserLayout | undefined,
     noteMediaActivity: () => void,
@@ -819,7 +873,7 @@ export class ManagedBrowserStream {
     this.#runtime.touch(tab)
     await dispatchBrowserInput(cdp, message.input)
     if (message.input.type === 'wheel') await waitForBrowserPaint(cdp)
-    requestFrame(message.input.type === 'tap' || message.input.type === 'up' || message.input.type === 'keyUp' || message.input.type === 'text')
+    requestFrame('activity')
     if (message.input.type === 'wheel' && message.input.selector !== undefined) {
       const tracked = await this.#runtime.trackRect(tab, message.input.selector)
       if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {

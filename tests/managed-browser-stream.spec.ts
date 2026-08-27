@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  BrowserFallbackActivityBudget,
+  browserStreamCaptureDelay,
   browserStreamCaptureScale,
   browserStreamRequestAllowed,
   browserStreamTransportProfile,
@@ -167,6 +169,7 @@ describe('managed browser stream protocol', () => {
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(1) })
       client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
+      now += 250
       client.send(Buffer.from(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 120, y: 240 } })))
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(2) })
       client.send(JSON.stringify({ type: 'frame-ack', sequence: 2, revision: 1, mediaGeneration: 1 }))
@@ -387,27 +390,29 @@ describe('managed browser stream protocol', () => {
   })
 
   it('uses a low-bandwidth profile for Origin-less Mobile tunnel sockets', () => {
-    expect(browserStreamTransportProfile(undefined)).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4 })
-    expect(browserStreamTransportProfile('http://127.0.0.1:3080')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2 })
+    expect(browserStreamTransportProfile(undefined)).toMatchObject({ quality: 65, maxScale: 1, frameIntervalMs: 250, everyNthFrame: 4, interactionBurstFrames: 4 })
+    expect(browserStreamTransportProfile('http://127.0.0.1:3080')).toMatchObject({ quality: 80, maxScale: 1.5, frameIntervalMs: 100, everyNthFrame: 2, interactionBurstFrames: 20 })
     expect(browserStreamTransportProfile(undefined, {
       mobileJpegQuality: 52,
       mobileJpegFrameIntervalMs: 400,
       mobileJpegMaxScale: 0.75,
       mobileScreencastEveryNthFrame: 6,
+      mobileJpegInteractionBurstFrames: 3,
       mobileJpegMaxRawBytes: 72 * 1024,
     })).toEqual({
       frameEncoding: 'json-base64-v2', quality: 52, frameIntervalMs: 400,
-      maxScale: 0.75, everyNthFrame: 6, maxRawBytes: 72 * 1024,
+      maxScale: 0.75, everyNthFrame: 6, interactionBurstFrames: 3, maxRawBytes: 72 * 1024,
     })
     expect(browserStreamTransportProfile('http://127.0.0.1:3080', {
       desktopJpegQuality: 74,
       desktopJpegFrameIntervalMs: 125,
       desktopJpegMaxScale: 1.25,
       desktopScreencastEveryNthFrame: 3,
+      desktopJpegInteractionBurstFrames: 12,
       desktopJpegMaxRawBytes: 320 * 1024,
     })).toEqual({
       frameEncoding: 'binary-v2', quality: 74, frameIntervalMs: 125,
-      maxScale: 1.25, everyNthFrame: 3, maxRawBytes: 320 * 1024,
+      maxScale: 1.25, everyNthFrame: 3, interactionBurstFrames: 12, maxRawBytes: 320 * 1024,
     })
     expect(browserStreamCaptureScale(720, 860, 1)).toBe(1)
   })
@@ -417,6 +422,61 @@ describe('managed browser stream protocol', () => {
     expect(() => browserStreamTransportProfile(undefined, { mobileJpegFrameIntervalMs: 0 })).toThrow('mobileJpegFrameIntervalMs')
     expect(() => browserStreamTransportProfile(undefined, { mobileJpegMaxScale: Number.NaN })).toThrow('mobileJpegMaxScale')
     expect(() => browserStreamTransportProfile(undefined, { mobileScreencastEveryNthFrame: 0 })).toThrow('mobileScreencastEveryNthFrame')
+    expect(() => browserStreamTransportProfile(undefined, { mobileJpegInteractionBurstFrames: -1 })).toThrow('mobileJpegInteractionBurstFrames')
+    expect(() => browserStreamTransportProfile('https://host.test', { desktopJpegInteractionBurstFrames: 601 })).toThrow('desktopJpegInteractionBurstFrames')
+  })
+
+  it('keeps twenty forced demands behind the configured hard frame interval with fake time', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(10_000)
+      let capturedAt: number | undefined
+      let unacked = false
+      let pending = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const captures: number[] = []
+      const pump = (): void => {
+        if (unacked || !pending || timer !== undefined) return
+        const delay = browserStreamCaptureDelay(capturedAt, Date.now(), 100)
+        timer = setTimeout(() => {
+          timer = undefined
+          pending = false
+          unacked = true
+          capturedAt = Date.now()
+          captures.push(capturedAt)
+        }, delay)
+      }
+      const demand = (): void => { pending = true; pump() }
+      const acknowledge = (): void => { unacked = false; pump() }
+
+      demand()
+      vi.advanceTimersByTime(0)
+      for (let index = 0; index < 20; index += 1) {
+        acknowledge()
+        demand()
+        vi.advanceTimersByTime(99)
+        expect(captures).toHaveLength(index + 1)
+        vi.advanceTimersByTime(1)
+      }
+      expect(captures).toHaveLength(21)
+      expect(captures.slice(1).every((value, index) => value - captures[index]! >= 100)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds passive animation frames until a new interaction replenishes the budget', () => {
+    const budget = new BrowserFallbackActivityBudget(3)
+    budget.activate()
+    expect(Array.from({ length: 20 }, () => budget.takePassive())).toEqual([
+      true, true, true,
+      ...Array.from({ length: 17 }, () => false),
+    ])
+    budget.activate()
+    expect(budget.takePassive()).toBe(true)
+    expect(budget.remaining()).toBe(2)
+    expect(budget.takePassive(true)).toBe(true)
+    expect(budget.remaining()).toBe(2)
   })
 
   it('uses a bounded high-density capture scale for visible frames', () => {

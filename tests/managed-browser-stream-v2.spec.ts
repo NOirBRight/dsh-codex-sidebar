@@ -12,6 +12,77 @@ describe('managed Browser Host protocol v2', () => {
     expect(tunnelPlaintextBytes).toBeLessThan(200 * 1024)
   })
 
+  it('hard-limits twenty acknowledged interactions and bounds later passive animation', async () => {
+    const captureTimes: number[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method) => {
+      if (method === 'Page.captureScreenshot') {
+        captureTimes.push(Date.now())
+        return { data: Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64') }
+      }
+      return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    }
+    const layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
+    const runtime = {
+      target: () => ({ cdp, layout }), keyOf: () => 'animation:tab', touch: () => {}, acquire: () => () => {},
+      layout: () => layout,
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      outline: async () => ({ documentId: 'd1', nodes: [] }), trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+    }
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never,
+      mobileJpegFrameIntervalMs: 10,
+      mobileJpegInteractionBurstFrames: 2,
+      preferredMediaRoute: 'jpeg-only',
+    })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'animation', tabId: 'tab' }).path)
+    const frames: number[] = []
+    client.on('message', (data) => {
+      const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string; sequence?: number; revision?: number; mediaGeneration?: number }
+      if (message.type !== 'frame' || message.sequence === undefined || message.revision === undefined || message.mediaGeneration === undefined) return
+      frames.push(message.sequence)
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: message.sequence, revision: message.revision, mediaGeneration: message.mediaGeneration }))
+    })
+    let animation: ReturnType<typeof setInterval> | undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(frames).toEqual([1]) })
+      animation = setInterval(() => { cdp.emit('Page.screencastFrame', { data: 'animation', sessionId: 1 }) }, 1)
+      await vi.waitFor(() => { expect(frames).toHaveLength(3) })
+      await new Promise((resolve) => { setTimeout(resolve, 60) })
+      expect(frames).toHaveLength(3)
+
+      clearInterval(animation)
+      animation = undefined
+      for (let index = 0; index < 20; index += 1) {
+        client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 10, y: 10 } }))
+        await vi.waitFor(() => { expect(frames).toHaveLength(4 + index) })
+      }
+      animation = setInterval(() => { cdp.emit('Page.screencastFrame', { data: 'animation', sessionId: 2 }) }, 1)
+      await vi.waitFor(() => { expect(frames).toHaveLength(25) })
+      await new Promise((resolve) => { setTimeout(resolve, 60) })
+      expect(frames).toHaveLength(25)
+      expect(captureTimes.slice(1).every((value, index) => value - captureTimes[index]! >= 8)).toBe(true)
+    } finally {
+      if (animation !== undefined) clearInterval(animation)
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
   it('keeps screencast metadata diagnostic and gates input and ACK by committed layout', async () => {
     let now = 1_000
     let layout: BrowserLayout = { revision: 4, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 3 }
@@ -73,6 +144,7 @@ describe('managed Browser Host protocol v2', () => {
       client.send(JSON.stringify({ type: 'input', revision: 4, input: { type: 'tap', x: 20, y: 30 } }))
       await vi.waitFor(() => { expect(inputs).toHaveLength(2) })
 
+      now += 250
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
       await vi.waitFor(() => { expect(messages.filter((message) => message.type === 'frame')).toHaveLength(2) })
       const second = messages.filter((message) => message.type === 'frame')[1] as { sequence: number; revision: number; mediaGeneration: number }

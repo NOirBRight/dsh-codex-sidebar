@@ -47,6 +47,8 @@ export type ManagedBrowserConfig = {
   desktopJpegMaxScale?: number
   /** Chromium screencast change-signal sampling interval for desktop clients. */
   desktopScreencastEveryNthFrame?: number
+  /** Maximum passive desktop fallback frames emitted after Browser activity. */
+  desktopJpegInteractionBurstFrames?: number
   /** Raw JPEG ceiling before the Mobile tunnel's nested Base64 envelopes. */
   mobileJpegMaxRawBytes?: number
   /** Initial Mobile JPEG quality from 1 to 100. */
@@ -57,6 +59,8 @@ export type ManagedBrowserConfig = {
   mobileJpegMaxScale?: number
   /** Chromium screencast change-signal sampling interval for Mobile clients. */
   mobileScreencastEveryNthFrame?: number
+  /** Maximum passive Mobile fallback frames emitted after Browser activity. */
+  mobileJpegInteractionBurstFrames?: number
   /** Preferred managed Browser media route. */
   preferredMediaRoute?: 'webrtc-preferred' | 'jpeg-only'
   /** STUN-only ICE server URLs used by managed Browser WebRTC peers. */

@@ -181,6 +181,7 @@ describe('real managed Chromium', () => {
     expect(await jpegCenterPixel(page as Page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
     client.send(JSON.stringify({ type: 'frame-ack', sequence: frame.sequence, revision: frame.revision, mediaGeneration: frame.mediaGeneration }))
+    now += 100
     client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'phone', viewport: { width: 390, height: 844 } }))
     const resized = await nextStreamFrame(client, (candidate) => candidate.viewport.width === 390 && candidate.viewport.height === 844)
     expect(jpegSize(resized.jpeg)).toEqual({ width: 585, height: 1266 })
