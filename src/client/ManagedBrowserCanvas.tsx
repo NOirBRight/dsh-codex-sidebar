@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
+import { browserPresentationObservation, writeBrowserPresentationObservation } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
 import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
@@ -117,8 +118,23 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     if (request.message !== undefined) send(socketRef.current, request.message)
   }
 
+  const publishPresentationObservation = (): void => {
+    const target = surfaceRef.current
+    const layout = layoutRef.current
+    if (target === null || layout === null) return
+    writeBrowserPresentationObservation(
+      target,
+      browserPresentationObservation(
+        layout.snapshot(),
+        mediaRouteRef.current,
+        videoPresentationRef.current?.snapshot() ?? { presenter: 'canvas' },
+      ),
+    )
+  }
+
   const publishMediaRoute = (route: BrowserMediaPresentationRoute): void => {
     mediaRouteRef.current = route
+    publishPresentationObservation()
     setMediaRoute(route)
   }
 
@@ -135,6 +151,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       surfaceRef.current.style.width = surface.width + 'px'
       surfaceRef.current.style.height = surface.height + 'px'
     }
+    publishPresentationObservation()
     setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
   }
 
@@ -262,7 +279,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       const second = secondVideoRef.current
       const canvas = canvasRef.current
       if (first === null || second === null || canvas === null) return undefined
-      const presentation = new BrowserVideoPresentationSwitch([first, second], canvas)
+      const presentation = new BrowserVideoPresentationSwitch([first, second], canvas, undefined, publishPresentationObservation)
       videoPresentationRef.current = presentation
       return presentation
     }
@@ -313,8 +330,8 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
               if (accepted) {
                 const presented = layoutRef.current?.snapshot().presented
                 if (presented !== undefined) viewportRef.current = presented.viewport
+                videoPresentation()?.showCanvas()
                 updateSurface()
-                videoPresentationRef.current?.showCanvas()
                 const activeReceiver = activeReceiverRef.current
                 activeReceiverRef.current = null
                 if (activeReceiver !== receiverRef.current) activeReceiver?.dispose()
@@ -804,6 +821,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           autoPlay
           playsInline
           hidden
+          onResize={() => { videoPresentationRef.current?.refresh() }}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <video
@@ -813,6 +831,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           autoPlay
           playsInline
           hidden
+          onResize={() => { videoPresentationRef.current?.refresh() }}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <canvas

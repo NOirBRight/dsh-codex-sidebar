@@ -167,14 +167,7 @@ export class ManagedBrowserLayoutClient {
 
   surfaceSize(): ManagedBrowserSize | undefined {
     if (this.#containerSize === undefined || this.#presented === undefined) return undefined
-    const scale = Math.min(
-      this.#containerSize.width / this.#presented.viewport.width,
-      this.#containerSize.height / this.#presented.viewport.height,
-    )
-    return {
-      width: Math.max(1, Math.round(this.#presented.viewport.width * scale)),
-      height: Math.max(1, Math.round(this.#presented.viewport.height * scale)),
-    }
+    return browserLayoutSurfaceSize(this.#containerSize, this.#presented.viewport)
   }
 
   mapPoint(point: { x: number; y: number }, surface: SurfaceBounds): { revision: number; x: number; y: number } | undefined {
@@ -207,6 +200,15 @@ export class ManagedBrowserLayoutClient {
       width: clamp(Math.round(container.width), this.#viewportLimits.min.width, this.#viewportLimits.max.width),
       height: clamp(Math.round(container.height), this.#viewportLimits.min.height, this.#viewportLimits.max.height),
     }
+  }
+}
+
+/** Fit one committed viewport into a local container without changing either input. */
+export function browserLayoutSurfaceSize(container: ManagedBrowserSize, viewport: ManagedBrowserSize): ManagedBrowserSize {
+  const scale = Math.min(container.width / viewport.width, container.height / viewport.height)
+  return {
+    width: Math.max(1, Math.round(viewport.width * scale)),
+    height: Math.max(1, Math.round(viewport.height * scale)),
   }
 }
 

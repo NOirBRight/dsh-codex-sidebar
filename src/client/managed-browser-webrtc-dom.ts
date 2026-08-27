@@ -52,6 +52,10 @@ type PresentationVideo = VideoLike & { hidden: boolean }
 type PresentationCanvas = { style: { opacity: string } }
 type BrowserVideoStage = { readonly slot: 0 | 1; readonly surface: BrowserVideoSurface }
 
+export type BrowserVideoPresentationSnapshot =
+  | { presenter: 'canvas' }
+  | { presenter: 'video'; slot: 0 | 1; intrinsicSize: PresentedVideoSize | null }
+
 /** Settle every video presentation outcome only while its media identity remains current. */
 export async function handleBrowserVideoPresentation(
   presentation: Promise<PresentedVideoSize | undefined>,
@@ -75,6 +79,7 @@ export class BrowserVideoPresentationSwitch {
   #videos: readonly [PresentationVideo, PresentationVideo]
   #canvas: PresentationCanvas
   #createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown
+  #onPresentationChange: () => void
   #active: BrowserVideoStage | undefined
   #pending: BrowserVideoStage | undefined
 
@@ -82,10 +87,12 @@ export class BrowserVideoPresentationSwitch {
     videos: readonly [PresentationVideo, PresentationVideo],
     canvas: PresentationCanvas,
     createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown = (tracks) => new MediaStream(tracks as MediaStreamTrack[]),
+    onPresentationChange: () => void = () => {},
   ) {
     this.#videos = videos
     this.#canvas = canvas
     this.#createStream = createStream
+    this.#onPresentationChange = onPresentationChange
     videos[0].hidden = true
     videos[1].hidden = true
     canvas.style.opacity = '1'
@@ -114,6 +121,7 @@ export class BrowserVideoPresentationSwitch {
       this.#videos[previous.slot].hidden = true
       previous.surface.clear()
     }
+    this.#onPresentationChange()
     return true
   }
 
@@ -136,6 +144,25 @@ export class BrowserVideoPresentationSwitch {
     return this.#pending === stage
   }
 
+  /** Return the single DOM source currently revealed to the Browser surface. */
+  snapshot(): BrowserVideoPresentationSnapshot {
+    const active = this.#active
+    if (active === undefined) return { presenter: 'canvas' }
+    const video = this.#videos[active.slot]
+    return {
+      presenter: 'video',
+      slot: active.slot,
+      intrinsicSize: video.videoWidth > 0 && video.videoHeight > 0
+        ? { width: video.videoWidth, height: video.videoHeight }
+        : null,
+    }
+  }
+
+  /** Refresh diagnostics after the active video's intrinsic dimensions change. */
+  refresh(): void {
+    this.#onPresentationChange()
+  }
+
   /** Reveal an already-painted fallback canvas before releasing the previous video. */
   showCanvas(): void {
     this.#canvas.style.opacity = '1'
@@ -145,6 +172,7 @@ export class BrowserVideoPresentationSwitch {
       this.#videos[active.slot].hidden = true
       active.surface.clear()
     }
+    this.#onPresentationChange()
   }
 
   /** Release both visible and staged video attachments. */
