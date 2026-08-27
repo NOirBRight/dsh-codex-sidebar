@@ -1,8 +1,8 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, utimes, writeFile } from 'node:fs/promises'
-import { hostname, tmpdir } from 'node:os'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import { cleanupDerivedChromiumCaches, findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime, reclaimProfileInitializationLease } from '../src/managed-browser-runtime.ts'
+import { describe, expect, it } from 'vitest'
+import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -86,6 +86,58 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
     ...opts,
   })
   return { runtime, pages, closed }
+}
+
+function cacheContext(expectClear: boolean, clearError?: Error): {
+  context: {
+    newPage(): Promise<FakePage>
+    newCDPSession(page: unknown): Promise<{ send(method: string): Promise<void>; on(): void; off(): void; detach(): Promise<void> }>
+    on(): void
+    close(): Promise<void>
+  }
+  temporaryPage: FakePage
+  managedPages: FakePage[]
+  cacheCommands: string[]
+  observation: { cacheDetached: boolean; contextClosed: boolean }
+} {
+  const temporaryPage = new FakePage()
+  const managedPages: FakePage[] = []
+  const cacheCommands: string[] = []
+  const observation = { cacheDetached: false, contextClosed: false }
+  let temporaryClaimed = false
+  return {
+    temporaryPage,
+    managedPages,
+    cacheCommands,
+    observation,
+    context: {
+      async newPage() {
+        if (expectClear && !temporaryClaimed) {
+          temporaryClaimed = true
+          return temporaryPage
+        }
+        const page = new FakePage()
+        managedPages.push(page)
+        return page
+      },
+      async newCDPSession(page) {
+        if (page === temporaryPage && expectClear) {
+          return {
+            async send(method) {
+              cacheCommands.push(method)
+              if (method === 'Network.clearBrowserCache' && clearError !== undefined) throw clearError
+            },
+            on() {},
+            off() {},
+            async detach() { observation.cacheDetached = true },
+          }
+        }
+        return { async send() {}, on() {}, off() {}, async detach() {} }
+      },
+      on() {},
+      async close() { observation.contextClosed = true },
+    },
+  }
 }
 
 describe('ManagedBrowserRuntime', () => {
@@ -261,298 +313,114 @@ describe('ManagedBrowserRuntime', () => {
     await runtime.dispose()
   })
 
-  it('removes only allowlisted derived caches over budget before launch without following symlinks', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-budget-'))
-    const outside = await mkdtemp(join(tmpdir(), 'dcs-cache-outside-'))
-    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
-    await mkdir(join(profileDir, 'Default', 'Code Cache'), { recursive: true })
+  it('clears Browser cache once through CDP only after an over-budget context launches', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-clear-'))
+    const cacheDir = join(profileDir, 'Default', 'Cache')
+    await mkdir(cacheDir, { recursive: true })
     await mkdir(join(profileDir, 'Default', 'Local Storage'), { recursive: true })
-    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
-    await writeFile(join(profileDir, 'Default', 'Code Cache', 'code'), 'abcdefgh')
-    await writeFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'storage')
+    await mkdir(join(profileDir, 'Default', 'IndexedDB'), { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '12345678')
     await writeFile(join(profileDir, 'Default', 'Cookies'), 'cookie')
-    await writeFile(join(outside, 'keep'), 'outside')
-    await symlink(outside, join(profileDir, 'GPUCache'))
-    let cacheAtLaunch = true
-    let storageAtLaunch = false
-    let cookieAtLaunch = false
-    let symlinkAtLaunch = false
+    await writeFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'storage')
+    await writeFile(join(profileDir, 'Default', 'IndexedDB', 'keep'), 'database')
+    const box = cacheContext(true)
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir,
-      cacheBudgetBytes: 10,
-      launch: async () => {
-        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
-        storageAtLaunch = await readFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'utf8').then((value) => value === 'storage', () => false)
-        cookieAtLaunch = await readFile(join(profileDir, 'Default', 'Cookies'), 'utf8').then((value) => value === 'cookie', () => false)
-        symlinkAtLaunch = await lstat(join(profileDir, 'GPUCache')).then((value) => value.isSymbolicLink(), () => false)
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
+      cacheBudgetBytes: 1,
+      launch: async () => box.context,
     })
-    await runtime.ensure({ sessionId: 'cache', tabId: 'tab' }, 'https://example.com')
-    expect(cacheAtLaunch).toBe(false)
-    expect(storageAtLaunch).toBe(true)
-    expect(cookieAtLaunch).toBe(true)
-    expect(symlinkAtLaunch).toBe(true)
-    await expect(readFile(join(outside, 'keep'), 'utf8')).resolves.toBe('outside')
+    await expect(runtime.ensure({ sessionId: 'cache-clear', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+    await expect(runtime.ensure({ sessionId: 'cache-clear', tabId: 'second' }, 'https://two.example')).resolves.toMatchObject({ status: 'ready' })
+    expect(box.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(box.observation.cacheDetached).toBe(true)
+    expect(box.temporaryPage.closed).toBe(true)
+    expect(box.managedPages).toHaveLength(2)
+    await expect(readFile(join(cacheDir, 'data'), 'utf8')).resolves.toBe('12345678')
+    await expect(readFile(join(profileDir, 'Default', 'Cookies'), 'utf8')).resolves.toBe('cookie')
+    await expect(readFile(join(profileDir, 'Default', 'Local Storage', 'keep'), 'utf8')).resolves.toBe('storage')
+    await expect(readFile(join(profileDir, 'Default', 'IndexedDB', 'keep'), 'utf8')).resolves.toBe('database')
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    expect((await readdir(join(profileDir, 'Default'))).some((name) => name.startsWith('.dcs-'))).toBe(false)
+    await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('does not clear Browser cache when the read-only estimate is within budget', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-within-budget-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-outside-'))
+    const cacheDir = join(profileDir, 'Default', 'Cache')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(join(cacheDir, 'data'), '1234')
+    await writeFile(join(outside, 'large'), '12345678')
+    await symlink(outside, join(profileDir, 'GPUCache'))
+    const box = cacheContext(false)
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 4,
+      launch: async () => box.context,
+    })
+    await runtime.ensure({ sessionId: 'cache-small', tabId: 'tab' }, 'https://example.com')
+    expect(box.cacheCommands).toEqual([])
+    expect(box.managedPages).toHaveLength(1)
+    expect(box.temporaryPage.closed).toBe(false)
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
     await runtime.dispose()
     await rm(profileDir, { recursive: true, force: true })
     await rm(outside, { recursive: true, force: true })
   })
 
-  it('does not clean or launch while another Chromium singleton is live', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-live-cache-'))
+  it('warns and keeps the launched context usable when Browser cache clear fails', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-clear-failure-'))
     await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
     await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
-    await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
-    let cacheAtLaunch = false
-    let launched = false
+    const box = cacheContext(true, new Error('CDP clear failed'))
+    const warnings: string[] = []
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir,
       cacheBudgetBytes: 1,
-      launch: async () => {
-        launched = true
-        cacheAtLaunch = await lstat(join(profileDir, 'Default', 'Cache')).then(() => true, () => false)
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
+      onWarning: (message) => { warnings.push(message) },
+      launch: async () => box.context,
     })
-    await expect(runtime.ensure({ sessionId: 'live-cache', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
-    expect(launched).toBe(false)
-    expect(cacheAtLaunch).toBe(false)
-    await expect(readFile(join(profileDir, 'Default', 'Cache', 'data'), 'utf8')).resolves.toBe('12345678')
+    await expect(runtime.ensure({ sessionId: 'cache-failure', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
+    expect(box.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(box.observation.cacheDetached).toBe(true)
+    expect(box.temporaryPage.closed).toBe(true)
+    expect(box.managedPages).toHaveLength(1)
+    expect(warnings).toEqual([expect.stringContaining('Browser cache clear failed: CDP clear failed')])
     await runtime.dispose()
+    expect(box.observation.contextClosed).toBe(true)
     await rm(profileDir, { recursive: true, force: true })
   })
 
-  it('serializes initialization and launch for concurrent runtimes sharing one profile', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-profile-lease-'))
+  it('lets Chromium choose one shared-profile winner and only that context clears cache', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-concurrent-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const winner = cacheContext(true)
+    let profileOwned = false
     let launchCalls = 0
-    let activeLaunches = 0
-    let maxActiveLaunches = 0
-    let releaseFirst: (() => void) | undefined
     const launch = async () => {
       launchCalls += 1
-      activeLaunches += 1
-      maxActiveLaunches = Math.max(maxActiveLaunches, activeLaunches)
-      if (launchCalls === 1) await new Promise<void>((resolve) => { releaseFirst = resolve })
-      activeLaunches -= 1
-      return {
-        async newPage() { return new FakePage() },
-        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-        on() {},
-        async close() {},
-      }
+      if (profileOwned) throw new Error('Chromium profile is already in use')
+      profileOwned = true
+      return winner.context
     }
-    const first = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, launch })
-    const second = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, launch })
-    const firstEnsure = first.ensure({ sessionId: 'lease', tabId: 'first' }, 'https://one.example')
-    await vi.waitFor(() => { expect(launchCalls).toBe(1) })
-    const secondEnsure = second.ensure({ sessionId: 'lease', tabId: 'second' }, 'https://two.example')
-    await new Promise((resolve) => { setTimeout(resolve, 50) })
-    const callsBeforeRelease = launchCalls
-    releaseFirst?.()
-    await Promise.all([firstEnsure, secondEnsure])
-    expect(callsBeforeRelease).toBe(1)
-    expect(maxActiveLaunches).toBe(1)
+    const first = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, cacheBudgetBytes: 1, launch })
+    const second = new ManagedBrowserRuntime({ executablePath: '/bin/true', profileDir, cacheBudgetBytes: 1, launch })
+    const results = await Promise.allSettled([
+      first.ensure({ sessionId: 'concurrent', tabId: 'first' }, 'https://one.example'),
+      second.ensure({ sessionId: 'concurrent', tabId: 'second' }, 'https://two.example'),
+    ])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(launchCalls).toBe(2)
+    expect(winner.cacheCommands).toEqual(['Network.enable', 'Network.clearBrowserCache'])
+    expect(winner.temporaryPage.closed).toBe(true)
+    expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
     await Promise.all([first.dispose(), second.dispose()])
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('revalidates singleton state after cache traversal and before deletion', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-race-'))
-    const cacheDir = join(profileDir, 'Default', 'Cache')
-    await mkdir(cacheDir, { recursive: true })
-    await writeFile(join(cacheDir, 'data'), '12345678')
-    let revalidated = 0
-    await cleanupDerivedChromiumCaches(profileDir, 1, async () => {
-      revalidated += 1
-      await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
-      return false
-    })
-    expect(revalidated).toBe(1)
-    await expect(readFile(join(cacheDir, 'data'), 'utf8')).resolves.toBe('12345678')
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('keeps a detached cache quarantine when a Chromium singleton appears before recursive deletion', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-quarantine-race-'))
-    const cacheParent = join(profileDir, 'Default')
-    const cacheDir = join(cacheParent, 'Cache')
-    await mkdir(cacheDir, { recursive: true })
-    await writeFile(join(cacheDir, 'data'), '12345678')
-    let ownershipChecks = 0
-    await cleanupDerivedChromiumCaches(profileDir, 1, async () => {
-      ownershipChecks += 1
-      if (ownershipChecks === 1) return true
-      await mkdir(cacheDir)
-      await writeFile(join(cacheDir, 'active'), 'current Chromium cache')
-      await symlink(hostname() + '-' + process.pid, join(profileDir, 'SingletonLock'))
-      return false
-    })
-    const quarantines = (await readdir(cacheParent)).filter((name) => name.startsWith('.dcs-cache-quarantine-'))
-    expect(ownershipChecks).toBe(2)
-    expect(quarantines).toHaveLength(1)
-    const quarantine = quarantines[0]
-    if (quarantine === undefined) throw new Error('missing detached cache quarantine')
-    await expect(readFile(join(cacheParent, quarantine, 'data'), 'utf8')).resolves.toBe('12345678')
-    await expect(readFile(join(cacheDir, 'active'), 'utf8')).resolves.toBe('current Chromium cache')
-    await expect(readlink(join(profileDir, 'SingletonLock'))).resolves.toBe(hostname() + '-' + process.pid)
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('does not clean caches when singleton ownership cannot be proven stale', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-opaque-singleton-'))
-    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
-    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
-    await writeFile(join(profileDir, 'SingletonLock'), 'opaque owner')
-    let launched = false
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      cacheBudgetBytes: 1,
-      launch: async () => {
-        launched = true
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
-    })
-    await expect(runtime.ensure({ sessionId: 'opaque-cache', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
-    expect(launched).toBe(false)
-    await expect(readFile(join(profileDir, 'Default', 'Cache', 'data'), 'utf8')).resolves.toBe('12345678')
-    await runtime.dispose()
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('preserves a live SingletonLock that replaces stale ownership after the initial check', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-singleton-replacement-'))
-    const singletonLock = join(profileDir, 'SingletonLock')
-    await symlink(hostname() + '-2147483646', singletonLock)
-    let launched = false
-    let ownershipAfterReplacement = true
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      cleanupDerivedCaches: async (_profileDir, _budgetBytes, mayDelete) => {
-        await rm(singletonLock)
-        await symlink(hostname() + '-' + process.pid, singletonLock)
-        ownershipAfterReplacement = await mayDelete()
-      },
-      launch: async () => {
-        launched = true
-        throw new Error('must not launch')
-      },
-    })
-    await expect(runtime.ensure({ sessionId: 'singleton-race', tabId: 'tab' }, 'https://example.com')).rejects.toThrow('Chromium profile is already in use')
-    expect(ownershipAfterReplacement).toBe(false)
-    expect(launched).toBe(false)
-    await expect(readlink(singletonLock)).resolves.toBe(hostname() + '-' + process.pid)
-    await runtime.dispose()
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('warns and continues launching when derived-cache cleanup fails', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-cache-warning-'))
-    const warnings: string[] = []
-    let launched = false
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      cacheBudgetBytes: 1,
-      onWarning: (message) => { warnings.push(message) },
-      cleanupDerivedCaches: async () => { throw new Error('read-only cache') },
-      launch: async () => {
-        launched = true
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
-    })
-    try {
-      await runtime.ensure({ sessionId: 'cache-warning', tabId: 'tab' }, 'https://example.com')
-      expect(launched).toBe(true)
-      expect(warnings).toEqual([expect.stringContaining('cache cleanup failed')])
-      await runtime.dispose()
-    } finally {
-      await rm(profileDir, { recursive: true, force: true })
-    }
-  })
-
-  it('does not discard a launched context when profile lease release fails', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-lease-release-failure-'))
-    const warnings: string[] = []
-    let closed = false
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      onWarning: (message) => { warnings.push(message) },
-      launch: async () => {
-        await chmod(profileDir, 0o500)
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() { closed = true },
-        }
-      },
-    })
-    try {
-      await expect(runtime.ensure({ sessionId: 'release', tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
-      expect(warnings.some((message) => message.includes('profile initialization lease release failed'))).toBe(true)
-    } finally {
-      await chmod(profileDir, 0o700)
-      await runtime.dispose()
-      await rm(profileDir, { recursive: true, force: true })
-    }
-    expect(closed).toBe(true)
-  })
-
-  it.each(['orphan', 'corrupt', 'dead-owner'] as const)('recovers an expired %s profile initialization lease', async (kind) => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-expired-lease-'))
-    const leaseDir = join(profileDir, '.dcs-profile-initialization')
-    await mkdir(leaseDir)
-    const ownerPath = join(leaseDir, 'owner.json')
-    if (kind === 'corrupt') await writeFile(ownerPath, '{not-json')
-    if (kind === 'dead-owner') {
-      await writeFile(ownerPath, JSON.stringify({ token: 'expired', hostname: hostname(), pid: 2147483646, createdAt: Date.now() - 60_000 }))
-    }
-    const expired = new Date(Date.now() - 60_000)
-    await utimes(leaseDir, expired, expired)
-    if (kind !== 'orphan') await utimes(ownerPath, expired, expired)
-    const box = harness({ profileDir, profileLeaseTimeoutMs: 250 })
-    await expect(box.runtime.ensure({ sessionId: kind, tabId: 'tab' }, 'https://example.com')).resolves.toMatchObject({ status: 'ready' })
-    await box.runtime.dispose()
-    await rm(profileDir, { recursive: true, force: true })
-  })
-
-  it('does not reclaim a replacement lease whose directory identity changed after inspection', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-replaced-lease-'))
-    const leaseDir = join(profileDir, '.dcs-profile-initialization')
-    await mkdir(leaseDir)
-    const inspected = await lstat(leaseDir)
-    await rm(leaseDir, { recursive: true })
-    await mkdir(leaseDir)
-    await writeFile(join(leaseDir, 'owner.json'), JSON.stringify({ token: 'new', hostname: hostname(), pid: process.pid, createdAt: Date.now() }))
-    const reclaimed = await reclaimProfileInitializationLease(leaseDir, { dev: inspected.dev, ino: inspected.ino })
-    expect(reclaimed).toBe(false)
-    await expect(readFile(join(leaseDir, 'owner.json'), 'utf8')).resolves.toContain('"token":"new"')
     await rm(profileDir, { recursive: true, force: true })
   })
 
@@ -643,34 +511,6 @@ describe('ManagedBrowserRuntime', () => {
       else process.env.DSH_CODEX_BROWSER_EXECUTABLE = previousExplicit
       await rm(cacheRoot, { recursive: true, force: true })
     }
-  })
-
-  it('leaves a dead Chromium singleton for Chromium to arbitrate without unlinking it', async () => {
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-stale-chromium-'))
-    await symlink(hostname() + '-2147483646', join(profileDir, 'SingletonLock'))
-    await symlink('/tmp/dcs-stale-singleton/socket', join(profileDir, 'SingletonSocket'))
-    await symlink('stale-cookie', join(profileDir, 'SingletonCookie'))
-    let staleAtLaunch = false
-    let staleOwnerAtLaunch = ''
-    const runtime = new ManagedBrowserRuntime({
-      executablePath: '/bin/true',
-      profileDir,
-      launch: async () => {
-        staleAtLaunch = await lstat(join(profileDir, 'SingletonLock')).then(() => true, () => false)
-        staleOwnerAtLaunch = await readlink(join(profileDir, 'SingletonLock'))
-        return {
-          async newPage() { return new FakePage() },
-          async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
-          on() {},
-          async close() {},
-        }
-      },
-    })
-    await runtime.ensure({ sessionId: 'stale', tabId: 'tab' }, 'https://example.com')
-    expect(staleAtLaunch).toBe(true)
-    expect(staleOwnerAtLaunch).toBe(hostname() + '-2147483646')
-    await runtime.dispose()
-    await rm(profileDir, { recursive: true, force: true })
   })
 
   it('keeps the requested http URL when Chromium lands on chrome-error://', async () => {

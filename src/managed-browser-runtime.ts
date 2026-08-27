@@ -1,9 +1,8 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 
-import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, readFile, readlink, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { homedir, hostname } from 'node:os'
+import { access, lstat, mkdir, readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { chromium } from 'playwright-core'
 import { CHALLENGE_BLOCK_MESSAGE, harnessSelfBlockReason, isChallengePage } from './browser-guard.ts'
@@ -120,12 +119,6 @@ type LaunchContext = (profileDir: string, opts: {
   args: string[]
 }) => Promise<ContextLike>
 
-type CacheCleanup = (
-  profileDir: string,
-  budgetBytes: number,
-  mayDelete: () => Promise<boolean>,
-) => Promise<void>
-
 export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   launch?: LaunchContext
   onProjection?: (projection: ManagedBrowserProjection) => void
@@ -134,8 +127,6 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
   maxLivePages?: number
   idleMs?: number
   onWarning?: (message: string) => void
-  cleanupDerivedCaches?: CacheCleanup
-  profileLeaseTimeoutMs?: number
 }
 
 type RefTarget = { documentId: string; selector: string }
@@ -178,8 +169,6 @@ export class ManagedBrowserRuntime {
   #idleMs: number
   #cacheBudgetBytes: number
   #onWarning: (message: string) => void
-  #cleanupDerivedCaches: CacheCleanup
-  #profileLeaseTimeoutMs: number
   #reaping = false
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
@@ -194,8 +183,6 @@ export class ManagedBrowserRuntime {
     this.#idleMs = opts.idleMs ?? MANAGED_BROWSER_IDLE_MS
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
-    this.#cleanupDerivedCaches = opts.cleanupDerivedCaches ?? cleanupDerivedChromiumCaches
-    this.#profileLeaseTimeoutMs = opts.profileLeaseTimeoutMs ?? PROFILE_INITIALIZATION_LEASE_TIMEOUT_MS
   }
 
   keyOf(tab: ManagedTabKey): string {
@@ -468,35 +455,27 @@ export class ManagedBrowserRuntime {
     const pending = (async () => {
       const executablePath = await findBrowserExecutable(this.#executablePath)
       await mkdir(this.profileDir, { recursive: true, mode: 0o700 })
-      const releaseLease = await acquireProfileInitializationLease(this.profileDir, this.#profileLeaseTimeoutMs)
-      try {
-        const singleton = await chromiumSingletonState(this.profileDir)
-        if (!singletonAllowsInitialization(singleton)) throw chromiumProfileInUse(singleton)
-        await this.#cleanupDerivedCaches(
-          this.profileDir,
-          this.#cacheBudgetBytes,
-          async () => singletonAllowsInitialization(await chromiumSingletonState(this.profileDir)),
-        ).catch((error) => {
-          this.#onWarning('managed Browser cache cleanup failed: ' + errorMessage(error))
-        })
-        const beforeLaunch = await chromiumSingletonState(this.profileDir)
-        if (!singletonAllowsInitialization(beforeLaunch)) throw chromiumProfileInUse(beforeLaunch)
-        return await this.#launch(this.profileDir, {
-          executablePath,
-          headless: this.headless,
-          viewport: DEFAULT_VIEWPORT,
-          deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
-          ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
-          args: [
-            '--disk-cache-size=' + this.#cacheBudgetBytes,
-            '--media-cache-size=' + this.#cacheBudgetBytes,
-          ],
-        })
-      } finally {
-        await releaseLease().catch((error) => {
-          this.#onWarning('managed Browser profile initialization lease release failed: ' + errorMessage(error))
+      const derivedCacheBytes = await estimateDerivedChromiumCacheBytes(this.profileDir).catch((error) => {
+        this.#onWarning('managed Browser cache size estimate failed: ' + errorMessage(error))
+        return 0
+      })
+      const context = await this.#launch(this.profileDir, {
+        executablePath,
+        headless: this.headless,
+        viewport: DEFAULT_VIEWPORT,
+        deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
+        ignoreDefaultArgs: PLAYWRIGHT_IGNORE_DEFAULT_ARGS,
+        args: [
+          '--disk-cache-size=' + this.#cacheBudgetBytes,
+          '--media-cache-size=' + this.#cacheBudgetBytes,
+        ],
+      })
+      if (derivedCacheBytes > this.#cacheBudgetBytes) {
+        await clearChromiumBrowserCache(context).catch((error) => {
+          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
         })
       }
+      return context
     })()
     this.#context = pending
     try {
@@ -684,11 +663,6 @@ function playwrightCacheRoot(env: NodeJS.ProcessEnv): string {
 }
 
 
-const PROFILE_INITIALIZATION_LEASE_DIR = '.dcs-profile-initialization'
-const PROFILE_INITIALIZATION_LEASE_OWNER = 'owner.json'
-const PROFILE_INITIALIZATION_LEASE_TIMEOUT_MS = 10_000
-const PROFILE_INITIALIZATION_LEASE_RETRY_MS = 25
-const PROFILE_INITIALIZATION_ORPHAN_GRACE_MS = 30_000
 const CHROMIUM_DERIVED_CACHE_DIRS = [
   ['Default', 'Cache'],
   ['Default', 'Code Cache'],
@@ -701,43 +675,7 @@ const CHROMIUM_DERIVED_CACHE_DIRS = [
   ['DawnGraphiteCache'],
 ] as const
 
-type ChromiumSingletonState = 'none' | 'live' | 'stale' | 'unknown'
-
-async function chromiumSingletonState(profileDir: string): Promise<ChromiumSingletonState> {
-  let owner: string
-  try {
-    owner = await readlink(join(profileDir, 'SingletonLock'))
-  } catch (error) {
-    return hasErrorCode(error, 'ENOENT') ? 'none' : 'unknown'
-  }
-  const prefix = hostname() + '-'
-  if (!owner.startsWith(prefix)) return 'unknown'
-  const rawPid = owner.slice(prefix.length)
-  if (!/^\d+$/.test(rawPid)) return 'unknown'
-  const pid = Number(rawPid)
-  if (!Number.isSafeInteger(pid) || pid < 1) return 'unknown'
-  try {
-    process.kill(pid, 0)
-    return 'live'
-  } catch (error) {
-    if (!hasErrorCode(error, 'ESRCH')) return 'unknown'
-  }
-  return 'stale'
-}
-
-/**
- * Detach allowlisted derived caches before deleting them after ownership rechecks.
- * @param profileDir Chromium user-data directory.
- * @param budgetBytes Maximum aggregate bytes allowed for derived caches.
- * @param mayDelete Ownership revalidation performed before detachment and detached removal.
- * @returns A promise that settles after eligible cache directories are inspected and removed.
- */
-export async function cleanupDerivedChromiumCaches(
-  profileDir: string,
-  budgetBytes: number,
-  mayDelete: () => Promise<boolean>,
-): Promise<void> {
-  const directories: Array<{ path: string; identity: FilesystemIdentity }> = []
+async function estimateDerivedChromiumCacheBytes(profileDir: string): Promise<number> {
   let total = 0
   for (const segments of CHROMIUM_DERIVED_CACHE_DIRS) {
     const path = join(profileDir, ...segments)
@@ -746,210 +684,48 @@ export async function cleanupDerivedChromiumCaches(
       throw error
     })
     if (info === undefined || info.isSymbolicLink() || !info.isDirectory()) continue
-    directories.push({ path, identity: filesystemIdentity(info) })
     total += await directoryBytesWithoutSymlinks(path)
   }
-  if (total <= budgetBytes) return
-  for (const directory of directories) {
-    const info = await lstat(directory.path).catch((error: unknown) => {
-      if (hasErrorCode(error, 'ENOENT')) return undefined
-      throw error
-    })
-    if (info === undefined || info.isSymbolicLink() || !info.isDirectory()) continue
-    if (!sameFilesystemIdentity(filesystemIdentity(info), directory.identity)) continue
-    if (!await mayDelete()) return
-    const quarantine = join(dirname(directory.path), '.dcs-cache-quarantine-' + randomUUID())
-    try {
-      await rename(directory.path, quarantine)
-    } catch (error) {
-      if (hasErrorCode(error, 'ENOENT')) continue
-      throw error
+  return total
+}
+
+async function clearChromiumBrowserCache(context: ContextLike): Promise<void> {
+  const page = await context.newPage()
+  let cdp: ManagedCdpSession | undefined
+  const failures: unknown[] = []
+  try {
+    cdp = await context.newCDPSession(page)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.clearBrowserCache')
+  } catch (error) {
+    failures.push(error)
+  } finally {
+    if (cdp !== undefined) {
+      await cdp.detach().catch((error) => { failures.push(error) })
     }
-    const detached = await lstat(quarantine)
-    if (detached.isSymbolicLink() || !detached.isDirectory()) continue
-    if (!sameFilesystemIdentity(filesystemIdentity(detached), directory.identity)) continue
-    if (!await mayDelete()) return
-    await rm(quarantine, { recursive: true, force: false })
+    await page.close().catch((error) => { failures.push(error) })
   }
-}
-
-type ProfileLeaseOwner = {
-  token: string
-  hostname: string
-  pid: number
-  createdAt: number
-}
-
-type FilesystemIdentity = {
-  dev: number
-  ino: number
-}
-
-type ProfileLeaseObservation = {
-  identity: FilesystemIdentity
-  modifiedAt: number
-  owner: ProfileLeaseOwner | undefined
-  invalidOwnerRecoverable: boolean
-}
-
-async function acquireProfileInitializationLease(profileDir: string, timeoutMs: number): Promise<() => Promise<void>> {
-  const leaseDir = join(profileDir, PROFILE_INITIALIZATION_LEASE_DIR)
-  const ownerPath = join(leaseDir, PROFILE_INITIALIZATION_LEASE_OWNER)
-  const owner: ProfileLeaseOwner = {
-    token: randomUUID(),
-    hostname: hostname(),
-    pid: process.pid,
-    createdAt: Date.now(),
-  }
-  const deadline = Date.now() + timeoutMs
-  while (true) {
-    try {
-      await mkdir(leaseDir, { mode: 0o700 })
-      const identity = filesystemIdentity(await lstat(leaseDir))
-      try {
-        await writeFile(ownerPath, JSON.stringify(owner), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-      } catch (error) {
-        await reclaimProfileInitializationLease(leaseDir, identity).catch(() => false)
-        throw error
-      }
-      return async () => {
-        const current = await readProfileLeaseOwner(ownerPath)
-        if (current?.token !== owner.token) return
-        if (!await reclaimProfileInitializationLease(leaseDir, identity)) {
-          throw new Error('Chromium profile initialization lease identity changed before release')
-        }
-      }
-    } catch (error) {
-      if (!hasErrorCode(error, 'EEXIST')) throw error
-    }
-    const observation = await observeProfileInitializationLease(leaseDir)
-    if (observation !== undefined && await profileLeaseMayBeReclaimed(observation) &&
-      await reclaimProfileInitializationLease(leaseDir, observation.identity)) {
-      continue
-    }
-    if (Date.now() >= deadline) throw new Error('Chromium profile initialization is locked by another Host: ' + profileDir)
-    await delay(PROFILE_INITIALIZATION_LEASE_RETRY_MS)
-  }
-}
-
-async function observeProfileInitializationLease(leaseDir: string): Promise<ProfileLeaseObservation | undefined> {
-  const info = await lstat(leaseDir).catch((error: unknown) => {
-    if (hasErrorCode(error, 'ENOENT')) return undefined
-    throw error
-  })
-  if (info === undefined) return undefined
-  if (info.isSymbolicLink() || !info.isDirectory()) return undefined
-  const ownerPath = join(leaseDir, PROFILE_INITIALIZATION_LEASE_OWNER)
-  const ownerInfo = await lstat(ownerPath).catch((error: unknown) => {
-    if (hasErrorCode(error, 'ENOENT')) return undefined
-    throw error
-  })
-  const invalidOwnerRecoverable = ownerInfo === undefined || (!ownerInfo.isSymbolicLink() && ownerInfo.isFile())
-  return {
-    identity: filesystemIdentity(info),
-    modifiedAt: Math.max(info.mtimeMs, ownerInfo?.mtimeMs ?? 0),
-    owner: invalidOwnerRecoverable ? await readProfileLeaseOwner(ownerPath) : undefined,
-    invalidOwnerRecoverable,
-  }
-}
-
-async function profileLeaseMayBeReclaimed(observation: ProfileLeaseObservation): Promise<boolean> {
-  const owner = observation.owner
-  if (owner === undefined) {
-    return observation.invalidOwnerRecoverable && Date.now() - observation.modifiedAt >= PROFILE_INITIALIZATION_ORPHAN_GRACE_MS
-  }
-  if (owner.hostname !== hostname()) return false
-  try {
-    process.kill(owner.pid, 0)
-    return false
-  } catch (error) {
-    return hasErrorCode(error, 'ESRCH')
-  }
-}
-
-/**
- * Atomically detach and remove only the lease directory identity previously inspected.
- * @param leaseDir Canonical profile initialization lease directory.
- * @param expected Filesystem identity observed while deciding whether reclaim is safe.
- * @returns Whether the expected lease was detached and removed.
- */
-export async function reclaimProfileInitializationLease(
-  leaseDir: string,
-  expected: FilesystemIdentity,
-): Promise<boolean> {
-  const current = await lstat(leaseDir).catch((error: unknown) => {
-    if (hasErrorCode(error, 'ENOENT')) return undefined
-    throw error
-  })
-  if (current === undefined || current.isSymbolicLink() || !current.isDirectory()) return false
-  if (!sameFilesystemIdentity(filesystemIdentity(current), expected)) return false
-  const quarantine = leaseDir + '.dcs-quarantine-' + randomUUID()
-  try {
-    await rename(leaseDir, quarantine)
-  } catch (error) {
-    if (hasErrorCode(error, 'ENOENT')) return false
-    throw error
-  }
-  const detached = await lstat(quarantine)
-  if (!sameFilesystemIdentity(filesystemIdentity(detached), expected)) {
-    throw new Error('Chromium profile initialization lease identity changed while it was detached')
-  }
-  await rm(quarantine, { recursive: true, force: false })
-  return true
-}
-
-async function readProfileLeaseOwner(ownerPath: string): Promise<ProfileLeaseOwner | undefined> {
-  let source: string
-  try {
-    source = await readFile(ownerPath, 'utf8')
-  } catch (error) {
-    if (!hasErrorCode(error, 'ENOENT')) throw error
-    return undefined
-  }
-  let value: Partial<ProfileLeaseOwner>
-  try {
-    value = JSON.parse(source) as Partial<ProfileLeaseOwner>
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error
-    return undefined
-  }
-  if (typeof value.token !== 'string' || typeof value.hostname !== 'string') return undefined
-  if (!Number.isSafeInteger(value.pid) || typeof value.createdAt !== 'number') return undefined
-  return value as ProfileLeaseOwner
-}
-
-function chromiumProfileInUse(state: Exclude<ChromiumSingletonState, 'none'>): Error {
-  return new Error('Chromium profile is already in use or its owner cannot be verified (' + state + ')')
-}
-
-function singletonAllowsInitialization(state: ChromiumSingletonState): state is 'none' | 'stale' {
-  return state === 'none' || state === 'stale'
-}
-
-function filesystemIdentity(info: { dev: number; ino: number }): FilesystemIdentity {
-  return { dev: info.dev, ino: info.ino }
-}
-
-function sameFilesystemIdentity(left: FilesystemIdentity, right: FilesystemIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino
-}
-
-async function delay(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+  if (failures.length > 0) throw failures[0]
 }
 
 async function directoryBytesWithoutSymlinks(path: string): Promise<number> {
   let bytes = 0
-  const entries = await readdir(path, { withFileTypes: true })
+  const entries = await readdir(path, { withFileTypes: true }).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ENOENT')) return []
+    throw error
+  })
   for (const entry of entries) {
     const child = join(path, entry.name)
-    if (entry.isSymbolicLink()) continue
-    if (entry.isDirectory()) {
+    const info = await lstat(child).catch((error: unknown) => {
+      if (hasErrorCode(error, 'ENOENT')) return undefined
+      throw error
+    })
+    if (info === undefined || info.isSymbolicLink()) continue
+    if (info.isDirectory()) {
       bytes += await directoryBytesWithoutSymlinks(child)
       continue
     }
-    if (!entry.isFile()) continue
-    bytes += (await lstat(child)).size
+    if (info.isFile()) bytes += info.size
   }
   return bytes
 }

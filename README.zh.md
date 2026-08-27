@@ -57,7 +57,7 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
       cacheBudgetBytes: 268435456
 ```
 
-Chromium 启动前，可恢复的配置文件租约会串行化多个 Host 进程的初始化。白名单缓存超过预算时，插件会重新检查所有权，把身份未变化的目录原子移到插件专属隔离名称，再次检查所有权后只递归删除已脱离配置文件的隔离目录。出现新单例、目录身份变化或所有权不确定时会保留隔离目录而不删除；过期的 Chromium 单例文件交给 Chromium 自身处理。Cookie 和站点存储会保留。插件按已验证的目录身份回收过期的孤立或损坏租约；租约释放失败只记录警告，不会丢弃已经启动的 Context。
+Chromium 启动前，插件只会对允许列表中的派生缓存目录执行只读且不跟随符号链接的容量估算。Persistent Context 启动过程由 Chromium 自身仲裁单例；插件不会重命名、删除或修复配置文件路径。Context 成功启动后，超预算估算会触发一次临时空白 Page 和 CDP session，依次执行 `Network.enable` 与 `Network.clearBrowserCache`，并始终 detach、close。清理失败只记录警告，不会丢弃 Context。Chromium 缓存 API 不影响 Cookie、Local Storage 和 IndexedDB；磁盘与媒体缓存启动参数继续限制后续增长。
 
 ## 本地安装
 

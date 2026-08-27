@@ -57,7 +57,7 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Conf
       cacheBudgetBytes: 268435456
 ```
 
-Before Chromium launches, a recoverable profile lease serializes initialization across Host processes. When allowlisted caches exceed the budget, the plugin rechecks ownership, atomically detaches each unchanged directory to a plugin-specific quarantine name, rechecks ownership again, and recursively removes only that detached quarantine. A new singleton, changed directory identity, or uncertain ownership retains the quarantine instead of deleting it; stale Chromium singleton files are left for Chromium to arbitrate. Cookies and site storage are preserved. Expired orphan or corrupt leases are reclaimed by verified directory identity, while release failures warn without discarding an already launched context.
+Before launch, the plugin performs a read-only, no-follow size estimate over allowlisted derived-cache directories. Chromium's persistent-context startup owns singleton arbitration; the plugin does not rename, remove, or repair profile paths. After a context starts successfully, an over-budget estimate triggers one temporary blank Page and CDP session that run `Network.enable` and `Network.clearBrowserCache`, then always detach and close. Clear failures warn without discarding the context. Chromium's cache API leaves cookies, Local Storage, and IndexedDB intact, while disk and media cache launch arguments limit future growth.
 
 ## Local install
 
