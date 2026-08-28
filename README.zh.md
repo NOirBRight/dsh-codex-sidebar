@@ -55,6 +55,8 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
   config:
     managedBrowser:
       cacheBudgetBytes: 268435456
+      layoutMinViewport: { width: 320, height: 240 }
+      layoutMaxViewport: { width: 1920, height: 1440 }
       layoutSettleMs: 180
       layoutHysteresisPx: 8
       preferredMediaRoute: webrtc-preferred

@@ -687,6 +687,23 @@ describe('managed browser stream protocol', () => {
     ])
   })
 
+  it.each([
+    { staleAfter: 1, expectedTypes: ['mousePressed'] },
+    { staleAfter: 2, expectedTypes: ['mousePressed', 'mouseMoved'] },
+  ])('stops a desktop drag when its document becomes stale after event $staleAfter', async ({ staleAfter, expectedTypes }) => {
+    let current = true
+    const calls: Array<{ type?: unknown }> = []
+    const cdp = {
+      async send(_method: string, params?: Record<string, unknown>) {
+        calls.push(params ?? {})
+        if (calls.length === staleAfter) current = false
+        return {}
+      },
+    }
+    await dispatchBrowserInput(cdp as never, { type: 'drag', x: 10, y: 20, toX: 40, toY: 60 }, () => current)
+    expect(calls.map((params) => params.type)).toEqual(expectedTypes)
+  })
+
   it('authorizes APP WebViews that omit Origin as long as Host is present', () => {
     expect(browserStreamRequestAllowed(undefined, '127.0.0.1:3080')).toBe(true)
     expect(browserStreamRequestAllowed('', '127.0.0.1:3080')).toBe(true)

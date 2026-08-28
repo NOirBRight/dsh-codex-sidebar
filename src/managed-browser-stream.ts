@@ -1511,9 +1511,11 @@ export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: Browse
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: input.x, y: input.y, button: 'left', buttons: 1, clickCount: 1,
     })
+    if (!targetIsCurrent()) return
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved', x: input.toX, y: input.toY, button: 'left', buttons: 1,
     })
+    if (!targetIsCurrent()) return
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: input.toX, y: input.toY, button: 'left', buttons: 0, clickCount: 1,
     })
