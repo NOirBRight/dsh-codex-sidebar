@@ -518,8 +518,10 @@ describe('managed Browser Host protocol v2', () => {
     const clips: Array<Record<string, unknown>> = []
     const inputs: Array<Record<string, unknown>> = []
     const sourceAcks: number[] = []
+    const lifecycle: string[] = []
     const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
     cdp.send = async (method, params = {}) => {
+      if (method === 'Page.startScreencast' || method === 'Page.stopScreencast') lifecycle.push(method)
       if (method === 'Page.captureScreenshot') {
         clips.push(params.clip as Record<string, unknown>)
         return { data: Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64') }
@@ -537,9 +539,15 @@ describe('managed Browser Host protocol v2', () => {
       acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
-      verifyLayout: async () => layout,
+      verifyLayout: async () => {
+        lifecycle.push('verify')
+        cdp.emit('Page.screencastFrame', { data: 'verification-echo', sessionId: 92 })
+        return layout
+      },
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
+        lifecycle.push('propose')
+        cdp.emit('Page.screencastFrame', { data: 'proposal-echo', sessionId: 91 })
         layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, mode: proposal.mode, viewport: proposal.viewport }
         return layout
       },
@@ -559,6 +567,7 @@ describe('managed Browser Host protocol v2', () => {
       const first = messages.find((message) => message.type === 'frame') as { sequence: number; revision: number; mediaGeneration: number; viewport: object }
       expect(first).toMatchObject({ revision: 4, mediaGeneration: 3, viewport: { width: 1280, height: 800 } })
       expect(clips).toEqual([expect.objectContaining({ width: 1280, height: 800 })])
+      expect(sourceAcks).toEqual([92])
 
       client.send(JSON.stringify({ type: 'input', revision: 99, input: { type: 'tap', x: 20, y: 30 } }))
       await vi.waitFor(() => { expect(messages.some((message) => message.type === 'input-result')).toBe(true) })
@@ -569,6 +578,11 @@ describe('managed Browser Host protocol v2', () => {
       now += 250
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } }))
       await vi.waitFor(() => { expect(messages.filter((message) => message.type === 'frame')).toHaveLength(2) })
+      expect(lifecycle).toEqual([
+        'Page.startScreencast', 'verify',
+        'Page.stopScreencast', 'propose', 'Page.startScreencast', 'verify',
+      ])
+      expect(sourceAcks).toEqual([92, 91, 92])
       const second = messages.filter((message) => message.type === 'frame')[1] as { sequence: number; revision: number; mediaGeneration: number }
       expect(second).toMatchObject({ revision: 5, mediaGeneration: 4, viewport: { width: 1280, height: 800 } })
 
@@ -583,7 +597,7 @@ describe('managed Browser Host protocol v2', () => {
       const third = messages.filter((message) => message.type === 'frame')[2]
       expect(third).toMatchObject({ revision: 5, mediaGeneration: 4, viewport: { width: 1280, height: 800 } })
       expect(clips.at(-1)).toMatchObject({ width: 1280, height: 800 })
-      expect(sourceAcks).toEqual([11, 12])
+      expect(sourceAcks).toEqual([92, 91, 92, 11, 12])
     } finally {
       client.close()
       await vi.waitFor(() => { expect(stream.resources()).toMatchObject({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0 }) })
