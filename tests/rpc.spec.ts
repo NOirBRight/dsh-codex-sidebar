@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
 import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
@@ -92,6 +92,29 @@ describe('sidebar RPC', () => {
       sessionId: 'sess-a', captureId: 'c1', expectedRevision: 4, expectedMediaGeneration: 7,
     }, services)).resolves.toMatchObject({ ok: true })
     expect(commit).toHaveBeenCalledWith('sess-a', 'c1', { revision: 4, mediaGeneration: 7 })
+  })
+
+  it('reads Browser evidence through an explicit bounded chunk offset', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const readChunk = vi.fn(async () => ({
+      mediaType: 'image/jpeg', data: 'AQID', offset: 96 * 1024, nextOffset: 96 * 1024 + 3,
+      totalBytes: 96 * 1024 + 3, done: true,
+    }))
+    const evidence = {
+      id: 'e1', captureId: 'c1', documentId: 'd1', layoutRevision: 4, mediaGeneration: 7,
+      ref: '0123456789abcdef0123/0123456789abcdef0123456789abcdef.jpg',
+      mediaType: 'image/jpeg', width: 720, height: 860,
+    }
+    const services = { browserEvidence: { readChunk } as never }
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, {
+      sessionId: 'sess-a', evidence, offset: 96 * 1024,
+    }, services)).resolves.toMatchObject({ ok: true, value: { offset: 96 * 1024, done: true } })
+    expect(readChunk).toHaveBeenCalledWith('sess-a', evidence, 96 * 1024)
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, {
+      sessionId: 'sess-a', evidence, offset: -1,
+    }, services)).resolves.toMatchObject({ ok: false })
+    expect(readChunk).toHaveBeenCalledOnce()
   })
 
   it('opens a Files Tab through dispatch and reloads it for the same 主会话', async () => {

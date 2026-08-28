@@ -1,7 +1,7 @@
 /** Temporary Browser captures and draft screenshot evidence sidecars. */
 
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import type { DriveNode } from './browser-drive.ts'
@@ -11,6 +11,16 @@ import type { BrowserEvidence } from './session.ts'
 
 const TEMP_CAPTURE_TTL_MS = 10 * 60_000
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024
+export const MANAGED_BROWSER_EVIDENCE_CHUNK_BYTES = 96 * 1024
+
+export type BrowserEvidenceChunk = {
+  mediaType: 'image/jpeg'
+  data: string
+  offset: number
+  nextOffset: number
+  totalBytes: number
+  done: boolean
+}
 
 export type BrowserCaptureMetadata = {
   captureId: string
@@ -119,6 +129,38 @@ export class ManagedBrowserEvidenceStore {
     const bytes = await readFile(this.#path(evidence.ref))
     if (bytes.byteLength > MAX_EVIDENCE_BYTES) throw new Error('Stored Browser screenshot exceeds the 5 MB attachment limit')
     return { mediaType: 'image/jpeg', data: bytes.toString('base64') }
+  }
+
+  /** Read one bounded evidence segment for transport through the Mobile tunnel. */
+  async readChunk(sessionId: string, evidence: BrowserEvidence, offset: number): Promise<BrowserEvidenceChunk> {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid Browser evidence chunk offset')
+    const sessionDir = createHash('sha256').update(sessionId).digest('hex').slice(0, 20)
+    if (!evidence.ref.startsWith(sessionDir + '/')) throw new Error('Browser evidence belongs to a different session')
+    const handle = await open(this.#path(evidence.ref), 'r')
+    try {
+      const stats = await handle.stat()
+      if (stats.size > MAX_EVIDENCE_BYTES) throw new Error('Stored Browser screenshot exceeds the 5 MB attachment limit')
+      if (offset > stats.size) throw new Error('Browser evidence chunk offset exceeds the attachment size')
+      const length = Math.min(MANAGED_BROWSER_EVIDENCE_CHUNK_BYTES, stats.size - offset)
+      const bytes = Buffer.allocUnsafe(length)
+      let read = 0
+      while (read < length) {
+        const result = await handle.read(bytes, read, length - read, offset + read)
+        if (result.bytesRead === 0) throw new Error('Stored Browser screenshot changed while reading')
+        read += result.bytesRead
+      }
+      const nextOffset = offset + read
+      return {
+        mediaType: 'image/jpeg',
+        data: bytes.toString('base64'),
+        offset,
+        nextOffset,
+        totalBytes: stats.size,
+        done: nextOffset === stats.size,
+      }
+    } finally {
+      await handle.close()
+    }
   }
 
   discard(captureId: string): void {

@@ -8,7 +8,7 @@ import type { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
 
-async function fixture() {
+async function fixture(image = new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9])) {
   const root = await mkdtemp(join(tmpdir(), 'dcs-evidence-'))
   roots.push(root)
   const targetIdentity = Object.freeze({ target: 'first' })
@@ -21,7 +21,7 @@ async function fixture() {
     layoutEpoch: 11,
     url: 'https://example.com',
     title: 'Example',
-    image: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
+    image,
     mediaType: 'image/jpeg' as const,
     width: 720,
     height: 860,
@@ -73,6 +73,27 @@ describe('ManagedBrowserEvidenceStore', () => {
     const metadata = await box.store.capture({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
     await expect(box.store.commit('s2', metadata.captureId, { revision: 4, mediaGeneration: 7 })).rejects.toThrow('missing or expired')
     expect(await readdir(box.root)).toEqual([])
+  })
+
+  it('reads explicit Base64 chunks that remain below the Mobile tunnel frame ceiling', async () => {
+    const image = new Uint8Array(220 * 1024)
+    for (let index = 0; index < image.length; index += 1) image[index] = index % 251
+    const box = await fixture(image)
+    const metadata = await box.store.capture({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
+    const evidence = await box.store.commit('s1', metadata.captureId, { revision: 4, mediaGeneration: 7 })
+
+    const first = await box.store.readChunk('s1', evidence, 0)
+    const second = await box.store.readChunk('s1', evidence, first.nextOffset)
+    const third = await box.store.readChunk('s1', evidence, second.nextOffset)
+
+    expect([first, second, third].every((chunk) => {
+      const rpcJson = JSON.stringify(chunk)
+      return Buffer.byteLength(rpcJson) < 200 * 1024
+        && Buffer.byteLength(Buffer.from(rpcJson).toString('base64')) < 200 * 1024
+    })).toBe(true)
+    expect(first).toMatchObject({ offset: 0, nextOffset: 96 * 1024, done: false, totalBytes: image.byteLength })
+    expect(third).toMatchObject({ nextOffset: image.byteLength, done: true, totalBytes: image.byteLength })
+    expect(Buffer.concat([first, second, third].map((chunk) => Buffer.from(chunk.data, 'base64')))).toEqual(Buffer.from(image))
   })
 
   it('rejects a temporary capture after navigation or layout reflow and writes no evidence', async () => {

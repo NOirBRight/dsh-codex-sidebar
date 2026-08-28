@@ -103,11 +103,14 @@ export async function handleSidebarRpcAsync(
       ) }
     }
     if (endpoint === SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT) {
-      if (!isRecord(payload) || typeof payload.sessionId !== 'string') return fail('invalid sidebar browser-evidence-read request')
+      if (!isRecord(payload) || typeof payload.sessionId !== 'string'
+        || typeof payload.offset !== 'number' || !Number.isSafeInteger(payload.offset) || payload.offset < 0) {
+        return fail('invalid sidebar browser-evidence-read request')
+      }
       const evidence = decodeEvidence(payload.evidence)
       if (evidence === undefined) return fail('invalid Browser evidence descriptor')
       if (services.browserEvidence === undefined) return fail('Browser evidence read is unavailable')
-      return { ok: true, value: await services.browserEvidence.read(payload.sessionId, evidence) }
+      return { ok: true, value: await services.browserEvidence.readChunk(payload.sessionId, evidence, payload.offset) }
     }
     if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
       if (!isRecord(payload) || typeof payload.sessionId !== 'string') return fail('invalid sidebar stage-annotations request')

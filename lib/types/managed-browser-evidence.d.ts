@@ -3,6 +3,15 @@ import type { DriveNode } from './browser-drive.ts';
 import type { ManagedBrowserRuntime, ManagedTabKey } from './managed-browser-runtime.ts';
 import type { BrowserLayout } from './managed-browser-protocol.ts';
 import type { BrowserEvidence } from './session.ts';
+export declare const MANAGED_BROWSER_EVIDENCE_CHUNK_BYTES: number;
+export type BrowserEvidenceChunk = {
+    mediaType: 'image/jpeg';
+    data: string;
+    offset: number;
+    nextOffset: number;
+    totalBytes: number;
+    done: boolean;
+};
 export type BrowserCaptureMetadata = {
     captureId: string;
     documentId: string;
@@ -28,6 +37,8 @@ export declare class ManagedBrowserEvidenceStore {
         mediaType: 'image/jpeg';
         data: string;
     }>;
+    /** Read one bounded evidence segment for transport through the Mobile tunnel. */
+    readChunk(sessionId: string, evidence: BrowserEvidence, offset: number): Promise<BrowserEvidenceChunk>;
     discard(captureId: string): void;
     remove(evidence: BrowserEvidence): Promise<void>;
 }
