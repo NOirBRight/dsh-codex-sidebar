@@ -310,12 +310,13 @@ export declare class ManagedBrowserRuntime {
      * Run one browser input atomically with respect to viewport transitions.
      * @param tab Browser Tab owner.
      * @param expectedTarget Exact Page identity accepted for the input.
-     * @param expectedLayout Committed revision and internal transition epoch accepted for the input.
+     * @param expectedLayout Committed revision, document, and internal transition epoch accepted for the input.
      * @param action Complete input gesture to run against the owned CDP session.
      * @returns Whether the gesture ran against the expected target and layout epoch.
      */
     runInput(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity, expectedLayout: Pick<BrowserLayout, 'revision'> & {
         layoutEpoch: number;
+        documentId: string;
     }, action: (cdp: ManagedCdpSession, targetIsCurrent: () => boolean) => Promise<void>): Promise<boolean>;
     /** Lease one narrow media Page from the same persistent Chromium context. */
     createMediaPage(): Promise<BrowserMediaPage>;

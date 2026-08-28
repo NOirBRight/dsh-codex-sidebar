@@ -203,7 +203,13 @@ export declare function captureBrowserJpegWithinBudget(cdp: ManagedCdpSession, v
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;
-export declare function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void>;
+/**
+ * Dispatch one input without continuing a compound gesture after its document target becomes stale.
+ * @param cdp Exact target CDP session.
+ * @param input Validated browser input.
+ * @param targetIsCurrent Whether the originating Page document still owns the gesture.
+ */
+export declare function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput, targetIsCurrent?: () => boolean): Promise<void>;
 export declare function browserStreamRequestAllowed(origin: string | undefined, host: string | undefined): boolean;
 export declare function browserStreamCaptureScale(width: number, height: number, maxScale?: number): number;
 //# sourceMappingURL=managed-browser-stream.d.ts.map
