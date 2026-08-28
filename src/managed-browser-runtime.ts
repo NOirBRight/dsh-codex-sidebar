@@ -253,6 +253,7 @@ const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
 const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
+const VIEWPORT_PAINT_EXPRESSION = 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
 const DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
@@ -1022,11 +1023,17 @@ export class ManagedBrowserRuntime {
     try {
       const before = await this.#cssViewport(record)
       const deviceScaleFactor = positiveDeviceScaleFactor(before.deviceScaleFactor)
-      if (verifyFirst && cssViewportMatches(before, viewport, deviceScaleFactor)) return
+      if (verifyFirst && cssViewportMatches(before, viewport, deviceScaleFactor)) {
+        await this.#waitForViewportPaint(record)
+        return
+      }
       await record.page.setViewportSize(viewport)
       this.#assertLayoutRecordCurrent(record)
       const actual = await this.#cssViewport(record)
-      if (cssViewportMatches(actual, viewport, deviceScaleFactor)) return
+      if (cssViewportMatches(actual, viewport, deviceScaleFactor)) {
+        await this.#waitForViewportPaint(record)
+        return
+      }
       await record.cdp.send('Emulation.setDeviceMetricsOverride', {
         width: viewport.width,
         height: viewport.height,
@@ -1038,10 +1045,16 @@ export class ManagedBrowserRuntime {
       this.#assertLayoutRecordCurrent(record)
       const overridden = await this.#cssViewport(record)
       if (!cssViewportMatches(overridden, viewport, deviceScaleFactor)) throw new Error('Chromium did not apply the Browser viewport')
+      await this.#waitForViewportPaint(record)
     } catch (error) {
       if (this.#pages.get(record.key) === record) await this.#closeTab(record.tab, false)
       throw error
     }
+  }
+
+  async #waitForViewportPaint(record: PageRecord): Promise<void> {
+    await record.page.evaluate(VIEWPORT_PAINT_EXPRESSION)
+    this.#assertLayoutRecordCurrent(record)
   }
 
   async #cssViewport(record: PageRecord): Promise<CssViewport> {

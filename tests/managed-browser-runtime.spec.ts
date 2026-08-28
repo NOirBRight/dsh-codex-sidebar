@@ -1143,6 +1143,22 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.dispose()
   })
 
+  it('waits for a post-resize paint before publishing the committed viewport', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-painted' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+
+    await box.runtime.proposeLayout(tab, {
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+    })
+
+    expect(page.evaluations.at(-1)?.source).toBe('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    await box.runtime.dispose()
+  })
+
   it('reapplies an exact committed layout without advancing its media identity', async () => {
     const box = harness()
     const tab = { sessionId: 'layout', tabId: 'verify-committed' }
