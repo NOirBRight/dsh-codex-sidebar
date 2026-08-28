@@ -1,5 +1,5 @@
 import { request } from 'node:http'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -23,11 +23,12 @@ async function fixture(): Promise<{ root: string; outside: string; entry: string
   await writeFile(join(root, 'assets', 'app.css'), 'body { color: rgb(1, 2, 3) }')
   await writeFile(join(root, 'assets', 'app.js'), 'globalThis.localHtmlLoaded = true')
   await writeFile(join(outside, 'secret.js'), 'globalThis.secret = true')
+  await writeFile(join(outside, 'app.js'), 'globalThis.parentSwapSecret = true')
   return { root, outside, entry: pathToFileURL(join(root, 'index.html')).href }
 }
 
-function gateway(): LocalHtmlGateway {
-  const value = new LocalHtmlGateway()
+function gateway(options: ConstructorParameters<typeof LocalHtmlGateway>[0] = {}): LocalHtmlGateway {
+  const value = new LocalHtmlGateway(options)
   gateways.push(value)
   return value
 }
@@ -104,6 +105,28 @@ describe('LocalHtmlGateway', () => {
     expect(local.resources()).toMatchObject({ leases: 0 })
     expect((await fetch(lease.navigationUrl)).status).toBe(404)
     expect(local.project('session:tab', lease.navigationUrl)).toBeUndefined()
+  })
+
+  it('does not serve a file opened through a parent directory swapped after canonicalization', async () => {
+    const box = await fixture()
+    let swapped = false
+    const local = gateway({
+      openFile: async (path, flags) => {
+        if (!swapped && path.endsWith(join('assets', 'app.js'))) {
+          swapped = true
+          await rename(join(box.root, 'assets'), join(box.root, 'original-assets'))
+          await symlink(box.outside, join(box.root, 'assets'), 'dir')
+        }
+        return open(path, flags)
+      },
+    })
+    const lease = await local.open('session:tab', box.entry)
+
+    const response = await fetch(new URL('assets/app.js', lease.navigationUrl))
+
+    expect(swapped).toBe(true)
+    expect(response.status).toBe(404)
+    expect(await response.text()).not.toContain('parentSwapSecret')
   })
 
   it('closes its loopback listener on dispose', async () => {

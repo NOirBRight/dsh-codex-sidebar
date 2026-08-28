@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import { LocalHtmlGateway } from '../src/local-html-gateway.ts'
 import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
@@ -76,10 +77,10 @@ class FakePage {
 function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = {}): {
   runtime: ManagedBrowserRuntime
   pages: FakePage[]
-  closed: { context: boolean; sessions: number }
+  closed: { context: boolean; sessions: number; createdSessions: number }
 } {
   const pages: FakePage[] = []
-  const closed = { context: false, sessions: 0 }
+  const closed = { context: false, sessions: 0, createdSessions: 0 }
   const runtime = new ManagedBrowserRuntime({
     executablePath: '/bin/true',
     profileDir: '/tmp/dcs-managed-runtime-test-' + Math.random().toString(36).slice(2),
@@ -90,6 +91,7 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
         return page
       },
       async newCDPSession() {
+        closed.createdSessions += 1
         return {
           async send() {},
           on() {},
@@ -103,6 +105,48 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
     ...opts,
   })
   return { runtime, pages, closed }
+}
+
+class GatedLocalHtmlGateway extends LocalHtmlGateway {
+  readonly opens: string[] = []
+  readonly revokedNavigations: string[] = []
+  readonly firstStarted: Promise<void>
+  #resolveFirstStarted!: () => void
+  #resumeFirst!: () => void
+  #firstGate: Promise<void>
+  #active: string | undefined
+  #publicByNavigation = new Map<string, string>()
+
+  constructor() {
+    super()
+    this.firstStarted = new Promise((resolve) => { this.#resolveFirstStarted = resolve })
+    this.#firstGate = new Promise((resolve) => { this.#resumeFirst = resolve })
+  }
+
+  override async open(_owner: string, publicUrl: string): Promise<{ publicUrl: string; navigationUrl: string }> {
+    const sequence = this.opens.length + 1
+    const navigationUrl = `http://127.0.0.1:9/.dcs-test/${sequence}/index.html`
+    this.opens.push(publicUrl)
+    this.#publicByNavigation.set(navigationUrl, publicUrl)
+    this.#active = navigationUrl
+    if (sequence === 1) {
+      this.#resolveFirstStarted()
+      await this.#firstGate
+    }
+    return { publicUrl, navigationUrl }
+  }
+
+  resumeFirst(): void { this.#resumeFirst() }
+
+  override project(_owner: string, navigationUrl: string): string | undefined {
+    const publicUrl = this.#publicByNavigation.get(navigationUrl)
+    if (publicUrl !== undefined && navigationUrl !== this.#active) this.revokedNavigations.push(navigationUrl)
+    return publicUrl
+  }
+
+  override isPrivate(navigationUrl: string): boolean {
+    return navigationUrl.startsWith('http://127.0.0.1:9/.dcs-test/')
+  }
 }
 
 function cacheContext(expectClear: boolean, clearError?: Error): {
@@ -262,6 +306,122 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.dispose()
     expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
     await rm(root, { recursive: true, force: true })
+  })
+
+  it('serializes concurrent local HTML ensures for one Tab and creates one Page identity', async () => {
+    const localHtmlGateway = new GatedLocalHtmlGateway()
+    const box = harness({ localHtmlGateway })
+    const tab = { sessionId: 'local', tabId: 'concurrent' }
+    const firstUrl = 'file:///tmp/first/index.html'
+    const secondUrl = 'file:///tmp/second/index.html'
+
+    const first = box.runtime.ensure(tab, firstUrl)
+    await localHtmlGateway.firstStarted
+    const second = box.runtime.ensure(tab, secondUrl)
+    const opensBeforeFirstResumes = [...localHtmlGateway.opens]
+    localHtmlGateway.resumeFirst()
+    const [firstResult, secondResult] = await Promise.all([first, second])
+
+    expect(opensBeforeFirstResumes).toEqual([firstUrl])
+    expect(localHtmlGateway.opens).toEqual([firstUrl, secondUrl])
+    expect(localHtmlGateway.revokedNavigations).toEqual([])
+    expect(firstResult.url).toBe(firstUrl)
+    expect(secondResult.url).toBe(secondUrl)
+    expect(box.runtime.projection(tab)?.url).toBe(secondUrl)
+    expect(box.pages).toHaveLength(1)
+    expect(box.closed.createdSessions).toBe(1)
+    const target = box.runtime.target(tab)
+    expect(target?.page).toBe(box.pages[0])
+    await box.runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1, height: 1 } })
+    expect(box.runtime.target(tab)?.page).toBe(target?.page)
+    expect(box.pages[0]?.viewportSize()).toEqual(box.runtime.layout(tab)?.viewport)
+    await box.runtime.dispose()
+  })
+
+  it('cancels a pending Page identity when its Tab closes', async () => {
+    const page = new FakePage()
+    let signalStarted!: () => void
+    let resumePage!: () => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const gate = new Promise<void>((resolve) => { resumePage = resolve })
+    let cdpSessions = 0
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-pending-close-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { signalStarted(); await gate; return page },
+        async newCDPSession() { cdpSessions += 1; return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'pending', tabId: 'close' }
+    const opening = runtime.ensure(tab, 'https://example.com')
+    await started
+
+    const closing = runtime.close(tab)
+    resumePage()
+
+    await expect(opening).rejects.toThrow('cancelled')
+    await closing
+    expect(cdpSessions).toBe(0)
+    expect(page.closed).toBe(true)
+    expect(runtime.target(tab)).toBeUndefined()
+    await runtime.dispose()
+  })
+
+  it('cancels every pending Page identity on dispose', async () => {
+    const page = new FakePage()
+    let signalStarted!: () => void
+    let resumePage!: () => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const gate = new Promise<void>((resolve) => { resumePage = resolve })
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-pending-dispose-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { signalStarted(); await gate; return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const opening = runtime.ensure({ sessionId: 'pending', tabId: 'dispose' }, 'https://example.com')
+    await started
+
+    const disposing = runtime.dispose()
+    resumePage()
+
+    await expect(opening).rejects.toThrow('cancelled')
+    await disposing
+    expect(page.closed).toBe(true)
+    expect(runtime.list()).toEqual([])
+  })
+
+  it('clears a failed pending Page identity so the same Tab can retry', async () => {
+    const page = new FakePage()
+    let attempts = 0
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-pending-retry-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() {
+          attempts += 1
+          if (attempts === 1) throw new Error('newPage failed')
+          return page
+        },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'pending', tabId: 'retry' }
+
+    await expect(runtime.ensure(tab, 'https://one.example')).rejects.toThrow('newPage failed')
+    await expect(runtime.ensure(tab, 'https://two.example')).resolves.toMatchObject({ status: 'ready', url: 'https://two.example' })
+    expect(attempts).toBe(2)
+    expect(runtime.target(tab)?.page).toBe(page)
+    await runtime.dispose()
   })
 
   it('captures exact target Page evidence only while document and layout identity remain stable', async () => {

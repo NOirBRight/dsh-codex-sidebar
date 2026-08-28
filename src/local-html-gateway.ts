@@ -18,6 +18,10 @@ type LeaseRecord = {
   internalPrefix: string
 }
 
+type LocalHtmlGatewayOptions = {
+  openFile?: (path: string, flags: number) => Promise<FileHandle>
+}
+
 export type LocalHtmlNavigation = {
   /** Address retained in session state and client projections. */
   publicUrl: string
@@ -39,6 +43,11 @@ export class LocalHtmlGateway {
   #disposed = false
   #byOwner = new Map<string, LeaseRecord>()
   #byToken = new Map<string, LeaseRecord>()
+  #openFile: (path: string, flags: number) => Promise<FileHandle>
+
+  constructor(options: LocalHtmlGatewayOptions = {}) {
+    this.#openFile = options.openFile ?? open
+  }
 
   /** Resolve an explicit local HTML entry to a private Chromium navigation. */
   async open(owner: string, rawUrl: string): Promise<LocalHtmlNavigation> {
@@ -212,9 +221,17 @@ export class LocalHtmlGateway {
     }
     let handle: FileHandle | undefined
     try {
-      handle = await open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+      handle = await this.#openFile(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       const stat = await handle.stat()
-      if (!stat.isFile()) {
+      const verifiedPath = await realpath(requested)
+      if (!within(lease.root, verifiedPath)) {
+        await handle.close()
+        reply(res, 404)
+        return
+      }
+      const verifiedStat = await lstat(verifiedPath)
+      if (!stat.isFile() || verifiedStat.isSymbolicLink() || !verifiedStat.isFile()
+        || stat.dev !== verifiedStat.dev || stat.ino !== verifiedStat.ino) {
         await handle.close()
         reply(res, 404)
         return

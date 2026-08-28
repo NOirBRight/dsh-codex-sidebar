@@ -1,4 +1,8 @@
 /** Private loopback projection for an explicitly selected local HTML directory. */
+import { type FileHandle } from 'node:fs/promises';
+type LocalHtmlGatewayOptions = {
+    openFile?: (path: string, flags: number) => Promise<FileHandle>;
+};
 export type LocalHtmlNavigation = {
     /** Address retained in session state and client projections. */
     publicUrl: string;
@@ -16,6 +20,7 @@ export type LocalHtmlResources = {
  */
 export declare class LocalHtmlGateway {
     #private;
+    constructor(options?: LocalHtmlGatewayOptions);
     /** Resolve an explicit local HTML entry to a private Chromium navigation. */
     open(owner: string, rawUrl: string): Promise<LocalHtmlNavigation>;
     /** Map a current private Page URL back to its public local file address. */
@@ -31,4 +36,5 @@ export declare class LocalHtmlGateway {
     /** Revoke all capabilities and close the private listener. */
     dispose(): Promise<void>;
 }
+export {};
 //# sourceMappingURL=local-html-gateway.d.ts.map

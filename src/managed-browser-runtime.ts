@@ -230,6 +230,7 @@ type PageRecord = {
 type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
 type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
 type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
+type PendingPageRecord = { cancelled: boolean; promise: Promise<PageRecord> }
 
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
@@ -254,6 +255,9 @@ export class ManagedBrowserRuntime {
   #launch: LaunchContext
   #context: Promise<ContextLike> | undefined
   #pages = new Map<string, PageRecord>()
+  #pendingPages = new Map<string, PendingPageRecord>()
+  #ensureCommands = new Map<string, Promise<void>>()
+  #tabIdentities = new Map<string, object>()
   #requestedViewports = new Map<string, { width: number; height: number }>()
   #leases = new Map<string, Set<object>>()
   #captureSeq = 0
@@ -270,6 +274,8 @@ export class ManagedBrowserRuntime {
   #mediaPageReservations = 0
   #maxEncoderPages: number
   #localHtml: LocalHtmlGateway
+  #disposed = false
+  #disposePromise: Promise<void> | undefined
 
   constructor(opts: ManagedBrowserRuntimeOptions = {}) {
     this.profileDir = resolve(opts.profileDir ?? defaultProfileDir())
@@ -317,6 +323,13 @@ export class ManagedBrowserRuntime {
 
   async ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection> {
     const key = this.keyOf(tab)
+    const identity = this.#tabIdentities.get(key) ?? {}
+    this.#tabIdentities.set(key, identity)
+    return this.#serializeEnsure(key, identity, async () => this.#ensure(tab, url, key, identity))
+  }
+
+  async #ensure(tab: ManagedTabKey, url: string, key: string, identity: object): Promise<ManagedBrowserProjection> {
+    this.#assertEnsureCurrent(key, identity)
     const publicUrl = managedBrowserHref(url)
     if (publicUrl === undefined) {
       const message = /^file:/i.test(url.trim()) ? 'Only an absolute local HTML file can be opened' : '需要 http、https 或绝对本地 HTML 地址'
@@ -326,7 +339,9 @@ export class ManagedBrowserRuntime {
     if (publicUrl.startsWith('file:')) {
       try {
         navigationUrl = (await this.#localHtml.open(key, publicUrl)).navigationUrl
+        this.#assertEnsureCurrent(key, identity)
       } catch (error) {
+        if (this.#tabIdentities.get(key) !== identity) this.#localHtml.release(key)
         return failedProjection(tab, key, publicUrl, errorMessage(error))
       }
     }
@@ -338,6 +353,7 @@ export class ManagedBrowserRuntime {
     let record: PageRecord
     try {
       record = await this.#record(tab)
+      this.#assertEnsureCurrent(key, identity)
     } catch (error) {
       if (publicUrl.startsWith('file:')) this.#localHtml.release(key)
       throw error
@@ -584,10 +600,16 @@ export class ManagedBrowserRuntime {
 
   async close(tab: ManagedTabKey): Promise<void> {
     const key = this.keyOf(tab)
-    const record = this.#pages.get(key)
+    this.#tabIdentities.delete(key)
     this.#requestedViewports.delete(key)
     this.#leases.delete(key)
     this.#localHtml.release(key)
+    const pending = this.#pendingPages.get(key)
+    if (pending !== undefined) {
+      pending.cancelled = true
+      await pending.promise.catch(() => undefined)
+    }
+    const record = this.#pages.get(key)
     if (record === undefined) return
     this.#pages.delete(key)
     rejectPendingLayout(record, new Error('Browser page closed'))
@@ -595,11 +617,21 @@ export class ManagedBrowserRuntime {
     if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    this.#disposePromise ??= this.#dispose()
+    return this.#disposePromise
+  }
+
+  async #dispose(): Promise<void> {
+    this.#disposed = true
+    const pendingPages = [...this.#pendingPages.values()]
+    for (const pending of pendingPages) pending.cancelled = true
+    await Promise.all(pendingPages.map((pending) => pending.promise.catch(() => undefined)))
     const pages = [...this.#pages.values()]
     this.#pages.clear()
     this.#requestedViewports.clear()
     this.#leases.clear()
+    this.#tabIdentities.clear()
     const mediaPages = [...this.#mediaPages]
     await Promise.all([...pages.map(async (record) => {
       rejectPendingLayout(record, new Error('Managed Browser disposed'))
@@ -614,13 +646,43 @@ export class ManagedBrowserRuntime {
 
   async #record(tab: ManagedTabKey): Promise<PageRecord> {
     const key = this.keyOf(tab)
+    if (this.#disposed) throw new Error('Managed Browser is disposed')
     const existing = this.#pages.get(key)
     if (existing !== undefined) return existing
+    const active = this.#pendingPages.get(key)
+    if (active !== undefined) return active.promise
+    const pending: PendingPageRecord = { cancelled: false, promise: Promise.resolve(undefined as never) }
+    this.#pendingPages.set(key, pending)
+    pending.promise = this.#createRecord(tab, pending)
+    try {
+      return await pending.promise
+    } finally {
+      if (this.#pendingPages.get(key) === pending) this.#pendingPages.delete(key)
+    }
+  }
+
+  async #createRecord(tab: ManagedTabKey, pending: PendingPageRecord): Promise<PageRecord> {
+    const key = this.keyOf(tab)
     const context = await this.#ensureContext()
+    if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
     const page = await context.newPage()
-    const requestedViewport = this.#requestedViewports.get(key)
-    if (requestedViewport !== undefined) await page.setViewportSize(requestedViewport)
-    const cdp = await context.newCDPSession(page)
+    let cdp: ManagedCdpSession | undefined
+    try {
+      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      const requestedViewport = this.#requestedViewports.get(key)
+      if (requestedViewport !== undefined) await page.setViewportSize(requestedViewport)
+      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      cdp = await context.newCDPSession(page)
+      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      return this.#commitRecord(tab, key, page, cdp, requestedViewport)
+    } catch (error) {
+      await cdp?.detach().catch(() => undefined)
+      if (!page.isClosed()) await page.close().catch(() => undefined)
+      throw error
+    }
+  }
+
+  #commitRecord(tab: ManagedTabKey, key: string, page: PageLike, cdp: ManagedCdpSession, requestedViewport: BrowserSize | undefined): PageRecord {
     const record: PageRecord = {
       tab,
       key,
@@ -888,6 +950,26 @@ export class ManagedBrowserRuntime {
     const run = record.command.then(command, command)
     record.command = run.catch(() => undefined)
     await run
+  }
+
+  #serializeEnsure<T>(key: string, identity: object, command: () => Promise<T>): Promise<T> {
+    const previous = this.#ensureCommands.get(key) ?? Promise.resolve()
+    const result = previous.then(command, command)
+    const settled = result.then(() => undefined, () => undefined)
+    this.#ensureCommands.set(key, settled)
+    void settled.then(() => {
+      if (this.#ensureCommands.get(key) !== settled) return
+      this.#ensureCommands.delete(key)
+      if (!this.#pages.has(key) && !this.#pendingPages.has(key) && this.#tabIdentities.get(key) === identity) {
+        this.#tabIdentities.delete(key)
+      }
+    })
+    return result
+  }
+
+  #assertEnsureCurrent(key: string, identity: object): void {
+    if (this.#disposed) throw new Error('Managed Browser is disposed')
+    if (this.#tabIdentities.get(key) !== identity) throw new Error('Browser Tab was closed while opening')
   }
 }
 
