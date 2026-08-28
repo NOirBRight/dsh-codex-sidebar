@@ -1,4 +1,3 @@
-import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
 import { describe, expect, it, vi } from 'vitest'
@@ -21,6 +20,7 @@ import {
   MANAGED_BROWSER_STREAM_VERSION,
 } from '../src/managed-browser-stream.ts'
 import { decodeBrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
+import { ManagedBrowserStreamHarness } from './support/managed-browser-stream-harness.ts'
 
 const V2_TARGET_IDENTITY = Object.freeze({})
 
@@ -96,22 +96,9 @@ describe('managed browser stream protocol', () => {
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never, shutdownTimeoutMs: 25 })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
-    await new Promise<void>((resolve, reject) => {
-      client.once('open', () => {
-        client.send(JSON.stringify({
-          type: 'hello', version: 2, frameEncodings: ['json-base64-v2'],
-          flowControl: ['frame-ack-v2'], media: { webrtcVideo: false },
-        }))
-        resolve()
-      })
-      client.once('error', reject)
-    })
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 's', tabId: 't' })
+    harness.hello(client)
     await capturing
     ;(client as unknown as { _socket: { pause(): void } })._socket.pause()
 
@@ -129,7 +116,7 @@ describe('managed browser stream protocol', () => {
 
     ;(client as unknown as { _socket: { resume(): void } })._socket.resume()
     client.terminate()
-    await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    await harness.dispose()
   })
 
   it('requires hello before ready and advertises the Mobile frame protocol before stalled CDP startup', async () => {
@@ -145,13 +132,9 @@ describe('managed browser stream protocol', () => {
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const harness = await ManagedBrowserStreamHarness.start(stream)
     const ticket = stream.issue({ sessionId: 's', tabId: 't' })
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + ticket.path)
+    const client = await harness.connect({ sessionId: 's', tabId: 't' }, { path: ticket.path })
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, 25)
@@ -161,13 +144,7 @@ describe('managed browser stream protocol', () => {
         })
         client.once('error', reject)
       })
-      client.send(JSON.stringify({
-        type: 'hello',
-        version: MANAGED_BROWSER_STREAM_VERSION,
-        frameEncodings: ['binary-v2', 'json-base64-v2'],
-        flowControl: ['frame-ack-v2'],
-        media: { webrtcVideo: false },
-      }))
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       const first = await Promise.race([
         new Promise<string>((resolve, reject) => {
           client.once('message', (data) => { resolve(Buffer.from(data as Buffer).toString('utf8')) })
@@ -183,9 +160,7 @@ describe('managed browser stream protocol', () => {
         media: { hideGraceMs: 15_000 },
       })
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -207,23 +182,10 @@ describe('managed browser stream protocol', () => {
       projection: () => undefined,
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'fixed', tabId: 'tab' }).path)
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 'fixed', tabId: 'tab' })
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.once('open', () => {
-          client.send(JSON.stringify({
-            type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'],
-            flowControl: ['frame-ack-v2'], media: { webrtcVideo: false },
-          }))
-          resolve()
-        })
-        client.once('error', reject)
-      })
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       await vi.waitFor(() => { expect(runtime.verifyLayout).toHaveBeenCalledOnce() })
       expect(runtime.verifyLayout).toHaveBeenCalledWith(
         { sessionId: 'fixed', tabId: 'tab' },
@@ -232,9 +194,7 @@ describe('managed browser stream protocol', () => {
       )
       expect(order).toEqual(['start-screencast', 'verify-layout'])
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -248,12 +208,8 @@ describe('managed browser stream protocol', () => {
       projection: () => undefined,
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never, handshakeTimeoutMs: 20 })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 's', tabId: 't' }).path)
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 's', tabId: 't' })
     try {
       const closed = await Promise.race([
         new Promise<{ code: number; reason: string }>((resolve, reject) => {
@@ -266,9 +222,7 @@ describe('managed browser stream protocol', () => {
       ])
       expect(closed).toEqual({ code: 1008, reason: 'Browser stream hello timeout' })
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -294,26 +248,16 @@ describe('managed browser stream protocol', () => {
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never, now: () => now })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const harness = await ManagedBrowserStreamHarness.start(stream)
     const ticket = stream.issue({ sessionId: 's', tabId: 't' })
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + ticket.path)
+    const client = await harness.connect({ sessionId: 's', tabId: 't' }, { path: ticket.path })
     const frames: Array<{ type?: string; sequence?: number }> = []
     client.on('message', (data) => {
       const message = JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as { type?: string; sequence?: number }
       if (message.type === 'frame') frames.push(message)
     })
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
-          resolve()
-        })
-        client.once('error', reject)
-      })
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(1) })
       client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
@@ -326,9 +270,7 @@ describe('managed browser stream protocol', () => {
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(3) })
       expect(clips.at(-1)).toMatchObject({ x: 0, y: 360 })
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -343,32 +285,20 @@ describe('managed browser stream protocol', () => {
       projection: () => undefined,
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const origin = 'http://127.0.0.1:' + address.port
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'desktop', tabId: 'tab' }).path, { headers: { origin } })
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const origin = harness.origin
+    const client = await harness.connect({ sessionId: 'desktop', tabId: 'tab' }, { origin })
     try {
       const messages: Array<{ data: WebSocket.RawData; isBinary: boolean }> = []
       client.on('message', (data, isBinary) => { messages.push({ data, isBinary }) })
-      await new Promise<void>((resolve, reject) => {
-        client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
-          resolve()
-        })
-        client.once('error', reject)
-      })
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       await vi.waitFor(() => { expect(messages.some((message) => message.isBinary)).toBe(true) })
       const ready = messages.find((message) => !message.isBinary)
       expect(JSON.parse(Buffer.from(ready?.data as Buffer).toString('utf8'))).toMatchObject({ frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2' })
       const binary = messages.find((message) => message.isBinary)
       expect(decodeBrowserStreamFrameV2(binary?.data as Buffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 3, 4, 0xff, 0xd9]))
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -393,12 +323,8 @@ describe('managed browser stream protocol', () => {
       projection: () => undefined,
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'flow', tabId: 'tab' }).path)
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 'flow', tabId: 'tab' })
     const frames: number[] = []
     client.on('message', (data, isBinary) => {
       if (isBinary) return
@@ -406,13 +332,7 @@ describe('managed browser stream protocol', () => {
       if (value.type === 'frame' && typeof value.sequence === 'number') frames.push(value.sequence)
     })
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
-          resolve()
-        })
-        client.once('error', reject)
-      })
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       await vi.waitFor(() => { expect(captures).toHaveLength(1) })
       cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 11, metadata: { deviceWidth: 640, deviceHeight: 480 } })
       cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 12, metadata: { deviceWidth: 800, deviceHeight: 600 } })
@@ -435,9 +355,7 @@ describe('managed browser stream protocol', () => {
       await new Promise((resolve) => { setTimeout(resolve, 25) })
       expect(captures).toHaveLength(0)
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
@@ -452,12 +370,8 @@ describe('managed browser stream protocol', () => {
       projection: () => undefined,
     }
     const stream = new ManagedBrowserStream({ runtime: runtime as never })
-    const server = createServer()
-    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('missing stream port')
-    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'timer', tabId: 'tab' }).path)
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 'timer', tabId: 'tab' })
     const frames: number[] = []
     client.on('message', (data, isBinary) => {
       if (isBinary) return
@@ -465,21 +379,13 @@ describe('managed browser stream protocol', () => {
       if (value.type === 'frame' && typeof value.sequence === 'number') frames.push(value.sequence)
     })
     try {
-      await new Promise<void>((resolve, reject) => {
-        client.once('open', () => {
-          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
-          resolve()
-        })
-        client.once('error', reject)
-      })
+      harness.hello(client, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
       await vi.waitFor(() => { expect(frames).toEqual([1]) })
       client.send(JSON.stringify({ type: 'frame-ack', sequence: 1, revision: 1, mediaGeneration: 1 }))
       cdp.emit('Page.screencastFrame', { data: jpeg, sessionId: 9, metadata: { deviceWidth: 640, deviceHeight: 480 } })
       await vi.waitFor(() => { expect(frames).toEqual([1, 2]) }, { timeout: 500 })
     } finally {
-      client.close()
-      await stream.dispose()
-      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+      await harness.dispose()
     }
   })
 
