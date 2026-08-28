@@ -403,7 +403,7 @@ describe('ManagedBrowserRuntime', () => {
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-bounded-close-' + Math.random().toString(36).slice(2),
-      streamShutdownTimeoutMs: 20,
+      browserCleanupTimeoutMs: 20,
       launch: async () => ({
         async newPage() { return page },
         async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() { await never } } },
@@ -518,7 +518,7 @@ describe('ManagedBrowserRuntime', () => {
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-bounded-dispose-' + Math.random().toString(36).slice(2),
       localHtmlGateway: new ObservedGateway(),
-      streamShutdownTimeoutMs: 20,
+      browserCleanupTimeoutMs: 20,
       launch: async () => ({
         async newPage() { return page },
         async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() { await never } } },
@@ -579,7 +579,7 @@ describe('ManagedBrowserRuntime', () => {
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-context-generation-' + Math.random().toString(36).slice(2),
-      streamShutdownTimeoutMs: 20,
+      browserCleanupTimeoutMs: 20,
       launch: async () => ({
         async newPage() { return page },
         async newCDPSession() {

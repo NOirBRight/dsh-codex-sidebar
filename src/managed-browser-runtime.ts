@@ -86,8 +86,8 @@ export type ManagedBrowserConfig = {
   mediaIdleTimeoutMs?: number
   /** Keep the Browser control connection alive this long after its surface becomes hidden. */
   mediaHideGraceMs?: number
-  /** Stop waiting for Browser stream and runtime teardown after this shutdown deadline. */
-  streamShutdownTimeoutMs?: number
+  /** Stop waiting for any Browser-owned cleanup after this deadline. */
+  browserCleanupTimeoutMs?: number
   /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
   maxEncoderPages?: number
 }
@@ -253,7 +253,7 @@ const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
 const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
-const DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_MS = 2_000
+const DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
   maxViewport: Object.freeze({ width: 1920, height: 1440 }),
@@ -293,7 +293,7 @@ export class ManagedBrowserRuntime {
   #mediaPages = new Set<{ page: PageLike; close: () => Promise<void> }>()
   #mediaPageReservations = 0
   #maxEncoderPages: number
-  #shutdownTimeoutMs: number
+  #cleanupTimeoutMs: number
   #localHtml: LocalHtmlGateway
   #disposed = false
   #disposePromise: Promise<void> | undefined
@@ -311,7 +311,7 @@ export class ManagedBrowserRuntime {
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
     this.#layoutPolicy = layoutPolicy(opts)
     this.#maxEncoderPages = configuredPositiveInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
-    this.#shutdownTimeoutMs = configuredPositiveInteger(opts.streamShutdownTimeoutMs, DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_MS, 'streamShutdownTimeoutMs')
+    this.#cleanupTimeoutMs = configuredPositiveInteger(opts.browserCleanupTimeoutMs, DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS, 'browserCleanupTimeoutMs')
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
     this.#localHtml = opts.localHtmlGateway ?? new LocalHtmlGateway()
   }
@@ -1140,7 +1140,7 @@ export class ManagedBrowserRuntime {
   async #waitForCleanup(cleanup: Promise<void>): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<void>((resolveDeadline) => {
-      timer = setTimeout(resolveDeadline, this.#shutdownTimeoutMs)
+      timer = setTimeout(resolveDeadline, this.#cleanupTimeoutMs)
       timer.unref()
     })
     await Promise.race([cleanup, deadline])

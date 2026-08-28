@@ -73,8 +73,8 @@ export type ManagedBrowserConfig = {
     mediaIdleTimeoutMs?: number;
     /** Keep the Browser control connection alive this long after its surface becomes hidden. */
     mediaHideGraceMs?: number;
-    /** Force-close Browser stream sockets and stop waiting for work after this shutdown deadline. */
-    streamShutdownTimeoutMs?: number;
+    /** Stop waiting for any Browser-owned cleanup after this deadline. */
+    browserCleanupTimeoutMs?: number;
     /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
     maxEncoderPages?: number;
 };
@@ -124,6 +124,8 @@ export type ManagedBrowserTrackedRect = {
 export type ManagedBrowserCapture = {
     /** Exact same-process Page/CDP identity that produced this capture. */
     targetIdentity: ManagedBrowserTargetIdentity;
+    /** Internal viewport transition epoch that produced this capture. */
+    layoutEpoch: number;
     captureId: string;
     documentId: string;
     layoutRevision: number;
@@ -232,6 +234,12 @@ export declare class ManagedBrowserRuntime {
     readonly headless: boolean;
     constructor(opts?: ManagedBrowserRuntimeOptions);
     keyOf(tab: ManagedTabKey): string;
+    /**
+     * Observe removal of an exact managed Page/CDP target.
+     * @param listener - Synchronous observer invoked before owned target teardown starts.
+     * @returns A disposer for this exact observer.
+     */
+    onTargetInvalidated(listener: (tab: ManagedTabKey, identity: ManagedBrowserTargetIdentity) => void): () => void;
     list(): ManagedBrowserProjection[];
     projection(tab: ManagedTabKey): ManagedBrowserProjection | undefined;
     layoutPolicy(): ManagedBrowserLayoutPolicy;
@@ -278,15 +286,37 @@ export declare class ManagedBrowserRuntime {
         documentId: string;
         layoutRevision: number;
         mediaGeneration: number;
+        layoutEpoch: number;
     } | undefined;
-    /** Resolve the current target, optionally requiring one previously returned opaque identity. */
+    /** Resolve one exact target only when its committed viewport is safe for visual reads. */
     target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): {
         identity: ManagedBrowserTargetIdentity;
         page: PageLike;
         cdp: ManagedCdpSession;
         documentId: string;
         layout: BrowserLayout;
+        layoutEpoch: number;
     } | undefined;
+    /** Resolve an exact target owner for control lifecycle checks without granting visual-read readiness. */
+    ownedTarget(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity): {
+        identity: ManagedBrowserTargetIdentity;
+        page: PageLike;
+        cdp: ManagedCdpSession;
+        documentId: string;
+        layout: BrowserLayout;
+        layoutEpoch: number;
+    } | undefined;
+    /**
+     * Run one browser input atomically with respect to viewport transitions.
+     * @param tab Browser Tab owner.
+     * @param expectedTarget Exact Page identity accepted for the input.
+     * @param expectedLayout Committed revision and internal transition epoch accepted for the input.
+     * @param action Complete input gesture to run against the owned CDP session.
+     * @returns Whether the gesture ran against the expected target and layout epoch.
+     */
+    runInput(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity, expectedLayout: Pick<BrowserLayout, 'revision'> & {
+        layoutEpoch: number;
+    }, action: (cdp: ManagedCdpSession, targetIsCurrent: () => boolean) => Promise<void>): Promise<boolean>;
     /** Lease one narrow media Page from the same persistent Chromium context. */
     createMediaPage(): Promise<BrowserMediaPage>;
     /** Return the number of owned encoder Pages. */
