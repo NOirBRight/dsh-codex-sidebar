@@ -73,6 +73,8 @@ export type ManagedBrowserConfig = {
     mediaIdleTimeoutMs?: number;
     /** Keep the Browser control connection alive this long after its surface becomes hidden. */
     mediaHideGraceMs?: number;
+    /** Maximum time allowed for Chromium to confirm a post-viewport-change paint. */
+    layoutPaintTimeoutMs?: number;
     /** Stop waiting for any Browser-owned cleanup after this deadline. */
     browserCleanupTimeoutMs?: number;
     /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
