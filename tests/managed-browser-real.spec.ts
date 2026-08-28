@@ -137,8 +137,9 @@ describe('real managed Chromium', () => {
     const publicUrl = pathToFileURL(join(pageRoot, 'index.html')).href
 
     await expect(runtime.ensure(tab, publicUrl)).resolves.toMatchObject({ status: 'ready', title: 'Local gateway', url: publicUrl })
-    const target = runtime.target(tab)?.page
-    if (target === undefined) throw new Error('missing local HTML Page')
+    const managedTarget = runtime.target(tab)
+    if (managedTarget === undefined) throw new Error('missing local HTML Page')
+    const target = managedTarget.page
     expect(target.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//)
     expect(runtime.projection(tab)?.url).toBe(publicUrl)
     expect(JSON.stringify(runtime.projection(tab))).not.toContain(new URL(target.url()).port)
@@ -147,6 +148,15 @@ describe('real managed Chromium', () => {
       outside: globalThis.outsideExecuted === true,
       color: getComputedStyle(document.body).color,
     }))()`)).resolves.toEqual({ loaded: true, outside: false, color: 'rgb(1, 2, 3)' })
+    const committed = await runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1280, height: 800 } }, managedTarget.identity)
+    await target.evaluate(String.raw`(() => {
+      const root = window
+      Object.defineProperty(root, 'Promise', { configurable: true, value: function SpoofedPromise() { throw new Error('spoofed Promise') } })
+      Object.defineProperty(root, 'requestAnimationFrame', { configurable: true, value: () => { throw new Error('spoofed rAF') } })
+      Object.defineProperty(root, 'devicePixelRatio', { configurable: true, value: 99 })
+      Object.defineProperty(root, 'globalThis', { configurable: true, value: new Proxy({}, { get() { throw new Error('spoofed globalThis') } }) })
+    })()`)
+    await expect(runtime.verifyLayout(tab, committed, managedTarget.identity)).resolves.toEqual(committed)
   }, 30_000)
 
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('opens, drives, and captures a real Page', async () => {
@@ -180,20 +190,12 @@ describe('real managed Chromium', () => {
     await expect(runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({ mediaType: 'image/jpeg', width: 720, height: 860 })
   }, 30_000)
 
-  it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('streams a high-density frame while preserving CSS viewport dimensions', async () => {
-    const pageServer = createServer((_req, res) => {
-      res.setHeader('content-type', 'text/html')
-      res.end('<!doctype html><title>Stream test</title><style>*{margin:0}.top,.bottom{height:900px}.top{background:#e11d48}.bottom{background:#2563eb}</style><section class="top"></section><section class="bottom"></section>')
-    })
-    await new Promise<void>((resolve, reject) => {
-      pageServer.once('error', reject)
-      pageServer.listen(0, '127.0.0.1', () => { resolve() })
-    })
-    const pageAddress = pageServer.address()
-    if (pageAddress === null || typeof pageAddress === 'string') throw new Error('missing page server port')
-
+  it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('streams local HTML at high density while preserving CSS viewport dimensions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-real-stream-'))
+    const profileDir = join(root, 'profile')
+    const pagePath = join(root, 'index.html')
+    await writeFile(pagePath, '<!doctype html><title>Stream test</title><style>*{margin:0}.top,.bottom{height:900px}.top{background:#e11d48}.bottom{background:#2563eb}</style><section class="top"></section><section class="bottom"></section>')
     const streamServer = createServer()
-    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-real-stream-'))
     const runtime = new ManagedBrowserRuntime({ profileDir, headless: true })
     let now = 1_000
     const stream = new ManagedBrowserStream({ runtime, now: () => now })
@@ -206,7 +208,7 @@ describe('real managed Chromium', () => {
     if (streamAddress === null || typeof streamAddress === 'string') throw new Error('missing stream server port')
 
     const tab = { sessionId: 'stream-real', tabId: 'page' }
-    const url = 'http://127.0.0.1:' + pageAddress.port + '/'
+    const url = pathToFileURL(pagePath).href
     await expect(runtime.ensure(tab, url)).resolves.toMatchObject({ status: 'ready', title: 'Stream test' })
     const page = runtime.target(tab)?.page
     if (page === undefined) throw new Error('missing managed Page')
@@ -217,8 +219,7 @@ describe('real managed Chromium', () => {
       await stream.dispose()
       await new Promise<void>((resolve) => { streamServer.close(() => { resolve() }) })
       await runtime.dispose()
-      await new Promise<void>((resolve) => { pageServer.close(() => { resolve() }) })
-      await rm(profileDir, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true })
     })
 
     const ticket = stream.issue(tab)
@@ -270,6 +271,16 @@ describe('real managed Chromium', () => {
     const pixel = await jpegCenterPixel(page as Page, scrolled)
     expect(pixel[2]).toBeGreaterThan(180)
     expect(pixel[0]).toBeLessThan(80)
+    client.send(JSON.stringify({ type: 'frame-ack', sequence: scrolled.sequence, revision: scrolled.revision, mediaGeneration: scrolled.mediaGeneration }))
+
+    now += 300
+    const tabletCommit = nextLayoutCommit(client)
+    const tabletFrame = nextStreamFrame(client, (candidate) => candidate.viewport.width === 768 && candidate.viewport.height === 1024, 'tablet frame')
+    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 3, mode: 'tablet', viewport: { width: 768, height: 1024 } }))
+    await expect(tabletCommit).resolves.toMatchObject({ mode: 'tablet', viewport: { width: 768, height: 1024 } })
+    const tablet = await tabletFrame
+    expect(jpegSize(tablet.jpeg)).toEqual({ width: 1152, height: 1536 })
+    expect(await page.evaluate('({ width: innerWidth, height: innerHeight })')).toEqual({ width: 768, height: 1024 })
     client.close()
   }, 30_000)
 
@@ -338,6 +349,7 @@ describe('real managed Chromium', () => {
     await expect(committed).resolves.toMatchObject({ mode: 'laptop', viewport: { width: 1280, height: 800 } })
     const frame = await firstFrame
     expect(frame.viewport).toEqual({ width: 1280, height: 800 })
+    expect(jpegSize(frame.jpeg)).toEqual({ width: 1920, height: 1200 })
     const pixel = await jpegCenterPixel(page as Page, frame)
     expect(pixel[1]).toBeGreaterThan(120)
     expect(pixel[0]).toBeLessThan(80)

@@ -20,6 +20,7 @@ class FakePage {
   cdpOverrideUpdatesDom = true
   cdpOverrideError: Error | undefined
   cdpPaintHangs = false
+  cdpPaintThrows = false
   cssViewportError: Error | undefined
   history: string[] = []
   resizeCalls: Array<{ width: number; height: number }> = []
@@ -113,7 +114,12 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
         return {
           async send(method, params) {
             cdpCommands.push({ method, ...(params === undefined ? {} : { params }) })
-            if (method === 'Page.captureScreenshot' && (page as FakePage).cdpPaintHangs) return await new Promise(() => {})
+            if (method === 'Runtime.evaluate' && params?.awaitPromise === true && (page as FakePage).cdpPaintHangs) return await new Promise(() => {})
+            if (method === 'Runtime.evaluate' && params?.awaitPromise === true && (page as FakePage).cdpPaintThrows) return { exceptionDetails: { text: 'paint failed' } }
+            if (method === 'Page.getLayoutMetrics') {
+              if ((page as FakePage).cssViewportError !== undefined) throw (page as FakePage).cssViewportError
+              return { cssLayoutViewport: { clientWidth: (page as FakePage).domSize.width, clientHeight: (page as FakePage).domSize.height } }
+            }
             if (method === 'Emulation.setDeviceMetricsOverride' && (page as FakePage).cdpOverrideError !== undefined) {
               throw (page as FakePage).cdpOverrideError
             }
@@ -1157,9 +1163,9 @@ describe('ManagedBrowserRuntime', () => {
       viewport: { width: 1280, height: 800 },
     })
 
-    const paintCommands = box.cdpCommands.filter(({ method }) => method === 'Page.bringToFront' || method === 'Page.captureScreenshot')
-    expect(paintCommands.slice(-3).map(({ method }) => method)).toEqual([
-      'Page.bringToFront', 'Page.captureScreenshot', 'Page.captureScreenshot',
+    const paintCommands = box.cdpCommands.filter(({ method, params }) => method === 'Page.bringToFront' || method === 'Page.captureScreenshot' || params?.awaitPromise === true)
+    expect(paintCommands.slice(-4).map(({ method }) => method)).toEqual([
+      'Page.bringToFront', 'Page.captureScreenshot', 'Runtime.evaluate', 'Page.captureScreenshot',
     ])
     expect(box.cdpCommands.at(-1)).toEqual({
       method: 'Page.captureScreenshot',
@@ -1180,6 +1186,24 @@ describe('ManagedBrowserRuntime', () => {
       mode: 'laptop',
       viewport: { width: 1280, height: 800 },
     })).rejects.toThrow('viewport paint timed out')
+
+    expect(page.closed).toBe(true)
+    expect(box.runtime.target(tab)).toBeUndefined()
+    await box.runtime.dispose()
+  })
+
+  it('fails closed when the installed viewport paint function reports an exception', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-paint-exception' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.cdpPaintThrows = true
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+    })).rejects.toThrow('viewport paint function failed')
 
     expect(page.closed).toBe(true)
     expect(box.runtime.target(tab)).toBeUndefined()
@@ -1208,6 +1232,39 @@ describe('ManagedBrowserRuntime', () => {
       method: 'Emulation.setDeviceMetricsOverride',
       params: { width: 1280, height: 800 },
     })
+    await box.runtime.dispose()
+  })
+
+  it('forces device metrics when post-start verification already reports matching CSS dimensions', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'verify-matching-surface' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const committed = await box.runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    const target = box.runtime.target(tab)
+    if (target === undefined) throw new Error('missing fake target')
+    const overridesBefore = box.cdpCommands.filter(({ method }) => method === 'Emulation.setDeviceMetricsOverride').length
+
+    await box.runtime.verifyLayout(tab, committed, target.identity)
+
+    expect(box.cdpCommands.filter(({ method }) => method === 'Emulation.setDeviceMetricsOverride')).toHaveLength(overridesBefore + 1)
+    await box.runtime.dispose()
+  })
+
+  it('forces device metrics after Playwright repairs a drifted post-start CSS viewport', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'verify-drifted-surface' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const committed = await box.runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing fake target')
+    page.domSize = { width: 720, height: 773 }
+    const overridesBefore = box.cdpCommands.filter(({ method }) => method === 'Emulation.setDeviceMetricsOverride').length
+
+    await box.runtime.verifyLayout(tab, committed, target.identity)
+
+    expect(page.viewportSize()).toEqual({ width: 1280, height: 800 })
+    expect(box.cdpCommands.filter(({ method }) => method === 'Emulation.setDeviceMetricsOverride')).toHaveLength(overridesBefore + 1)
     await box.runtime.dispose()
   })
 

@@ -728,7 +728,7 @@ export class ManagedBrowserStream {
           if (captureRoute === 'jpeg-fallback' && attemptIndex > 0) this.#diagnostics.fallbackRecaptures += 1
         },
         onStaleDrop: () => { this.#diagnostics.staleCaptureDrops += 1 },
-      }).then((capture) => {
+      }, capturedTarget.deviceScaleFactor).then((capture) => {
         recordLatency(this.#diagnostics.captureLatencyMs, this.#now() - captureStartedAt)
         if (detached) return
         if (capture === undefined) {
@@ -998,7 +998,6 @@ export class ManagedBrowserStream {
         sourceAttached = true
         cdp.on('Page.screencastFrame', onFrame)
       }
-      sendLayout(layout)
       if (firstStart) sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
       await awaitLifecycleCommand(cdp.send('Page.startScreencast', {
         format: 'jpeg',
@@ -1013,6 +1012,7 @@ export class ManagedBrowserStream {
       if (detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
       const current = currentLayout()
       if (!sameMediaLayout(current, layout) || !sameMediaLayout(pendingMediaLayout, layout)) return
+      sendLayout(layout)
       mediaVerified = true
       sourceState = 'active'
       replaceMediaAttempt(layout)
@@ -1408,12 +1408,13 @@ export async function captureBrowserJpegForLayout(
   currentLayout: () => BrowserLayout | undefined,
   profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
   observer: BrowserJpegCaptureObserver = {},
+  deviceScaleFactor = 1,
 ): Promise<BrowserJpegCapture | undefined> {
   const isCurrent = (): boolean => {
     const current = currentLayout()
     return current?.revision === layout.revision && current.mediaGeneration === layout.mediaGeneration
   }
-  const capture = await captureBrowserJpegWithinBudget(cdp, layout.viewport, profile, { ...observer, isCurrent })
+  const capture = await captureBrowserJpegWithinBudget(cdp, layout.viewport, profile, { ...observer, isCurrent }, deviceScaleFactor)
   const current = currentLayout()
   if (capture === undefined) {
     if (!isCurrent()) observer.onStaleDrop?.()
@@ -1424,18 +1425,20 @@ export async function captureBrowserJpegForLayout(
   return undefined
 }
 
-/** Capture the committed CSS viewport within one route's raw JPEG budget. */
+/** Capture the committed CSS viewport within one route's raw JPEG budget; route scale is encoded pixels per CSS pixel, independent of forced DPR. */
 export async function captureBrowserJpegWithinBudget(
   cdp: ManagedCdpSession,
   viewport: BrowserSize,
   profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>,
   observer: Pick<BrowserJpegCaptureObserver, 'onCaptureAttempt'> & { isCurrent?: () => boolean } = {},
+  deviceScaleFactor = 1,
 ): Promise<BrowserJpegCapture | undefined> {
   if (observer.isCurrent?.() === false) return undefined
   const metrics = await cdp.send('Page.getLayoutMetrics').catch(() => undefined)
   if (observer.isCurrent?.() === false) return undefined
   const origin = browserStreamVisualViewportOrigin(metrics)
   const preferredScale = browserStreamCaptureScale(viewport.width, viewport.height, profile.maxScale)
+  const captureDeviceScaleFactor = Number.isFinite(deviceScaleFactor) && deviceScaleFactor > 0 ? deviceScaleFactor : 1
   const attempts = uniqueCaptureAttempts([
     { quality: profile.quality, scale: preferredScale },
     { quality: Math.min(profile.quality, 60), scale: Math.min(preferredScale, 1) },
@@ -1455,7 +1458,7 @@ export async function captureBrowserJpegWithinBudget(
         y: origin.y,
         width: viewport.width,
         height: viewport.height,
-        scale: attempt.scale,
+        scale: attempt.scale / captureDeviceScaleFactor,
       },
     }).catch(() => undefined)
     if (observer.isCurrent?.() === false) return undefined

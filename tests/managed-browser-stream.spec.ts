@@ -31,6 +31,7 @@ function v2Layout() {
 function v2Target(
   cdp: EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> },
   pageViewport = { width: 720, height: 860 },
+  deviceScaleFactor = 1,
 ) {
   return {
     identity: V2_TARGET_IDENTITY,
@@ -39,14 +40,16 @@ function v2Target(
     documentId: 'd1',
     layout: v2Layout(),
     layoutEpoch: 1,
+    deviceScaleFactor,
   }
 }
 
 function v2RuntimePorts(
   cdp: EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> },
   pageViewport = { width: 720, height: 860 },
+  deviceScaleFactor = 1,
 ) {
-  const currentTarget = () => v2Target(cdp, pageViewport)
+  const currentTarget = () => v2Target(cdp, pageViewport, deviceScaleFactor)
   return {
     target: currentTarget,
     ownedTarget: (_tab: unknown, expectedTarget: object) => {
@@ -290,10 +293,15 @@ describe('managed browser stream protocol', () => {
 
   it('uses binary v2 frames for Desktop Origin connections', async () => {
     const jpeg = Buffer.from([0xff, 0xd8, 3, 4, 0xff, 0xd9]).toString('base64')
-    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
-    cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
+    const clipScales: number[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'Page.captureScreenshot') return {}
+      clipScales.push(Number((params?.clip as { scale?: unknown } | undefined)?.scale))
+      return { data: jpeg }
+    }
     const runtime = {
-      ...v2RuntimePorts(cdp),
+      ...v2RuntimePorts(cdp, { width: 720, height: 860 }, 2),
       keyOf: () => 'desktop:tab',
       touch: () => {},
       projection: () => undefined,
@@ -311,6 +319,7 @@ describe('managed browser stream protocol', () => {
       expect(JSON.parse(Buffer.from(ready?.data as Buffer).toString('utf8'))).toMatchObject({ frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2' })
       const binary = messages.find((message) => message.isBinary)
       expect(decodeBrowserStreamFrameV2(binary?.data as Buffer).jpeg).toEqual(new Uint8Array([0xff, 0xd8, 3, 4, 0xff, 0xd9]))
+      expect(clipScales).toEqual([0.75])
     } finally {
       await harness.dispose()
     }

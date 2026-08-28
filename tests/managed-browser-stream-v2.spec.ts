@@ -75,12 +75,14 @@ describe('managed Browser Host protocol v2', () => {
 
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'fit', viewport: { width: 900, height: 600 } }))
       await screencastStart
+      expect(messages.filter((message) => message.type === 'layout-commit')).toEqual([])
       cdp.emit('Page.screencastFrame', { data: 'before-verification', sessionId: 1 })
       await new Promise((resolve) => { setTimeout(resolve, 20) })
       expect(calls).not.toContain('Page.captureScreenshot')
       expect(encoderStarts).toBe(0)
       releaseScreencastStart()
       await verificationStarted
+      expect(messages.filter((message) => message.type === 'layout-commit')).toEqual([])
       cdp.emit('Page.screencastFrame', { data: 'during-verification', sessionId: 2 })
       await new Promise((resolve) => { setTimeout(resolve, 20) })
       expect(calls).not.toContain('Page.captureScreenshot')
@@ -98,6 +100,31 @@ describe('managed Browser Host protocol v2', () => {
     } finally {
       releaseScreencastStart()
       releaseVerification()
+      await harness.dispose()
+    }
+  })
+
+  it('does not publish a layout commit when post-start viewport verification fails', async () => {
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async () => ({})
+    const runtime = {
+      target: () => ({ cdp, layout }), ownedTarget: () => ({ cdp, layout }), keyOf: () => 'verify-failure:tab', touch: () => {}, acquire: () => () => {},
+      layout: () => layout,
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => { throw new Error('post-start viewport mismatch') },
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, preferredMediaRoute: 'jpeg-only' })
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 'verify-failure', tabId: 'tab' })
+    const messages: Array<Record<string, unknown>> = []
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    try {
+      harness.hello(client)
+      await vi.waitFor(() => { expect(client.readyState).toBe(WebSocket.CLOSED) })
+      expect(messages.filter((message) => message.type === 'layout-commit')).toEqual([])
+    } finally {
       await harness.dispose()
     }
   })
@@ -626,6 +653,37 @@ describe('managed Browser Host protocol v2', () => {
     expect(attempts).toHaveLength(3)
     expect(attempts.every((attempt) => attempt.clip.width === 1280 && attempt.clip.height === 800)).toBe(true)
     expect(attempts.every((attempt) => attempt.clip.width !== 960)).toBe(true)
+  })
+
+  it('normalizes screenshot clip scale so forced DPR does not multiply the encoded CSS size', async () => {
+    const clips: Array<{ width: number; height: number; scale: number }> = []
+    const cdp = {
+      async send(method: string, params?: Record<string, unknown>) {
+        if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: 0 } }
+        clips.push((params as { clip: { width: number; height: number; scale: number } }).clip)
+        return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      },
+    }
+
+    await expect(captureBrowserJpegWithinBudget(
+      cdp as never,
+      { width: 1280, height: 800 },
+      { quality: 80, maxScale: 1.5, maxRawBytes: 1024 },
+      {},
+      2,
+    )).resolves.toMatchObject({ encodedSize: { width: 1920, height: 1200 }, scale: 1.5 })
+    await expect(captureBrowserJpegWithinBudget(
+      cdp as never,
+      { width: 390, height: 844 },
+      { quality: 65, maxScale: 1, maxRawBytes: 1024 },
+      {},
+      2,
+    )).resolves.toMatchObject({ encodedSize: { width: 390, height: 844 }, scale: 1 })
+
+    expect(clips).toEqual([
+      { x: 0, y: 0, width: 1280, height: 800, scale: 0.75 },
+      { x: 0, y: 0, width: 390, height: 844, scale: 0.5 },
+    ])
   })
 
   it('drops a capture that completes after its layout generation changed', async () => {

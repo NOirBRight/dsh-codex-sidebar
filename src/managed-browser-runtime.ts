@@ -1,5 +1,6 @@
 /** One Host-managed Chromium runtime for every Browser Tab. */
 
+import { randomBytes } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -219,6 +220,7 @@ type PageRecord = {
   key: string
   page: PageLike
   cdp: ManagedCdpSession
+  paintBinding: string
   url: string
   title: string
   status: ManagedBrowserStatus
@@ -232,6 +234,7 @@ type PageRecord = {
   layout: BrowserLayout
   layoutEpoch: number
   layoutRunning: boolean
+  deviceScaleFactor: number
   pendingLayouts: PendingLayout[]
   visualOperationTail: Promise<void>
 }
@@ -254,9 +257,7 @@ const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
-const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
 const DEFAULT_LAYOUT_PAINT_TIMEOUT_MS = 1_000
-const COMPOSITOR_SETTLE_MS = 34
 const DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
@@ -269,6 +270,14 @@ const FIXED_VIEWPORTS: Record<Exclude<BrowserLayoutMode, 'fit'>, BrowserSize> = 
   tablet: Object.freeze({ width: 768, height: 1024 }),
   laptop: Object.freeze({ width: 1280, height: 800 }),
 })
+
+async function installViewportPaintBinding(cdp: ManagedCdpSession, binding: string): Promise<void> {
+  const name = JSON.stringify(binding)
+  const source = `(function () { const root = this; const NativePromise = root.Promise; const raf = root.requestAnimationFrame.bind(root); Object.defineProperty(root, ${name}, { configurable: false, enumerable: false, writable: false, value: () => new NativePromise((resolve) => { raf(() => { raf(resolve) }) }) }) })()`
+  await cdp.send('Page.enable')
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source })
+  assertRuntimeEvaluation(await cdp.send('Runtime.evaluate', { expression: source, returnByValue: true }), 'Cannot install Browser viewport paint function')
+}
 
 export class ManagedBrowserRuntime {
   readonly profileDir: string
@@ -635,20 +644,20 @@ export class ManagedBrowserRuntime {
   }
 
   /** Resolve one exact target only when its committed viewport is safe for visual reads. */
-  target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number } | undefined {
+  target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number; deviceScaleFactor: number } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.page.isClosed()) return undefined
     if (expectedTarget !== undefined && record.identity !== expectedTarget) return undefined
     if (expectedTarget === undefined && (record.status === 'error' || record.status === 'crashed')) return undefined
     if (record.layoutRunning) return undefined
-    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch }
+    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch, deviceScaleFactor: record.deviceScaleFactor }
   }
 
   /** Resolve an exact target owner for control lifecycle checks without granting visual-read readiness. */
-  ownedTarget(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number } | undefined {
+  ownedTarget(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number; deviceScaleFactor: number } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.page.isClosed() || record.identity !== expectedTarget) return undefined
-    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch }
+    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch, deviceScaleFactor: record.deviceScaleFactor }
   }
 
   /**
@@ -809,7 +818,10 @@ export class ManagedBrowserRuntime {
       this.#assertPendingPageCurrent(pending, context)
       cdp = await context.newCDPSession(page)
       this.#assertPendingPageCurrent(pending, context)
-      return this.#commitRecord(tab, key, page, cdp, requestedViewport)
+      const paintBinding = '__dsh_browser_paint_' + randomBytes(18).toString('base64url')
+      await installViewportPaintBinding(cdp, paintBinding)
+      this.#assertPendingPageCurrent(pending, context)
+      return this.#commitRecord(tab, key, page, cdp, paintBinding, requestedViewport)
     } catch (error) {
       await this.#waitForCleanup(Promise.all([
         cdp?.detach().catch(() => undefined) ?? Promise.resolve(),
@@ -819,13 +831,14 @@ export class ManagedBrowserRuntime {
     }
   }
 
-  #commitRecord(tab: ManagedTabKey, key: string, page: PageLike, cdp: ManagedCdpSession, requestedViewport: BrowserSize | undefined): PageRecord {
+  #commitRecord(tab: ManagedTabKey, key: string, page: PageLike, cdp: ManagedCdpSession, paintBinding: string, requestedViewport: BrowserSize | undefined): PageRecord {
     const record: PageRecord = {
       identity: Object.freeze({}) as ManagedBrowserTargetIdentity,
       tab,
       key,
       page,
       cdp,
+      paintBinding,
       url: page.url(),
       title: '',
       status: 'idle',
@@ -842,6 +855,7 @@ export class ManagedBrowserRuntime {
       },
       layoutEpoch: 0,
       layoutRunning: false,
+      deviceScaleFactor: DEFAULT_DEVICE_SCALE_FACTOR,
       pendingLayouts: [],
       visualOperationTail: Promise.resolve(),
     }
@@ -1027,8 +1041,15 @@ export class ManagedBrowserRuntime {
   async #applyViewport(record: PageRecord, viewport: BrowserSize, verifyFirst = false): Promise<void> {
     try {
       const before = await this.#cssViewport(record)
-      const deviceScaleFactor = positiveDeviceScaleFactor(before.deviceScaleFactor)
-      if (verifyFirst && cssViewportMatches(before, viewport, deviceScaleFactor)) {
+      const deviceScaleFactor = record.deviceScaleFactor
+      if (verifyFirst) {
+        if (!cssViewportMatches(before, viewport, deviceScaleFactor)) {
+          await record.page.setViewportSize(viewport)
+          this.#assertLayoutRecordCurrent(record)
+        }
+        await this.#applyDeviceMetrics(record, viewport, deviceScaleFactor)
+        const forced = await this.#cssViewport(record)
+        if (!cssViewportMatches(forced, viewport, deviceScaleFactor)) throw new Error('Chromium did not preserve the Browser viewport')
         await this.#waitForViewportPaint(record)
         return
       }
@@ -1039,15 +1060,7 @@ export class ManagedBrowserRuntime {
         await this.#waitForViewportPaint(record)
         return
       }
-      await record.cdp.send('Emulation.setDeviceMetricsOverride', {
-        width: viewport.width,
-        height: viewport.height,
-        deviceScaleFactor,
-        mobile: false,
-        screenWidth: viewport.width,
-        screenHeight: viewport.height,
-      })
-      this.#assertLayoutRecordCurrent(record)
+      await this.#applyDeviceMetrics(record, viewport, deviceScaleFactor)
       const overridden = await this.#cssViewport(record)
       if (!cssViewportMatches(overridden, viewport, deviceScaleFactor)) throw new Error('Chromium did not apply the Browser viewport')
       await this.#waitForViewportPaint(record)
@@ -1057,16 +1070,31 @@ export class ManagedBrowserRuntime {
     }
   }
 
+  async #applyDeviceMetrics(record: PageRecord, viewport: BrowserSize, deviceScaleFactor: number): Promise<void> {
+    await record.cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor,
+      mobile: false,
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+    })
+    this.#assertLayoutRecordCurrent(record)
+  }
+
   async #waitForViewportPaint(record: PageRecord): Promise<void> {
-    let settleTimer: ReturnType<typeof setTimeout> | undefined
     const capture = () => record.cdp.send('Page.captureScreenshot', {
       format: 'jpeg', quality: 1, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true,
     })
     const paint = (async () => {
       await record.cdp.send('Page.bringToFront')
       await capture()
-      await new Promise<void>((resolve) => { settleTimer = setTimeout(resolve, COMPOSITOR_SETTLE_MS) })
-      settleTimer = undefined
+      const evaluation = await record.cdp.send('Runtime.evaluate', {
+        expression: 'this[' + JSON.stringify(record.paintBinding) + ']()',
+        awaitPromise: true,
+        returnByValue: true,
+      })
+      assertRuntimeEvaluation(evaluation, 'Browser viewport paint function failed')
       await capture()
     })()
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -1078,15 +1106,24 @@ export class ManagedBrowserRuntime {
       await Promise.race([paint, deadline])
       this.#assertLayoutRecordCurrent(record)
     } finally {
-      if (settleTimer !== undefined) clearTimeout(settleTimer)
       if (timer !== undefined) clearTimeout(timer)
     }
   }
 
   async #cssViewport(record: PageRecord): Promise<CssViewport> {
-    const viewport = await record.page.evaluate<CssViewport>(CSS_VIEWPORT_EXPRESSION)
+    const metrics = await record.cdp.send('Page.getLayoutMetrics') as {
+      cssLayoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
+      layoutViewport?: { clientWidth?: unknown; clientHeight?: unknown }
+    }
     this.#assertLayoutRecordCurrent(record)
-    return viewport
+    const viewport = metrics.cssLayoutViewport ?? metrics.layoutViewport
+    const width = viewport?.clientWidth
+    const height = viewport?.clientHeight
+    if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0
+      || typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
+      throw new Error('Chromium did not report the Browser CSS viewport')
+    }
+    return { width, height, deviceScaleFactor: record.deviceScaleFactor }
   }
 
   #assertLayoutRecordCurrent(record: PageRecord): void {
@@ -1335,10 +1372,6 @@ function sameSize(left: BrowserSize, right: BrowserSize): boolean {
   return left.width === right.width && left.height === right.height
 }
 
-function positiveDeviceScaleFactor(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_DEVICE_SCALE_FACTOR
-}
-
 function cssViewportMatches(actual: CssViewport, expected: BrowserSize, deviceScaleFactor: number): boolean {
   return sameSize(actual, expected) && actual.deviceScaleFactor === deviceScaleFactor
 }
@@ -1483,6 +1516,10 @@ async function directoryBytesWithoutSymlinks(path: string): Promise<number> {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code
+}
+
+function assertRuntimeEvaluation(value: unknown, message: string): void {
+  if (typeof value === 'object' && value !== null && 'exceptionDetails' in value) throw new Error(message)
 }
 
 function defaultProfileDir(): string {
