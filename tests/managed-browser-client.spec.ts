@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { browserSurfaceOccupants } from '../src/client/browser-occupancy.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
@@ -229,9 +229,36 @@ describe('managed Browser stream client', () => {
     expect(surface.height).toBeLessThanOrEqual(600)
   })
 
-  it('does not focus the hidden IME for touch taps', () => {
+  it('opens the hidden IME only after a completed touch tap', () => {
     expect(browserPointerShouldFocusIme('touch')).toBe(false)
     expect(browserPointerShouldFocusIme('mouse')).toBe(true)
+    expect(browserTouchShouldFocusIme(false)).toBe(true)
+    expect(browserTouchShouldFocusIme(true)).toBe(false)
+  })
+
+  it('pauses fit proposals while the Mobile IME is visible and restarts settling after blur', () => {
+    const layout = new ManagedBrowserLayoutClient({
+      mode: 'fit',
+      settleMs: 100,
+      hysteresisPx: 8,
+      viewportLimits: { min: { width: 320, height: 240 }, max: { width: 1920, height: 1440 } },
+    })
+    layout.observeContainer({ width: 390, height: 600 }, 0)
+    layout.setImeVisible(browserTouchShouldFocusIme(false), 10)
+    expect(layout.proposalDueAt()).toBeUndefined()
+    expect(layout.pollProposal(1_000)).toBeUndefined()
+    layout.setImeVisible(false, 1_000)
+    expect(layout.pollProposal(1_099)).toBeUndefined()
+    expect(layout.pollProposal(1_100)).toMatchObject({ mode: 'fit', viewport: { width: 390, height: 600 } })
+  })
+
+  it('buffers a desktop press and release into one atomic tap or drag input', () => {
+    const start = { revision: 3, startX: 10, startY: 20, lastX: 10, lastY: 20, moved: false }
+    const small = browserPointerGestureMove(start, 12, 22)
+    expect(browserPointerGestureEnd(small.gesture, 3, 12, 22)).toEqual({ type: 'tap', x: 12, y: 22 })
+    const moved = browserPointerGestureMove(small.gesture, 40, 60)
+    expect(browserPointerGestureEnd(moved.gesture, 3, 40, 60)).toEqual({ type: 'drag', x: 10, y: 20, toX: 40, toY: 60 })
+    expect(browserPointerGestureEnd(moved.gesture, 4, 40, 60)).toBeUndefined()
   })
 
   it('turns a touch drag into wheel deltas but keeps a small move as a tap', () => {
@@ -420,13 +447,13 @@ describe('managed Browser stream client', () => {
       () => {},
     )
     queue.push({ type: 'move', x: 1, y: 1 })
-    queue.push({ type: 'move', x: 3, y: 4, pressed: true })
+    queue.push({ type: 'move', x: 3, y: 4 })
     queue.push({ type: 'wheel', x: 3, y: 4, deltaX: 2, deltaY: 10 })
     queue.push({ type: 'wheel', x: 3, y: 5, deltaX: -1, deltaY: 5 })
     expect(sent).toEqual([])
     frame?.()
     expect(sent).toEqual([
-      { type: 'move', x: 3, y: 4, pressed: true },
+      { type: 'move', x: 3, y: 4 },
       { type: 'wheel', x: 3, y: 5, deltaX: 1, deltaY: 15 },
     ])
   })

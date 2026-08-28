@@ -1505,15 +1505,25 @@ export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: Browse
     })
     return
   }
-  if (input.type === 'down' || input.type === 'up' || input.type === 'move') {
-    const pressed = input.type === 'down' || (input.type === 'move' && input.pressed === true)
+  if (input.type === 'drag') {
     await cdp.send('Input.dispatchMouseEvent', {
-      type: input.type === 'down' ? 'mousePressed' : input.type === 'up' ? 'mouseReleased' : 'mouseMoved',
+      type: 'mousePressed', x: input.x, y: input.y, button: 'left', buttons: 1, clickCount: 1,
+    })
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: input.toX, y: input.toY, button: 'left', buttons: 1,
+    })
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: input.toX, y: input.toY, button: 'left', buttons: 0, clickCount: 1,
+    })
+    return
+  }
+  if (input.type === 'move') {
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
       x: input.x,
       y: input.y,
-      button: pressed ? 'left' : input.type === 'up' ? 'left' : 'none',
-      buttons: pressed ? 1 : 0,
-      ...input.type === 'move' ? {} : { clickCount: 1 },
+      button: 'none',
+      buttons: 0,
     })
     return
   }

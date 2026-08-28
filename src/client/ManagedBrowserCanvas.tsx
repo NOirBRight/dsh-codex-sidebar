@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
@@ -34,6 +34,7 @@ type ManagedBrowserCanvasProps = {
 type Point = { x: number; y: number }
 type Size = { width: number; height: number }
 type TouchGesture = BrowserTouchGesture & { pointerId: number }
+type PointerGesture = BrowserPointerGesture & { pointerId: number }
 type RevisionedInput = BrowserInput & { revision: number }
 
 export function ManagedBrowserCanvas({ tabId, active, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
@@ -73,6 +74,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   selectedSelectorRef.current = selectedSelector
   const dragRef = useRef<{ point: Point; pointerId: number } | null>(null)
   const touchRef = useRef<TouchGesture | null>(null)
+  const pointerGestureRef = useRef<PointerGesture | null>(null)
   const inputQueueRef = useRef<ReturnType<typeof createBrowserInputCoalescer> | null>(null)
   if (inputQueueRef.current === null) {
     inputQueueRef.current = createBrowserInputCoalescer((input) => {
@@ -737,8 +739,15 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       }
       return
     }
-    if (browserPointerShouldFocusIme(event.pointerType)) inputRef.current?.focus({ preventScroll: true })
-    input({ type: 'down', ...coordinates, pressed: true }, revision)
+    pointerGestureRef.current = {
+      pointerId: event.pointerId,
+      revision,
+      startX: coordinates.x,
+      startY: coordinates.y,
+      lastX: coordinates.x,
+      lastY: coordinates.y,
+      moved: false,
+    }
   }
 
   const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
@@ -761,7 +770,12 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       }
       return
     }
-    input({ type: 'move', ...coordinates, pressed: event.buttons === 1 }, revision)
+    const pointer = pointerGestureRef.current
+    if (pointer?.pointerId === event.pointerId) {
+      pointerGestureRef.current = { ...browserPointerGestureMove(pointer, coordinates.x, coordinates.y).gesture, pointerId: event.pointerId }
+      return
+    }
+    input({ type: 'move', ...coordinates }, revision)
   }
 
   const onPointerUp = (event: PointerEvent<HTMLCanvasElement>): void => {
@@ -789,10 +803,23 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     if (touch?.pointerId === event.pointerId) {
       event.preventDefault()
       touchRef.current = null
-      if (!touch.moved) input({ type: 'tap', ...coordinates }, revision)
+      if (!touch.moved) {
+        input({ type: 'tap', ...coordinates }, revision)
+        if (browserTouchShouldFocusIme(touch.moved)) {
+          inputRef.current?.focus({ preventScroll: true })
+          setImeVisible(true)
+        }
+      }
       return
     }
-    input({ type: 'up', ...coordinates, pressed: false }, revision)
+    const pointer = pointerGestureRef.current
+    if (pointer?.pointerId === event.pointerId) {
+      pointerGestureRef.current = null
+      const gesture = browserPointerGestureEnd(pointer, revision, coordinates.x, coordinates.y)
+      if (gesture === undefined) return
+      input(gesture, revision)
+      if (browserPointerShouldFocusIme(event.pointerType)) inputRef.current?.focus({ preventScroll: true })
+    }
   }
 
   const onWheel = (event: WheelEvent<HTMLCanvasElement>): void => {
@@ -858,7 +885,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={() => { dragRef.current = null; touchRef.current = null; setSelection(null); setHovered(null) }}
+          onPointerCancel={() => { dragRef.current = null; touchRef.current = null; pointerGestureRef.current = null; setSelection(null); setHovered(null) }}
           onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
           onWheel={onWheel}
         />
@@ -875,7 +902,6 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
         ref={inputRef}
         className="dcs-managed-ime"
         aria-label="Browser keyboard input"
-        onFocus={() => { setImeVisible(true) }}
         onBlur={() => { setImeVisible(false) }}
         onCompositionStart={() => { setImeVisible(true) }}
         onKeyDown={(event) => { onKey(event, 'keyDown') }}

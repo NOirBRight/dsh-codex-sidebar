@@ -43,10 +43,15 @@ export type BrowserInput = {
     x: number;
     y: number;
 } | {
-    type: 'down' | 'up' | 'move';
+    type: 'drag';
     x: number;
     y: number;
-    pressed?: boolean;
+    toX: number;
+    toY: number;
+} | {
+    type: 'move';
+    x: number;
+    y: number;
 } | {
     type: 'keyDown' | 'keyUp';
     key: string;

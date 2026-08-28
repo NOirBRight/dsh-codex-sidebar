@@ -674,6 +674,19 @@ describe('managed browser stream protocol', () => {
     ])
   })
 
+  it('dispatches one desktop drag as an atomic press, move, and release', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const cdp = {
+      async send(method: string, params?: Record<string, unknown>) { calls.push({ method, params }); return {} },
+    }
+    await dispatchBrowserInput(cdp as never, { type: 'drag', x: 10, y: 20, toX: 40, toY: 60 })
+    expect(calls).toEqual([
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 10, y: 20, button: 'left', buttons: 1, clickCount: 1 } },
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 40, y: 60, button: 'left', buttons: 1 } },
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 40, y: 60, button: 'left', buttons: 0, clickCount: 1 } },
+    ])
+  })
+
   it('authorizes APP WebViews that omit Origin as long as Host is present', () => {
     expect(browserStreamRequestAllowed(undefined, '127.0.0.1:3080')).toBe(true)
     expect(browserStreamRequestAllowed('', '127.0.0.1:3080')).toBe(true)

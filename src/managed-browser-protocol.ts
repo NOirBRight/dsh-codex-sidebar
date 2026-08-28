@@ -38,7 +38,8 @@ export type BrowserRtcCandidate = {
 export type BrowserInput =
   | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; selector?: string }
   | { type: 'tap'; x: number; y: number }
-  | { type: 'down' | 'up' | 'move'; x: number; y: number; pressed?: boolean }
+  | { type: 'drag'; x: number; y: number; toX: number; toY: number }
+  | { type: 'move'; x: number; y: number }
   | { type: 'keyDown' | 'keyUp'; key: string; code: string; modifiers?: number }
   | { type: 'text'; text: string }
 
@@ -287,8 +288,9 @@ function browserInput(value: unknown): value is BrowserInput {
     return finite(value.deltaX) && finite(value.deltaY)
       && (value.selector === undefined || typeof value.selector === 'string')
   }
-  if (value.type === 'move') return value.pressed === undefined || typeof value.pressed === 'boolean'
-  return value.type === 'tap' || value.type === 'down' || value.type === 'up'
+  if (value.type === 'drag') return finite(value.toX) && finite(value.toY)
+  if (value.type === 'move') return value.pressed === undefined
+  return value.type === 'tap'
 }
 
 function controlMessageWithinLimit(raw: string): boolean {

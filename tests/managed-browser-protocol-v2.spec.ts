@@ -46,6 +46,12 @@ describe('managed Browser protocol v2', () => {
     expect(decodeBrowserClientMessage(JSON.stringify({
       type: 'input', revision: 3, input: { type: 'tap', x: 4, y: 5 },
     }))).toEqual({ type: 'input', revision: 3, input: { type: 'tap', x: 4, y: 5 } })
+    expect(decodeBrowserClientMessage(JSON.stringify({
+      type: 'input', revision: 3, input: { type: 'drag', x: 4, y: 5, toX: 40, toY: 50 },
+    }))).toEqual({ type: 'input', revision: 3, input: { type: 'drag', x: 4, y: 5, toX: 40, toY: 50 } })
+    expect(decodeBrowserClientMessage('{"type":"input","revision":3,"input":{"type":"drag","x":4,"y":5,"toX":"bad","toY":50}}')).toBeUndefined()
+    expect(decodeBrowserClientMessage('{"type":"input","revision":3,"input":{"type":"down","x":4,"y":5}}')).toBeUndefined()
+    expect(decodeBrowserClientMessage('{"type":"input","revision":3,"input":{"type":"move","x":4,"y":5,"pressed":true}}')).toBeUndefined()
     expect(decodeBrowserClientMessage('{"type":"input","revision":3,"input":{"type":"tap","x":"bad","y":5}}')).toBeUndefined()
     expect(decodeBrowserClientMessage(JSON.stringify({
       type: 'rtc-answer', ownerId: 'owner-1', revision: 3, mediaGeneration: 2,

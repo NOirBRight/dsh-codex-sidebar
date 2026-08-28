@@ -123,6 +123,38 @@ export function browserPointerShouldFocusIme(pointerType: string): boolean {
   return pointerType !== 'touch'
 }
 
+/** A completed touch tap may focus the hidden IME after its remote click is sent. */
+export function browserTouchShouldFocusIme(moved: boolean): boolean {
+  return !moved
+}
+
+export type BrowserPointerGesture = {
+  revision: number
+  startX: number
+  startY: number
+  lastX: number
+  lastY: number
+  moved: boolean
+}
+
+/** Buffer one desktop pointer gesture so Host dispatches press/release under one layout lease. */
+export function browserPointerGestureMove(gesture: BrowserPointerGesture, x: number, y: number): { gesture: BrowserPointerGesture; moved: boolean } {
+  const moved = gesture.moved || Math.hypot(x - gesture.startX, y - gesture.startY) >= 6
+  return { moved, gesture: { ...gesture, lastX: x, lastY: y, moved } }
+}
+
+/** Produce one atomic Host input for a completed buffered pointer gesture. */
+export function browserPointerGestureEnd(gesture: BrowserPointerGesture, revision: number, x: number, y: number):
+  | { type: 'tap'; x: number; y: number }
+  | { type: 'drag'; x: number; y: number; toX: number; toY: number }
+  | undefined {
+  if (gesture.revision !== revision) return undefined
+  const moved = gesture.moved || Math.hypot(x - gesture.startX, y - gesture.startY) >= 6
+  return moved
+    ? { type: 'drag', x: gesture.startX, y: gesture.startY, toX: x, toY: y }
+    : { type: 'tap', x, y }
+}
+
 export type BrowserStreamSize = { width: number; height: number }
 
 export type BrowserTouchGesture = {
