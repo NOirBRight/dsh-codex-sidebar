@@ -16,9 +16,21 @@ describe('managed Browser Host protocol v2', () => {
     let layout: BrowserLayout = { revision: 1, mode: 'fit', viewport: { width: 720, height: 860 }, mediaGeneration: 1 }
     const calls: string[] = []
     let encoderStarts = 0
+    let releaseScreencastStart!: () => void
+    let signalScreencastStart!: () => void
+    const screencastStart = new Promise<void>((resolve) => { signalScreencastStart = resolve })
+    const screencastGate = new Promise<void>((resolve) => { releaseScreencastStart = resolve })
+    let releaseVerification!: () => void
+    let signalVerificationStarted!: () => void
+    const verificationStarted = new Promise<void>((resolve) => { signalVerificationStarted = resolve })
+    const verificationGate = new Promise<void>((resolve) => { releaseVerification = resolve })
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method) => {
       calls.push(method)
+      if (method === 'Page.startScreencast') {
+        signalScreencastStart()
+        await screencastGate
+      }
       if (method === 'Page.captureScreenshot') return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
@@ -27,7 +39,11 @@ describe('managed Browser Host protocol v2', () => {
       runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
-      verifyLayout: async () => layout,
+      verifyLayout: async () => {
+        signalVerificationStarted()
+        await verificationGate
+        return layout
+      },
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         layout = { revision: 2, mode: proposal.mode, viewport: proposal.viewport, mediaGeneration: 2 }
@@ -68,6 +84,18 @@ describe('managed Browser Host protocol v2', () => {
       expect(stream.resources().peers).toBe(0)
 
       client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'fit', viewport: { width: 900, height: 600 } }))
+      await screencastStart
+      cdp.emit('Page.screencastFrame', { data: 'before-verification', sessionId: 1 })
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(calls).not.toContain('Page.captureScreenshot')
+      expect(encoderStarts).toBe(0)
+      releaseScreencastStart()
+      await verificationStarted
+      cdp.emit('Page.screencastFrame', { data: 'during-verification', sessionId: 2 })
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(calls).not.toContain('Page.captureScreenshot')
+      expect(encoderStarts).toBe(0)
+      releaseVerification()
       await vi.waitFor(() => { expect(messages.some((message) => message.type === 'frame')).toBe(true) })
       expect(messages.filter((message) => message.type === 'layout-commit')).toEqual([
         expect.objectContaining({ layout: { revision: 2, mode: 'fit', viewport: { width: 900, height: 600 }, mediaGeneration: 2 } }),
@@ -78,6 +106,8 @@ describe('managed Browser Host protocol v2', () => {
       expect(encoderStarts).toBe(1)
       expect(stream.resources().peers).toBe(1)
     } finally {
+      releaseScreencastStart()
+      releaseVerification()
       client.close()
       await stream.dispose()
       await new Promise<void>((resolve) => { server.close(() => resolve()) })
@@ -143,15 +173,21 @@ describe('managed Browser Host protocol v2', () => {
     }
   })
 
-  it('drops a screenshot across a viewport epoch and keeps the control socket alive while resize blocks media and input', async () => {
+  it('drops a screenshot across a document or viewport epoch and keeps the control socket alive while resize blocks media and input', async () => {
     const identity = Object.freeze({ target: 'transition' })
     let layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     let layoutEpoch = 1
+    let documentId = 'd1'
     let transitioning = false
-    let releaseCapture!: () => void
-    let markCaptureStarted!: () => void
-    let gatedCapture = false
-    const captureStarted = new Promise<void>((resolve) => { markCaptureStarted = resolve })
+    const captureGates: Array<{ signalStarted: () => void; blocked: Promise<void> }> = []
+    const blockNextCapture = (): { started: Promise<void>; release: () => void } => {
+      let signalStarted!: () => void
+      let release!: () => void
+      const started = new Promise<void>((resolve) => { signalStarted = resolve })
+      const blocked = new Promise<void>((resolve) => { release = resolve })
+      captureGates.push({ signalStarted, blocked })
+      return { started, release }
+    }
     let releaseProposal!: () => void
     let markProposalStarted!: () => void
     const proposalStarted = new Promise<void>((resolve) => { markProposalStarted = resolve })
@@ -161,17 +197,17 @@ describe('managed Browser Host protocol v2', () => {
     cdp.send = async (method, params) => {
       if (method === 'Page.captureScreenshot') {
         captureCalls += 1
-        if (gatedCapture) {
-          gatedCapture = false
-          markCaptureStarted()
-          await new Promise<void>((resolve) => { releaseCapture = resolve })
+        const gate = captureGates.shift()
+        if (gate !== undefined) {
+          gate.signalStarted()
+          await gate.blocked
         }
         return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
       }
       if (method === 'Input.dispatchMouseEvent') inputCalls.push(String(params?.type))
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
-    const exactTarget = () => ({ identity, cdp, layout, layoutEpoch })
+    const exactTarget = () => ({ identity, cdp, documentId, layout, layoutEpoch })
     const runtime = {
       target: (_tab: unknown, expected?: object) => !transitioning && (expected === undefined || expected === identity) ? exactTarget() : undefined,
       ownedTarget: (_tab: unknown, expected?: object) => expected === identity ? exactTarget() : undefined,
@@ -180,7 +216,7 @@ describe('managed Browser Host protocol v2', () => {
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
       mediaPageCount: () => 0,
-      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId, status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         transitioning = true
         layoutEpoch += 1
@@ -220,13 +256,21 @@ describe('managed Browser Host protocol v2', () => {
       client.send(JSON.stringify({ type: 'frame-ack', sequence: first.sequence, revision: first.revision, mediaGeneration: first.mediaGeneration }))
       await vi.waitFor(() => { expect(stream.resources().unackedFrames).toBe(0) })
 
-      gatedCapture = true
+      const documentCapture = blockNextCapture()
       client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 1, y: 1 } }))
-      await captureStarted
+      await documentCapture.started
+      documentId = 'd2'
+      documentCapture.release()
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(1)
+
+      const epochCapture = blockNextCapture()
+      client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 1, y: 1 } }))
+      await epochCapture.started
       transitioning = true
       layoutEpoch += 1
       transitioning = false
-      releaseCapture()
+      epochCapture.release()
       await new Promise((resolve) => { setTimeout(resolve, 20) })
       expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(1)
 
@@ -246,7 +290,7 @@ describe('managed Browser Host protocol v2', () => {
       await vi.waitFor(() => { expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(2) })
       expect(messages.filter(({ type }) => type === 'frame')[1]).toMatchObject({ revision: 2, mediaGeneration: 2, viewport: { width: 390, height: 844 } })
     } finally {
-      releaseCapture?.()
+      for (const gate of captureGates) gate.signalStarted()
       releaseProposal?.()
       client.close()
       await stream.dispose()

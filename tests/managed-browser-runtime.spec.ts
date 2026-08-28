@@ -11,6 +11,7 @@ class FakePage {
   currentTitle = 'Blank'
   closed = false
   clicked: string[] = []
+  clickedUrls: string[] = []
   filled: Array<{ selector: string; text: string }> = []
   size = { width: 720, height: 860 }
   domSize = { width: 720, height: 860 }
@@ -30,6 +31,7 @@ class FakePage {
   onEvaluate: (() => void | Promise<void>) | undefined
   onIsClosed: (() => void) | undefined
   onScreenshot: (() => void | Promise<void>) | undefined
+  onClick: (() => void | Promise<void>) | undefined
 
   async goto(url: string): Promise<void> {
     this.history.push(this.currentUrl)
@@ -71,7 +73,7 @@ class FakePage {
   async screenshot(): Promise<Uint8Array> { await this.onScreenshot?.(); return new Uint8Array([1, 2, 3]) }
   locator(selector: string): { click(): Promise<void>; fill(text: string): Promise<void> } {
     return {
-      click: async () => { this.clicked.push(selector) },
+      click: async () => { await this.onClick?.(); this.clicked.push(selector); this.clickedUrls.push(this.currentUrl) },
       fill: async (text) => { this.filled.push({ selector, text }) },
     }
   }
@@ -766,6 +768,61 @@ describe('ManagedBrowserRuntime', () => {
     }
   })
 
+  it('drops a snapshot that crosses a navigation on the same Page identity', async () => {
+    const box = harness()
+    const tab = { sessionId: 'exact-async', tabId: 'snapshot-document' }
+    await box.runtime.ensure(tab, 'https://one.example')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing Page')
+    let signalEvaluationStarted!: () => void
+    let resumeEvaluation!: () => void
+    const evaluationStarted = new Promise<void>((resolve) => { signalEvaluationStarted = resolve })
+    const evaluationGate = new Promise<void>((resolve) => { resumeEvaluation = resolve })
+    page.onEvaluate = async () => {
+      page.onEvaluate = undefined
+      signalEvaluationStarted()
+      await evaluationGate
+    }
+
+    const snapshot = box.runtime.snapshot(tab)
+    await evaluationStarted
+    await box.runtime.ensure(tab, 'https://two.example')
+    resumeEvaluation()
+
+    await expect(snapshot).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    await box.runtime.dispose()
+  })
+
+  it('does not apply an old document ref after it waited behind another visual operation', async () => {
+    const box = harness()
+    const tab = { sessionId: 'exact-async', tabId: 'action-document' }
+    await box.runtime.ensure(tab, 'https://one.example')
+    await box.runtime.snapshot(tab)
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing target')
+    let releaseBlocker!: () => void
+    let signalBlockerStarted!: () => void
+    const blockerStarted = new Promise<void>((resolve) => { signalBlockerStarted = resolve })
+    const blocker = box.runtime.runInput(tab, target.identity, {
+      revision: target.layout.revision,
+      layoutEpoch: target.layoutEpoch,
+      documentId: target.documentId,
+    }, async () => {
+      signalBlockerStarted()
+      await new Promise<void>((resolve) => { releaseBlocker = resolve })
+    })
+    await blockerStarted
+    const click = box.runtime.click(tab, '@d1e1')
+    await box.runtime.ensure(tab, 'https://two.example')
+    releaseBlocker()
+
+    await expect(blocker).resolves.toBe(false)
+    await expect(click).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    expect(page.clickedUrls).toEqual([])
+    await box.runtime.dispose()
+  })
+
   it('leases narrow owned media Pages from the persistent context with an exact capacity', async () => {
     const box = harness({ maxEncoderPages: 1 })
     await box.runtime.ensure({ sessionId: 'media', tabId: 'target' }, 'https://example.com')
@@ -946,6 +1003,7 @@ describe('ManagedBrowserRuntime', () => {
     const input = box.runtime.runInput(tab, target.identity, {
       revision: target.layout.revision,
       layoutEpoch: target.layoutEpoch,
+      documentId: target.documentId,
     }, async (cdp) => {
       await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed' })
       markGestureStarted()
@@ -969,6 +1027,34 @@ describe('ManagedBrowserRuntime', () => {
       { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased' } },
     ])
     expect(page.resizeCalls).toEqual([{ width: 390, height: 844 }])
+    await box.runtime.dispose()
+  })
+
+  it('reports a completed ref action as successful when a viewport transition queued behind it', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'action-before-layout' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    await box.runtime.snapshot(tab)
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing target')
+    let releaseClick!: () => void
+    let signalClickStarted!: () => void
+    const clickStarted = new Promise<void>((resolve) => { signalClickStarted = resolve })
+    page.onClick = async () => {
+      signalClickStarted()
+      await new Promise<void>((resolve) => { releaseClick = resolve })
+    }
+
+    const click = box.runtime.click(tab, '@d1e1')
+    await clickStarted
+    const proposal = box.runtime.proposeLayout(tab, { mode: 'phone', viewport: { width: 390, height: 844 } }, target.identity)
+    await vi.waitFor(() => { expect(box.runtime.target(tab, target.identity)).toBeUndefined() })
+    releaseClick()
+
+    await expect(click).resolves.toEqual({ ok: true })
+    await expect(proposal).resolves.toMatchObject({ revision: 2, mediaGeneration: 2 })
+    expect(page.clicked).toEqual(['#save'])
     await box.runtime.dispose()
   })
 

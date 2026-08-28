@@ -522,14 +522,15 @@ export class ManagedBrowserRuntime {
     const record = this.#readableRecord(tab)
     if (record === undefined) return notReady()
     const layoutEpoch = record.layoutEpoch
+    const documentId = record.documentId
     this.#touch(record)
-    const nodes = await this.#nodes(record)
-    if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
+    const nodes = await this.#nodes(record, documentId, layoutEpoch)
+    if (nodes === undefined || !this.#recordReadable(record, undefined, layoutEpoch, documentId)) return notReady()
     return {
       url: record.url,
       title: record.title,
       driveable: true,
-      documentId: record.documentId,
+      documentId,
       nodes,
       text: formatTree(nodes, record.title),
     }
@@ -545,9 +546,10 @@ export class ManagedBrowserRuntime {
     const record = this.#readableRecord(tab, expectedTarget)
     if (record === undefined) return notReady()
     const layoutEpoch = record.layoutEpoch
+    const documentId = record.documentId
     const nodes = await this.#outlineNodes(record)
-    if (!this.#recordReadable(record, expectedTarget, layoutEpoch)) return notReady()
-    return { documentId: record.documentId, nodes }
+    if (!this.#recordReadable(record, expectedTarget, layoutEpoch, documentId)) return notReady()
+    return { documentId, nodes }
   }
 
   /**
@@ -561,6 +563,7 @@ export class ManagedBrowserRuntime {
     const record = this.#readableRecord(tab, expectedTarget)
     if (record === undefined) return notReady()
     const layoutEpoch = record.layoutEpoch
+    const documentId = record.documentId
     const encoded = JSON.stringify(selector)
     const rect = await record.page.evaluate<{ x: number; y: number; w: number; h: number } | null>(String.raw`(() => {
       try {
@@ -571,8 +574,8 @@ export class ManagedBrowserRuntime {
         return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
       } catch { return null; }
     })()`)
-    if (!this.#recordReadable(record, expectedTarget, layoutEpoch)) return notReady()
-    return { documentId: record.documentId, selector, rect }
+    if (!this.#recordReadable(record, expectedTarget, layoutEpoch, documentId)) return notReady()
+    return { documentId, selector, rect }
   }
 
   async click(tab: ManagedTabKey, ref: string): Promise<ManagedBrowserActionResult> {
@@ -646,25 +649,25 @@ export class ManagedBrowserRuntime {
    * Run one browser input atomically with respect to viewport transitions.
    * @param tab Browser Tab owner.
    * @param expectedTarget Exact Page identity accepted for the input.
-   * @param expectedLayout Committed revision and internal transition epoch accepted for the input.
+   * @param expectedLayout Committed revision, document, and internal transition epoch accepted for the input.
    * @param action Complete input gesture to run against the owned CDP session.
    * @returns Whether the gesture ran against the expected target and layout epoch.
    */
   async runInput(
     tab: ManagedTabKey,
     expectedTarget: ManagedBrowserTargetIdentity,
-    expectedLayout: Pick<BrowserLayout, 'revision'> & { layoutEpoch: number },
+    expectedLayout: Pick<BrowserLayout, 'revision'> & { layoutEpoch: number; documentId: string },
     action: (cdp: ManagedCdpSession, targetIsCurrent: () => boolean) => Promise<void>,
   ): Promise<boolean> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.identity !== expectedTarget || record.page.isClosed()) return false
     const release = await this.#acquireVisualOperation(record)
     try {
-      if (!this.#recordReadable(record, expectedTarget, expectedLayout.layoutEpoch)
+      if (!this.#recordReadable(record, expectedTarget, expectedLayout.layoutEpoch, expectedLayout.documentId)
         || record.layout.revision !== expectedLayout.revision) return false
-      await action(record.cdp, () => this.#pages.get(record.key) === record && !record.page.isClosed() && record.identity === expectedTarget)
-      return this.#pages.get(record.key) === record && !record.page.isClosed() && record.identity === expectedTarget
-        && record.layoutEpoch === expectedLayout.layoutEpoch && record.layout.revision === expectedLayout.revision
+      await action(record.cdp, () => this.#recordCurrent(record, expectedTarget, expectedLayout.layoutEpoch, expectedLayout.documentId))
+      return this.#recordCurrent(record, expectedTarget, expectedLayout.layoutEpoch, expectedLayout.documentId)
+        && record.layout.revision === expectedLayout.revision
     } finally {
       release()
     }
@@ -1056,10 +1059,15 @@ export class ManagedBrowserRuntime {
     return record !== undefined && this.#recordReadable(record, expectedTarget) ? record : undefined
   }
 
-  #recordReadable(record: PageRecord, expectedTarget?: ManagedBrowserTargetIdentity, expectedLayoutEpoch?: number): boolean {
+  #recordReadable(record: PageRecord, expectedTarget?: ManagedBrowserTargetIdentity, expectedLayoutEpoch?: number, expectedDocumentId?: string): boolean {
+    return this.#recordCurrent(record, expectedTarget, expectedLayoutEpoch, expectedDocumentId) && !record.layoutRunning
+  }
+
+  #recordCurrent(record: PageRecord, expectedTarget?: ManagedBrowserTargetIdentity, expectedLayoutEpoch?: number, expectedDocumentId?: string): boolean {
     return this.#pages.get(record.key) === record && record.status === 'ready' && !record.page.isClosed()
-      && !record.layoutRunning && (expectedTarget === undefined || record.identity === expectedTarget)
+      && (expectedTarget === undefined || record.identity === expectedTarget)
       && (expectedLayoutEpoch === undefined || record.layoutEpoch === expectedLayoutEpoch)
+      && (expectedDocumentId === undefined || record.documentId === expectedDocumentId)
   }
 
   async #acquireVisualOperation(record: PageRecord): Promise<() => void> {
@@ -1159,8 +1167,9 @@ export class ManagedBrowserRuntime {
       ?? (this.#localHtml.isPrivate(navigationUrl) ? record.url : navigationUrl)
   }
 
-  async #nodes(record: PageRecord): Promise<DriveNode[]> {
+  async #nodes(record: PageRecord, documentId: string, layoutEpoch: number): Promise<DriveNode[] | undefined> {
     const raw = await record.page.evaluate<Array<{ role: string; name: string; selector: string; rect?: { x: number; y: number; w: number; h: number } }>>(SNAPSHOT_EXPRESSION)
+    if (!this.#recordReadable(record, undefined, layoutEpoch, documentId)) return undefined
     record.refs.clear()
     return raw.slice(0, 200).map((node, index) => {
       const ref = '@d' + record.documentSeq + 'e' + (index + 1)
@@ -1186,6 +1195,7 @@ export class ManagedBrowserRuntime {
     const record = this.#readableRecord(tab)
     if (record === undefined) return notReady()
     const layoutEpoch = record.layoutEpoch
+    const documentId = record.documentId
     this.#touch(record)
     const target = record.refs.get(ref)
     if (target === undefined) {
@@ -1195,9 +1205,8 @@ export class ManagedBrowserRuntime {
     if (target.documentId !== record.documentId) return { ok: false, code: 'stale-ref', message: '页面已导航，先重新 browser_snapshot' }
     const release = await this.#acquireVisualOperation(record)
     try {
-      if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
+      if (!this.#recordReadable(record, undefined, layoutEpoch, documentId)) return notReady()
       await action(record.page.locator(target.selector))
-      if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
       return { ok: true }
     } catch (error) {
       return { ok: false, code: 'navigation-failed', message: error instanceof Error ? error.message : String(error) }

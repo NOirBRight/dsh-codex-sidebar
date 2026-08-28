@@ -577,8 +577,12 @@ export class ManagedBrowserStream {
     let lastMediaRetryAt = Number.NEGATIVE_INFINITY
     let mediaIdleSuspended = false
     let mediaStarted = false
+    let mediaVerified = false
+    let pendingMediaLayout: BrowserLayout | undefined
     let surfaceHidden = false
     let mediaTransition = Promise.resolve()
+    let mediaVerification = Promise.resolve()
+    let screencastStarted = false
     let activated = false
     let startTask: Promise<void> | undefined
     let noteMediaActivity = (): void => {}
@@ -707,9 +711,10 @@ export class ManagedBrowserStream {
       }
       const capturedLayout = capturedTarget.layout
       const capturedLayoutEpoch = capturedTarget.layoutEpoch
+      const capturedDocumentId = capturedTarget.documentId
       const currentCaptureLayout = (): BrowserLayout | undefined => {
         const current = currentReadTarget()
-        return current?.layoutEpoch === capturedLayoutEpoch ? current.layout : undefined
+        return current?.layoutEpoch === capturedLayoutEpoch && current.documentId === capturedDocumentId ? current.layout : undefined
       }
       const captureRoute = directVideo ? 'webrtc-direct' : 'jpeg-fallback'
       const captureProfile = directVideo ? this.#directCaptureProfile : profile
@@ -724,7 +729,7 @@ export class ManagedBrowserStream {
         if (detached) return
         if (capture === undefined) {
           const current = currentReadTarget()
-          if (current?.layoutEpoch !== capturedLayoutEpoch) return
+          if (current?.layoutEpoch !== capturedLayoutEpoch || current.documentId !== capturedDocumentId) return
           if (current.layout.revision !== capturedLayout.revision || current.layout.mediaGeneration !== capturedLayout.mediaGeneration) return
           this.#diagnostics.routeBudgetDrops += 1
           if (captureRoute === 'webrtc-direct') {
@@ -740,7 +745,8 @@ export class ManagedBrowserStream {
           }
           return
         }
-        if (currentReadTarget()?.layoutEpoch !== capturedLayoutEpoch) return
+        const current = currentReadTarget()
+        if (current?.layoutEpoch !== capturedLayoutEpoch || current.documentId !== capturedDocumentId) return
         this.#diagnostics.encodedBytes = Math.min(Number.MAX_SAFE_INTEGER, this.#diagnostics.encodedBytes + capture.jpeg.byteLength)
         if (mediaDegraded && socket.readyState === WebSocket.OPEN) {
           mediaDegraded = false
@@ -937,6 +943,32 @@ export class ManagedBrowserStream {
       mediaTransition = task.catch(() => undefined)
       this.#track(task)
     }
+    const verifyPendingMedia = (): void => {
+      if (!screencastStarted || mediaVerified || detached) return
+      const task = mediaVerification.then(async () => {
+        if (mediaVerified || detached) return
+        const candidate = pendingMediaLayout
+        if (candidate === undefined) return
+        try {
+          await this.#runtime.verifyLayout(tab, candidate, target.identity)
+        } catch (error) {
+          const current = currentLayout()
+          if (currentTarget() === undefined || current === undefined || !sameMediaLayout(current, candidate)
+            || !sameMediaLayout(pendingMediaLayout, candidate)) return
+          throw error
+        }
+        const current = currentLayout()
+        if (!sameMediaLayout(current, candidate) || !sameMediaLayout(pendingMediaLayout, candidate)) return
+        mediaVerified = true
+        replaceMediaAttempt(candidate)
+        // A settled page may not emit a screencast frame until it repaints.
+        requestFrame('activity')
+      }).catch((error) => {
+        if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot verify Browser viewport')
+      })
+      mediaVerification = task
+      this.#track(task)
+    }
     noteMediaActivity = (): void => {
       const attempt = mediaAttempt
       if (attempt?.connected === true) {
@@ -959,11 +991,11 @@ export class ManagedBrowserStream {
     const startCommittedMedia = async (layout: BrowserLayout): Promise<void> => {
       if (mediaStarted || detached) return
       mediaStarted = true
+      pendingMediaLayout = layout
       sourceAttached = true
       cdp.on('Page.screencastFrame', onFrame)
       sendLayout(layout)
       sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
-      replaceMediaAttempt(layout)
       try {
         await cdp.send('Page.startScreencast', {
           format: 'jpeg',
@@ -973,10 +1005,8 @@ export class ManagedBrowserStream {
           everyNthFrame: profile.everyNthFrame,
         })
         if (detached) return
-        await this.#runtime.verifyLayout(tab, layout, target.identity)
-        if (detached || !sameMediaLayout(currentLayout(), layout)) return
-        // A settled page may not emit a screencast frame until it repaints.
-        requestFrame('activity')
+        screencastStarted = true
+        verifyPendingMedia()
       } catch (error) {
         if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
       }
@@ -993,6 +1023,11 @@ export class ManagedBrowserStream {
         return
       }
       sendLayout(layout)
+      pendingMediaLayout = layout
+      if (!mediaVerified) {
+        verifyPendingMedia()
+        return
+      }
       replaceMediaAttempt(layout)
       requestFrame('activity')
     }
@@ -1001,6 +1036,7 @@ export class ManagedBrowserStream {
       const projectionChanged = sendProjection()
       if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
       this.#runtime.touch(tab)
+      if (!mediaVerified) return
       if (typeof payload.data === 'string') noteMediaActivity()
       if (typeof payload.data === 'string') requestFrame(projectionChanged ? 'activity' : 'passive')
     }
@@ -1030,7 +1066,7 @@ export class ManagedBrowserStream {
       const stopScreencast = sourceAttached
         ? cdp.send('Page.stopScreencast').then(() => undefined).catch(() => undefined)
         : Promise.resolve()
-      await Promise.all([previousCleanup, mediaTransition, releaseMedia, stopScreencast, captureTask, startTask])
+      await Promise.all([previousCleanup, mediaTransition, mediaVerification, releaseMedia, stopScreencast, captureTask, startTask])
     }
     const start = async (): Promise<void> => {
       socket.send(JSON.stringify({
@@ -1119,7 +1155,7 @@ export class ManagedBrowserStream {
         if (message.type === 'media-retry') {
           const layout = currentLayout()
           const now = this.#now()
-          if (!mediaStarted || layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
+          if (!mediaStarted || !mediaVerified || layout === undefined || message.ownerId !== ownerId || message.revision !== layout.revision
             || message.mediaGeneration !== layout.mediaGeneration
             || (mediaAttempt?.connected === true && message.trigger !== 'explicit')
             || now - Math.max(lastMediaFailureAt, lastMediaRetryAt) < this.#webrtcRetryCooldownMs) return
@@ -1231,15 +1267,17 @@ export class ManagedBrowserStream {
     if (inputTarget === undefined) return
     const inputLayoutIsCurrent = (): boolean => {
       const current = this.#runtime.target(tab, targetIdentity)
-      return current?.layoutEpoch === inputTarget.layoutEpoch && current.layout.revision === message.revision
+      return current?.layoutEpoch === inputTarget.layoutEpoch && current.documentId === inputTarget.documentId
+        && current.layout.revision === message.revision
     }
     noteMediaActivity()
     this.#runtime.touch(tab)
     const accepted = await this.#runtime.runInput(tab, targetIdentity, {
       revision: message.revision,
       layoutEpoch: inputTarget.layoutEpoch,
+      documentId: inputTarget.documentId,
     }, async (inputCdp, targetIsCurrent) => {
-      await dispatchBrowserInput(inputCdp, message.input)
+      await dispatchBrowserInput(inputCdp, message.input, targetIsCurrent)
       if (message.input.type === 'wheel' && targetIsCurrent()) await waitForBrowserPaint(inputCdp)
     })
     if (!accepted || !inputLayoutIsCurrent()) {
@@ -1446,7 +1484,13 @@ async function waitForBrowserPaint(cdp: ManagedCdpSession): Promise<void> {
   }).catch(() => undefined)
 }
 
-export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void> {
+/**
+ * Dispatch one input without continuing a compound gesture after its document target becomes stale.
+ * @param cdp Exact target CDP session.
+ * @param input Validated browser input.
+ * @param targetIsCurrent Whether the originating Page document still owns the gesture.
+ */
+export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput, targetIsCurrent: () => boolean = () => true): Promise<void> {
   if (input.type === 'wheel') {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: input.x, y: input.y, deltaX: input.deltaX, deltaY: input.deltaY })
     return
@@ -1455,6 +1499,7 @@ export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: Browse
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: input.x, y: input.y, button: 'left', buttons: 1, clickCount: 1,
     })
+    if (!targetIsCurrent()) return
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: input.x, y: input.y, button: 'left', buttons: 0, clickCount: 1,
     })
