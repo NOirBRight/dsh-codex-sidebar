@@ -195,11 +195,11 @@ export type BrowserJpegCaptureObserver = {
     onStaleDrop?: () => void;
 };
 /** Capture only while the supplied committed layout remains current. */
-export declare function captureBrowserJpegForLayout(cdp: ManagedCdpSession, layout: BrowserLayout, currentLayout: () => BrowserLayout | undefined, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>, observer?: BrowserJpegCaptureObserver): Promise<BrowserJpegCapture | undefined>;
-/** Capture the committed CSS viewport within one route's raw JPEG budget. */
+export declare function captureBrowserJpegForLayout(cdp: ManagedCdpSession, layout: BrowserLayout, currentLayout: () => BrowserLayout | undefined, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>, observer?: BrowserJpegCaptureObserver, deviceScaleFactor?: number): Promise<BrowserJpegCapture | undefined>;
+/** Capture the committed CSS viewport within one route's raw JPEG budget; route scale is encoded pixels per CSS pixel, independent of forced DPR. */
 export declare function captureBrowserJpegWithinBudget(cdp: ManagedCdpSession, viewport: BrowserSize, profile: Pick<BrowserStreamTransportProfile, 'quality' | 'maxScale' | 'maxRawBytes'>, observer?: Pick<BrowserJpegCaptureObserver, 'onCaptureAttempt'> & {
     isCurrent?: () => boolean;
-}): Promise<BrowserJpegCapture | undefined>;
+}, deviceScaleFactor?: number): Promise<BrowserJpegCapture | undefined>;
 export declare function encodeBrowserStreamFrame(frame: BrowserStreamFrame): Uint8Array;
 export declare function encodeBrowserStreamJsonFrame(frame: BrowserStreamFrame): string;
 export declare function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): BrowserStreamFrame;

@@ -298,6 +298,7 @@ export declare class ManagedBrowserRuntime {
         documentId: string;
         layout: BrowserLayout;
         layoutEpoch: number;
+        deviceScaleFactor: number;
     } | undefined;
     /** Resolve an exact target owner for control lifecycle checks without granting visual-read readiness. */
     ownedTarget(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity): {
@@ -307,6 +308,7 @@ export declare class ManagedBrowserRuntime {
         documentId: string;
         layout: BrowserLayout;
         layoutEpoch: number;
+        deviceScaleFactor: number;
     } | undefined;
     /**
      * Run one browser input atomically with respect to viewport transitions.
