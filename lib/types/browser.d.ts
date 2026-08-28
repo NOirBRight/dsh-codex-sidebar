@@ -56,6 +56,7 @@ export type BrowserIntent = {
     on: boolean;
 } | {
     type: 'browser-click-content';
+    tabId?: string;
     mark: string;
     x: number;
     y: number;
@@ -72,9 +73,11 @@ export type BrowserIntent = {
     text: string;
 } | {
     type: 'browser-note-add';
+    tabId?: string;
     evidence?: BrowserEvidence;
 } | {
     type: 'browser-note-send';
+    tabId?: string;
     evidence?: BrowserEvidence;
 };
 export type BrowserPort = {
