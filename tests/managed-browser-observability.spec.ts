@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { publishBrowserPresentation } from '../src/client/managed-browser-observability.ts'
+import { browserMediaRouteFromReceiver } from '../src/client/managed-browser-stream.ts'
 import { BrowserVideoPresentationSwitch } from '../src/client/managed-browser-webrtc-dom.ts'
+import type { BrowserMediaIdentity } from '../src/managed-browser-protocol.ts'
+
+const IDENTITY: BrowserMediaIdentity = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
 
 class FakeVideo {
   hidden = false
@@ -40,7 +44,7 @@ describe('managed Browser presentation observability', () => {
       encodedSize: { width: 1920, height: 1200 },
     }).accepted).toBe(true)
     const dense = publishBrowserPresentation(undefined, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas' },
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })!
 
     expect(client.acceptFrame({
@@ -50,7 +54,7 @@ describe('managed Browser presentation observability', () => {
       encodedSize: { width: 960, height: 600 },
     }).accepted).toBe(true)
     const bounded = publishBrowserPresentation(undefined, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas' },
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })!
 
     expect(dense.committed).toEqual(bounded.committed)
@@ -61,7 +65,7 @@ describe('managed Browser presentation observability', () => {
       { width: 1920, height: 1200 },
       { width: 960, height: 600 },
     ])
-    expect(dense.presenter).toEqual({ kind: 'canvas', identity: { revision: 4, mediaGeneration: 9 } })
+    expect(dense.presenter).toEqual({ kind: 'canvas', identity: IDENTITY })
   })
 
   it('keeps exactly one identity-matched presenter across video and Canvas route switches', () => {
@@ -81,26 +85,26 @@ describe('managed Browser presentation observability', () => {
       () => ({}),
     )
 
-    const stage = presentation.stage(1_000)
+    const stage = presentation.stage(IDENTITY, 1_000)
     first.videoWidth = 1920
     first.videoHeight = 1200
     expect(presentation.commit(stage)).toBe(true)
     const direct = publishBrowserPresentation(undefined, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'direct-video', source: presentation.snapshot(),
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'direct-video', source: presentation.snapshot(),
     })!
     expect(direct.presenter).toEqual({
       kind: 'video',
       slot: 0,
-      identity: { revision: 4, mediaGeneration: 9 },
+      identity: IDENTITY,
       intrinsicSize: { width: 1920, height: 1200 },
     })
     expect([first.hidden, second.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
 
     presentation.showCanvas()
     const fallback = publishBrowserPresentation(undefined, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: presentation.snapshot(),
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })!
-    expect(fallback.presenter).toEqual({ kind: 'canvas', identity: { revision: 4, mediaGeneration: 9 } })
+    expect(fallback.presenter).toEqual({ kind: 'canvas', identity: IDENTITY })
     expect([first.hidden, second.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
     expect(fallback.committed).toEqual(direct.committed)
     expect(fallback.surface).toEqual(direct.surface)
@@ -116,7 +120,7 @@ describe('managed Browser presentation observability', () => {
     }).accepted).toBe(true)
     const attributes = new Map<string, string>()
     publishBrowserPresentation({ setAttribute(name, value) { attributes.set(name, value) } }, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas' },
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })
 
     expect([...attributes.keys()]).toEqual(['data-browser-presentation'])
@@ -128,7 +132,7 @@ describe('managed Browser presentation observability', () => {
       encodedSize: { width: 1280, height: 800 },
       surface: { width: 900, height: 563 },
       mediaRoute: 'low-bandwidth-fallback',
-      presenter: { kind: 'canvas', identity: { revision: 4, mediaGeneration: 9 } },
+      presenter: { kind: 'canvas', identity: IDENTITY },
     })
     expect(attributes.get('data-browser-presentation')).not.toContain('url')
     expect(attributes.get('data-browser-presentation')).not.toContain('title')
@@ -145,12 +149,12 @@ describe('managed Browser presentation observability', () => {
     const messages: unknown[] = []
     const target = { setAttribute(_name: string, value: string) { messages.push(JSON.parse(value)) } }
     publishBrowserPresentation(target, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'direct-video',
-      source: { presenter: 'video', slot: 0, intrinsicSize: { width: 1280, height: 800 } },
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'direct-video',
+      source: { presenter: 'video', slot: 0, identity: IDENTITY, intrinsicSize: { width: 1280, height: 800 } },
     })
     publishBrowserPresentation(target, {
-      connection: 'disconnected', layout: client.snapshot(), mediaRoute: 'reconnecting',
-      source: { presenter: 'video', slot: 0, intrinsicSize: { width: 1280, height: 800 } },
+      connection: 'disconnected', ownerId: null, layout: client.snapshot(), mediaRoute: 'reconnecting',
+      source: { presenter: 'video', slot: 0, identity: IDENTITY, intrinsicSize: { width: 1280, height: 800 } },
     })
 
     expect(messages.at(-1)).toEqual({
@@ -165,7 +169,7 @@ describe('managed Browser presentation observability', () => {
     })
   })
 
-  it('publishes route and presenter as one state after each DOM switch', () => {
+  it('keeps the negotiated direct route non-direct until the exact staged video commits', () => {
     const client = layout()
     expect(client.acceptFrame({
       revision: 4,
@@ -180,32 +184,53 @@ describe('managed Browser presentation observability', () => {
     const messages: Array<{ mediaRoute: string; presenter: { kind: string } }> = []
     const target = { setAttribute(_name: string, value: string) { messages.push(JSON.parse(value)) } }
     publishBrowserPresentation(target, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: presentation.snapshot(),
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })
 
-    expect(publishBrowserPresentation(target, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'direct-video', source: presentation.snapshot(),
-    })).toBeUndefined()
-    expect(messages).toHaveLength(1)
+    const negotiatedRoute = browserMediaRouteFromReceiver('webrtc-direct')
+    expect(negotiatedRoute).toBe('reconnecting')
+    publishBrowserPresentation(target, {
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: negotiatedRoute, source: { presenter: 'canvas', identity: IDENTITY },
+    })
+    expect(messages.at(-1)).toMatchObject({ mediaRoute: 'reconnecting', presenter: { kind: 'canvas', identity: IDENTITY } })
 
-    const stage = presentation.stage(1_000)
+    const stage = presentation.stage(IDENTITY, 1_000)
     first.videoWidth = 1280
     first.videoHeight = 800
     expect(presentation.commit(stage)).toBe(true)
-    expect(messages).toHaveLength(1)
+    expect(messages).toHaveLength(2)
     publishBrowserPresentation(target, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'direct-video', source: presentation.snapshot(),
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'direct-video', source: presentation.snapshot(),
     })
 
     presentation.showCanvas()
-    expect(messages).toHaveLength(2)
+    expect(messages).toHaveLength(3)
     publishBrowserPresentation(target, {
-      connection: 'connected', layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: presentation.snapshot(),
+      connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })
     expect(messages.map((message) => [message.mediaRoute, message.presenter.kind])).toEqual([
       ['low-bandwidth-fallback', 'canvas'],
+      ['reconnecting', 'canvas'],
       ['direct-video', 'video'],
       ['low-bandwidth-fallback', 'canvas'],
     ])
+  })
+
+  it('rejects a direct presenter whose own media identity differs from the current layout', () => {
+    const client = layout()
+    expect(client.acceptFrame({
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 1280, height: 800 },
+      encodedSize: { width: 1280, height: 800 },
+    }).accepted).toBe(true)
+
+    expect(publishBrowserPresentation(undefined, {
+      connection: 'connected',
+      ownerId: IDENTITY.ownerId,
+      layout: client.snapshot(),
+      mediaRoute: 'direct-video',
+      source: { presenter: 'video', slot: 0, identity: { ...IDENTITY, mediaGeneration: 8 }, intrinsicSize: { width: 1280, height: 800 } },
+    })).toBeUndefined()
   })
 })

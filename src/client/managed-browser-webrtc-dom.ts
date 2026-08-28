@@ -1,4 +1,5 @@
 import type { BrowserMediaReceiverPeer, BrowserMediaReceiverPeerEvents, BrowserMediaReceiverTrack } from '../managed-browser-webrtc-client.ts'
+import type { BrowserMediaIdentity } from '../managed-browser-protocol.ts'
 import type { BrowserRtcCandidate, BrowserRtcDescription } from '../managed-browser-webrtc.ts'
 
 type PeerScope = { RTCPeerConnection?: unknown }
@@ -50,11 +51,12 @@ type PendingPresentation = {
 type PresentedVideoSize = { width: number; height: number }
 type PresentationVideo = VideoLike & { hidden: boolean }
 type PresentationCanvas = { style: { opacity: string } }
-type BrowserVideoStage = { readonly slot: 0 | 1; readonly surface: BrowserVideoSurface }
+type BrowserVideoStage = { readonly slot: 0 | 1; readonly identity: BrowserMediaIdentity; readonly surface: BrowserVideoSurface }
 
+/** Exact DOM presenter currently visible on the managed Browser surface. */
 export type BrowserVideoPresentationSnapshot =
   | { presenter: 'canvas' }
-  | { presenter: 'video'; slot: 0 | 1; intrinsicSize: PresentedVideoSize | null }
+  | { presenter: 'video'; slot: 0 | 1; identity: BrowserMediaIdentity; intrinsicSize: PresentedVideoSize | null }
 
 /** Settle every video presentation outcome only while its media identity remains current. */
 export async function handleBrowserVideoPresentation(
@@ -95,12 +97,12 @@ export class BrowserVideoPresentationSwitch {
     canvas.style.opacity = '1'
   }
 
-  /** Attach a candidate track to the hidden slot without changing the visible presentation. */
-  stage(timeoutMs: number): BrowserVideoStage {
+  /** Attach an exact media identity to the hidden slot without changing the visible presentation. */
+  stage(identity: BrowserMediaIdentity, timeoutMs: number): BrowserVideoStage {
     if (this.#pending !== undefined) this.discard(this.#pending)
     const slot: 0 | 1 = this.#active?.slot === 0 ? 1 : 0
     const surface = new BrowserVideoSurface(this.#videos[slot], this.#createStream, timeoutMs)
-    const stage = { slot, surface } as const
+    const stage = { slot, identity: copyIdentity(identity), surface } as const
     this.#videos[slot].hidden = true
     this.#pending = stage
     return stage
@@ -148,6 +150,7 @@ export class BrowserVideoPresentationSwitch {
     return {
       presenter: 'video',
       slot: active.slot,
+      identity: copyIdentity(active.identity),
       intrinsicSize: video.videoWidth > 0 && video.videoHeight > 0
         ? { width: video.videoWidth, height: video.videoHeight }
         : null,
@@ -170,6 +173,10 @@ export class BrowserVideoPresentationSwitch {
     this.discardPending()
     this.showCanvas()
   }
+}
+
+function copyIdentity(identity: BrowserMediaIdentity): BrowserMediaIdentity {
+  return { ownerId: identity.ownerId, revision: identity.revision, mediaGeneration: identity.mediaGeneration }
 }
 
 /** Owns one video element attachment and resolves only after its first decoded frame. */

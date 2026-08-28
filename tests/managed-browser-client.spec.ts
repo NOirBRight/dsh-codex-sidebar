@@ -93,7 +93,7 @@ describe('managed Browser stream client', () => {
     expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }, 'reconnecting')).toBe('low-bandwidth-fallback')
     expect(browserMediaRouteFromHost({ type: 'media-route', route: 'unavailable', status: 'degraded' }, 'direct-video')).toBe('unavailable')
     expect(browserMediaRouteFromReceiver('connecting')).toBe('reconnecting')
-    expect(browserMediaRouteFromReceiver('webrtc-direct')).toBe('direct-video')
+    expect(browserMediaRouteFromReceiver('webrtc-direct')).toBe('reconnecting')
     expect(browserMediaRouteFromReceiver('jpeg-fallback')).toBe('low-bandwidth-fallback')
   })
 

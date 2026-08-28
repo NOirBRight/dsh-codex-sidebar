@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BrowserVideoPresentationSwitch, BrowserVideoSurface, browserWebRtcVideoAvailable, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
 
+const PRESENTATION_IDENTITY = { ownerId: 'owner-dom', revision: 7, mediaGeneration: 11 } as const
+
 class FakeVideo {
   hidden = false
   muted = false
@@ -107,7 +109,7 @@ describe('managed Browser WebRTC DOM adapter', () => {
     )
     expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
 
-    const first = presentation.stage(1_000)
+    const first = presentation.stage(PRESENTATION_IDENTITY, 1_000)
     const firstReady = first.surface.present({ kind: 'video', stop() {} })
     firstVideo.videoWidth = 1280
     firstVideo.videoHeight = 800
@@ -115,17 +117,19 @@ describe('managed Browser WebRTC DOM adapter', () => {
     await expect(firstReady).resolves.toEqual({ width: 1280, height: 800 })
     expect(firstVideo.hidden).toBe(true)
     expect(presentation.commit(first)).toBe(true)
+    expect(presentation.snapshot()).toMatchObject({ presenter: 'video', identity: PRESENTATION_IDENTITY })
     expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
 
     secondVideo.playResult = Promise.reject(new Error('new generation failed'))
-    const failed = presentation.stage(1_000)
+    const failed = presentation.stage({ ...PRESENTATION_IDENTITY, mediaGeneration: 12 }, 1_000)
     await expect(failed.surface.present({ kind: 'video', stop() {} })).resolves.toBeUndefined()
     expect(presentation.discard(failed)).toBe(true)
     expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
     expect(firstVideo.pauseCalls).toBe(0)
 
     secondVideo.playResult = Promise.resolve()
-    const next = presentation.stage(1_000)
+    const nextIdentity = { ...PRESENTATION_IDENTITY, mediaGeneration: 13 }
+    const next = presentation.stage(nextIdentity, 1_000)
     const nextReady = next.surface.present({ kind: 'video', stop() {} })
     secondVideo.videoWidth = 390
     secondVideo.videoHeight = 844
@@ -133,6 +137,7 @@ describe('managed Browser WebRTC DOM adapter', () => {
     await expect(nextReady).resolves.toEqual({ width: 390, height: 844 })
     expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
     expect(presentation.commit(next)).toBe(true)
+    expect(presentation.snapshot()).toMatchObject({ presenter: 'video', identity: nextIdentity })
     expect(presentation.commit(failed)).toBe(false)
     expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, false, '0'])
     expect(firstVideo.pauseCalls).toBe(1)

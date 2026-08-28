@@ -204,12 +204,11 @@ export function browserMediaRouteFromHost(
   return current === 'direct-video' ? current : 'reconnecting'
 }
 
-/** Project the receiver's presentation-aware route into the user-visible state. */
+/** Keep negotiation non-direct until the DOM presenter atomically commits the ready generation. */
 export function browserMediaRouteFromReceiver(
   route: 'connecting' | 'webrtc-direct' | 'jpeg-fallback',
 ): BrowserMediaPresentationRoute {
-  if (route === 'connecting') return 'reconnecting'
-  return route === 'webrtc-direct' ? 'direct-video' : 'low-bandwidth-fallback'
+  return route === 'jpeg-fallback' ? 'low-bandwidth-fallback' : 'reconnecting'
 }
 
 /** Rate-limit a receiver-less retry while allowing a new layout/media identity immediately. */
