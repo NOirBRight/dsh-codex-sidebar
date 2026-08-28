@@ -958,6 +958,8 @@ export class ManagedBrowserStream {
           everyNthFrame: profile.everyNthFrame,
         })
         if (detached) return
+        await this.#runtime.verifyLayout(tab, layout, target.identity)
+        if (detached || !sameMediaLayout(currentLayout(), layout)) return
         // A settled page may not emit a screencast frame until it repaints.
         requestFrame('activity')
       } catch (error) {

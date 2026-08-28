@@ -227,13 +227,15 @@ type PageRecord = {
   blocked?: boolean
   layout: BrowserLayout
   layoutRunning: boolean
-  pendingLayout?: PendingLayout
+  pendingLayouts: PendingLayout[]
 }
 
 type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
 type CssViewport = BrowserSize & { deviceScaleFactor: number }
 type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
-type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
+type PendingLayout =
+  | { kind: 'proposal'; proposal: LayoutProposal; waiters: LayoutWaiter[] }
+  | { kind: 'verification'; expected: BrowserLayout; waiters: LayoutWaiter[] }
 type TabIdentity = { tab: ManagedTabKey }
 type PendingPageRecord = { tab: ManagedTabKey; context?: ContextLike; cancelled: boolean; promise: Promise<PageRecord> }
 
@@ -491,11 +493,23 @@ export class ManagedBrowserRuntime {
     const normalized = normalizeLayoutProposal(proposal, this.#layoutPolicy)
     return await new Promise<BrowserLayout>((resolve, reject) => {
       const waiter = { resolve, reject }
-      if (record.pendingLayout === undefined) record.pendingLayout = { proposal: normalized, waiters: [waiter] }
-      else {
-        record.pendingLayout.proposal = normalized
-        record.pendingLayout.waiters.push(waiter)
+      const pending = record.pendingLayouts.at(-1)
+      if (pending?.kind === 'proposal') {
+        pending.proposal = normalized
+        pending.waiters.push(waiter)
+      } else {
+        record.pendingLayouts.push({ kind: 'proposal', proposal: normalized, waiters: [waiter] })
       }
+      void this.#drainLayouts(record)
+    })
+  }
+
+  /** Reapply one exact committed layout without creating a new revision. */
+  async verifyLayout(tab: ManagedTabKey, expected: BrowserLayout, expectedTarget: ManagedBrowserTargetIdentity): Promise<BrowserLayout> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.identity !== expectedTarget) throw new Error('Browser target is no longer current')
+    return await new Promise<BrowserLayout>((resolve, reject) => {
+      record.pendingLayouts.push({ kind: 'verification', expected: cloneLayout(expected), waiters: [{ resolve, reject }] })
       void this.#drainLayouts(record)
     })
   }
@@ -775,6 +789,7 @@ export class ManagedBrowserRuntime {
         mediaGeneration: 1,
       },
       layoutRunning: false,
+      pendingLayouts: [],
     }
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return
@@ -914,10 +929,17 @@ export class ManagedBrowserRuntime {
     if (record.layoutRunning) return
     record.layoutRunning = true
     try {
-      while (record.pendingLayout !== undefined) {
-        const pending = record.pendingLayout
-        delete record.pendingLayout
+      while (record.pendingLayouts.length > 0) {
+        const pending = record.pendingLayouts.shift()
+        if (pending === undefined) continue
         try {
+          if (pending.kind === 'verification') {
+            if (!sameLayout(record.layout, pending.expected)) throw new Error('Browser layout is no longer current')
+            await this.#applyViewport(record, pending.expected.viewport, true)
+            if (!sameLayout(record.layout, pending.expected)) throw new Error('Browser layout changed during viewport verification')
+            for (const waiter of pending.waiters) waiter.resolve(cloneLayout(record.layout))
+            continue
+          }
           const current = record.layout
           const next = pending.proposal
           if (current.mode === next.mode && sameSize(current.viewport, next.viewport)) {
@@ -939,7 +961,7 @@ export class ManagedBrowserRuntime {
       }
     } finally {
       record.layoutRunning = false
-      if (record.pendingLayout !== undefined) void this.#drainLayouts(record)
+      if (record.pendingLayouts.length > 0) void this.#drainLayouts(record)
     }
   }
 
@@ -1202,14 +1224,17 @@ function sameLayoutIdentity(left: Pick<BrowserLayout, 'revision' | 'mediaGenerat
   return left.revision === right.revision && left.mediaGeneration === right.mediaGeneration
 }
 
+function sameLayout(left: BrowserLayout, right: BrowserLayout): boolean {
+  return sameLayoutIdentity(left, right) && left.mode === right.mode && sameSize(left.viewport, right.viewport)
+}
+
 function cloneLayout(layout: BrowserLayout): BrowserLayout {
   return { ...layout, viewport: { ...layout.viewport } }
 }
 
 function rejectPendingLayout(record: PageRecord, error: Error): void {
-  const pending = record.pendingLayout
-  delete record.pendingLayout
-  if (pending !== undefined) for (const waiter of pending.waiters) waiter.reject(error)
+  const pending = record.pendingLayouts.splice(0)
+  for (const operation of pending) for (const waiter of operation.waiters) waiter.reject(error)
 }
 
 export async function findBrowserExecutable(explicit?: string): Promise<string> {

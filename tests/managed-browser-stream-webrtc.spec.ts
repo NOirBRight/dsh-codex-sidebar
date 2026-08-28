@@ -115,6 +115,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       acquire: () => { acquisitions += 1; return () => { releases += 1 } },
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async () => { proposals += 1; return layout }, outline: async () => ({ documentId: 'd1', nodes: [] }),
       trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
@@ -221,6 +222,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       target: () => ({ cdp, layout }), keyOf: () => 'mobile:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, ...proposal }
@@ -377,6 +379,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       keyOf: (tab: { sessionId: string; tabId: string }) => tab.sessionId + ':' + tab.tabId,
       touch: () => {}, acquire: () => () => {}, layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: (tab: { tabId: string }) => ({ tabId: tab.tabId, url: 'about:blank', title: '', documentId: tab.tabId, status: 'ready' }),
       proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
       trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
@@ -494,6 +497,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, ...proposal }
@@ -628,6 +632,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
       trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),

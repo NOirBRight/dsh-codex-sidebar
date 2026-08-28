@@ -45,6 +45,7 @@ function v2RuntimePorts() {
     acquire: () => () => {},
     layout: v2Layout,
     layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+    verifyLayout: async () => v2Layout(),
   }
 }
 
@@ -160,6 +161,56 @@ describe('managed browser stream protocol', () => {
         flowControl: 'frame-ack-v2',
         media: { hideGraceMs: 15_000 },
       })
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('revalidates a fixed committed viewport after the first screencast starts', async () => {
+    const order: string[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method: string) => {
+      if (method === 'Page.startScreencast') order.push('start-screencast')
+      return {}
+    }
+    const runtime = {
+      ...v2RuntimePorts(),
+      verifyLayout: vi.fn(async () => {
+        order.push('verify-layout')
+        return v2Layout()
+      }),
+      target: () => v2Target(cdp),
+      keyOf: () => 'fixed:tab',
+      touch: () => {},
+      projection: () => undefined,
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'fixed', tabId: 'tab' }).path)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({
+            type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'],
+            flowControl: ['frame-ack-v2'], media: { webrtcVideo: false },
+          }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(runtime.verifyLayout).toHaveBeenCalledOnce() })
+      expect(runtime.verifyLayout).toHaveBeenCalledWith(
+        { sessionId: 'fixed', tabId: 'tab' },
+        v2Layout(),
+        V2_TARGET_IDENTITY,
+      )
+      expect(order).toEqual(['start-screencast', 'verify-layout'])
     } finally {
       client.close()
       await stream.dispose()

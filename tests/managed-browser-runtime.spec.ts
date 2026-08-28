@@ -912,6 +912,31 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.dispose()
   })
 
+  it('reapplies an exact committed layout without advancing its media identity', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'verify-committed' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const committed = await box.runtime.proposeLayout(tab, {
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+    })
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing fake target')
+    page.domSize = { width: 720, height: 773 }
+    page.setViewportUpdatesDom = false
+
+    await expect(box.runtime.verifyLayout(tab, committed, target.identity)).resolves.toEqual(committed)
+
+    expect(box.runtime.layout(tab)).toEqual(committed)
+    expect(page.domSize).toEqual({ width: 1280, height: 800 })
+    expect(box.cdpCommands.at(-1)).toMatchObject({
+      method: 'Emulation.setDeviceMetricsOverride',
+      params: { width: 1280, height: 800 },
+    })
+    await box.runtime.dispose()
+  })
+
   it('closes the exact target and rejects the proposal when Chromium still violates the viewport postcondition', async () => {
     const box = harness()
     const tab = { sessionId: 'layout', tabId: 'postcondition-failed' }

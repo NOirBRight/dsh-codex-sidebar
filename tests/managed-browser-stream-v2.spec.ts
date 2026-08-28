@@ -26,6 +26,7 @@ describe('managed Browser Host protocol v2', () => {
       target: () => ({ cdp, layout }), keyOf: () => 'fit:tab', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         layout = { revision: 2, mode: proposal.mode, viewport: proposal.viewport, mediaGeneration: 2 }
@@ -94,6 +95,7 @@ describe('managed Browser Host protocol v2', () => {
       target: () => ({ cdp, layout }), keyOf: () => 'preset:tab', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       mediaPageCount: () => 0,
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
@@ -163,6 +165,7 @@ describe('managed Browser Host protocol v2', () => {
         keyOf: () => 'replacement:tab', touch: () => {}, acquire: () => () => {},
         layout: () => ({ ...current.layout, viewport: { ...current.layout.viewport } }),
         layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+        verifyLayout: async () => current.layout,
         mediaPageCount: () => 0,
         projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
         proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
@@ -366,6 +369,7 @@ describe('managed Browser Host protocol v2', () => {
       target: () => ({ cdp, layout }), keyOf: () => 'animation:tab', touch: () => {}, acquire: () => () => {},
       layout: () => layout,
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       outline: async () => ({ documentId: 'd1', nodes: [] }), trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
       mediaPageCount: () => 0,
@@ -447,6 +451,7 @@ describe('managed Browser Host protocol v2', () => {
       acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
         layout = { revision: layout.revision + 1, mediaGeneration: layout.mediaGeneration + 1, mode: proposal.mode, viewport: proposal.viewport }

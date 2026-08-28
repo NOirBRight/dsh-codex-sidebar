@@ -247,6 +247,8 @@ export declare class ManagedBrowserRuntime {
     resize(tab: ManagedTabKey, width: number, height: number): Promise<void>;
     /** Commit a proposal only when the optional exact target owns the Tab and reports the requested CSS viewport. */
     proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout>;
+    /** Reapply one exact committed layout without creating a new revision. */
+    verifyLayout(tab: ManagedTabKey, expected: BrowserLayout, expectedTarget: ManagedBrowserTargetIdentity): Promise<BrowserLayout>;
     snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult>;
     /**
      * Read visible outline nodes only while one optional exact target still owns the Tab.

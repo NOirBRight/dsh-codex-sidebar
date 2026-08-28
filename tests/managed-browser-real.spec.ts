@@ -272,4 +272,76 @@ describe('real managed Chromium', () => {
     expect(pixel[0]).toBeLessThan(80)
     client.close()
   }, 30_000)
+
+  it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('keeps a committed laptop viewport when the first stream starts without a new proposal', async () => {
+    const pageServer = createServer((_req, res) => {
+      res.setHeader('content-type', 'text/html')
+      res.end('<!doctype html><title>Fixed stream test</title><style>*{margin:0}.top{height:100px;width:100%;background:#e11d48}</style><section class="top"></section>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      pageServer.once('error', reject)
+      pageServer.listen(0, '127.0.0.1', () => { resolve() })
+    })
+    const pageAddress = pageServer.address()
+    if (pageAddress === null || typeof pageAddress === 'string') throw new Error('missing page server port')
+
+    const streamServer = createServer()
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-real-fixed-stream-'))
+    const runtime = new ManagedBrowserRuntime({ profileDir, headless: true })
+    const stream = new ManagedBrowserStream({ runtime })
+    streamServer.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve, reject) => {
+      streamServer.once('error', reject)
+      streamServer.listen(0, '127.0.0.1', () => { resolve() })
+    })
+    const streamAddress = streamServer.address()
+    if (streamAddress === null || typeof streamAddress === 'string') throw new Error('missing stream server port')
+
+    const tab = { sessionId: 'fixed-stream-real', tabId: 'page' }
+    const url = 'http://127.0.0.1:' + pageAddress.port + '/'
+    await runtime.ensure(tab, url)
+    await expect(runtime.proposeLayout(tab, { mode: 'laptop', viewport: { width: 1280, height: 800 } })).resolves.toMatchObject({
+      revision: 2,
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+      mediaGeneration: 2,
+    })
+    const page = runtime.target(tab)?.page
+    if (page === undefined) throw new Error('missing managed Page')
+    await expect(page.evaluate('({ width: innerWidth, height: innerHeight })')).resolves.toEqual({ width: 1280, height: 800 })
+    await page.setViewportSize({ width: 720, height: 773 })
+    await expect(page.evaluate('({ width: innerWidth, height: innerHeight })')).resolves.toEqual({ width: 720, height: 773 })
+
+    let client: WebSocket | undefined
+    cleanups.push(async () => {
+      client?.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { streamServer.close(() => { resolve() }) })
+      await runtime.dispose()
+      await new Promise<void>((resolve) => { pageServer.close(() => { resolve() }) })
+      await rm(profileDir, { recursive: true, force: true })
+    })
+    const ticket = stream.issue(tab)
+    client = new WebSocket('ws://127.0.0.1:' + streamAddress.port + ticket.path, {
+      headers: { origin: 'http://127.0.0.1:' + streamAddress.port },
+    })
+    const committed = nextLayoutCommit(client)
+    const firstFrame = nextStreamFrame(client, () => true, 'fixed laptop initial frame')
+    await new Promise<void>((resolve, reject) => {
+      client?.once('open', () => {
+        client?.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['binary-v2', 'json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
+        resolve()
+      })
+      client?.once('error', reject)
+    })
+
+    await expect(committed).resolves.toMatchObject({ mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    const frame = await firstFrame
+    expect(frame.viewport).toEqual({ width: 1280, height: 800 })
+    await expect(page.evaluate('({ width: innerWidth, height: innerHeight, contentWidth: document.querySelector(".top")?.getBoundingClientRect().width })')).resolves.toEqual({
+      width: 1280,
+      height: 800,
+      contentWidth: 1280,
+    })
+  }, 30_000)
 })
