@@ -9,6 +9,49 @@ import type { ManagedBrowserWebRtcEncoderOptions } from '../src/managed-browser-
 type SocketSendData = Parameters<WebSocket['send']>[0]
 type SocketSendOptions = Parameters<WebSocket['send']>[1]
 type SocketSendCallback = NonNullable<Parameters<WebSocket['send']>[2]>
+type TestTab = { sessionId: string; tabId: string }
+type TestCdp = EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+
+const TEST_TARGET_IDENTITIES = new WeakMap<TestCdp, object>()
+
+function streamRuntimePorts(targetFor: (tab: TestTab) => { cdp: TestCdp; layout: BrowserLayout }) {
+  const target = (tab: TestTab) => {
+    const value = targetFor(tab)
+    let identity = TEST_TARGET_IDENTITIES.get(value.cdp)
+    if (identity === undefined) {
+      identity = Object.freeze({})
+      TEST_TARGET_IDENTITIES.set(value.cdp, identity)
+    }
+    return {
+      ...value,
+      identity,
+      page: { viewportSize: () => value.layout.viewport },
+      documentId: tab.tabId,
+      layoutEpoch: value.layout.revision,
+    }
+  }
+  return {
+    target,
+    ownedTarget: (tab: TestTab, expectedTarget: object) => {
+      const current = target(tab)
+      return current.identity === expectedTarget ? current : undefined
+    },
+    runInput: async (
+      tab: TestTab,
+      expectedTarget: object,
+      expectedLayout: { revision: number; layoutEpoch: number },
+      action: (cdp: TestCdp, targetIsCurrent: () => boolean) => Promise<void>,
+    ) => {
+      const current = target(tab)
+      if (current.identity !== expectedTarget || current.layout.revision !== expectedLayout.revision
+        || current.layoutEpoch !== expectedLayout.layoutEpoch) return false
+      await action(current.cdp, () => target(tab).identity === expectedTarget)
+      const after = target(tab)
+      return after.identity === expectedTarget && after.layout.revision === expectedLayout.revision
+        && after.layoutEpoch === expectedLayout.layoutEpoch
+    },
+  }
+}
 
 function deferFallbackFrameSendCallbacks(): {
   completions: Array<(error?: Error) => void>
@@ -111,7 +154,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       return {}
     }
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {},
+      ...streamRuntimePorts(() => ({ cdp, layout })), keyOf: () => 's:t', touch: () => {},
       acquire: () => { acquisitions += 1; return () => { releases += 1 } },
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
@@ -219,7 +262,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 'mobile:t', touch: () => {}, acquire: () => () => {},
+      ...streamRuntimePorts(() => ({ cdp, layout })), keyOf: () => 'mobile:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
@@ -375,7 +418,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       return cdp
     }
     const runtime = {
-      target: (tab: { tabId: string }) => ({ cdp: cdpFor(tab.tabId), layout }),
+      ...streamRuntimePorts((tab) => ({ cdp: cdpFor(tab.tabId), layout })),
       keyOf: (tab: { sessionId: string; tabId: string }) => tab.sessionId + ':' + tab.tabId,
       touch: () => {}, acquire: () => () => {}, layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
@@ -494,7 +537,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
       : method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
+      ...streamRuntimePorts(() => ({ cdp, layout })), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
@@ -629,7 +672,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
       : method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
+      ...streamRuntimePorts(() => ({ cdp, layout })), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,

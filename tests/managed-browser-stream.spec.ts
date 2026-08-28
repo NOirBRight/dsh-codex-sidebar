@@ -36,12 +36,35 @@ function v2Target(
     identity: V2_TARGET_IDENTITY,
     page: { viewportSize: () => pageViewport },
     cdp,
+    documentId: 'd1',
     layout: v2Layout(),
+    layoutEpoch: 1,
   }
 }
 
-function v2RuntimePorts() {
+function v2RuntimePorts(
+  cdp: EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> },
+  pageViewport = { width: 720, height: 860 },
+) {
+  const currentTarget = () => v2Target(cdp, pageViewport)
   return {
+    target: currentTarget,
+    ownedTarget: (_tab: unknown, expectedTarget: object) => {
+      const target = currentTarget()
+      return target.identity === expectedTarget ? target : undefined
+    },
+    runInput: async (
+      _tab: unknown,
+      expectedTarget: object,
+      expectedLayout: { revision: number; layoutEpoch: number },
+      action: (ownedCdp: typeof cdp, targetIsCurrent: () => boolean) => Promise<void>,
+    ) => {
+      const target = currentTarget()
+      if (target.identity !== expectedTarget || target.layout.revision !== expectedLayout.revision
+        || target.layoutEpoch !== expectedLayout.layoutEpoch) return false
+      await action(target.cdp, () => true)
+      return true
+    },
     acquire: () => () => {},
     layout: v2Layout,
     layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
@@ -66,9 +89,8 @@ describe('managed browser stream protocol', () => {
     }
     let leaseReleases = 0
     const runtime = {
-      ...v2RuntimePorts(),
+      ...v2RuntimePorts(cdp),
       acquire: () => () => { leaseReleases += 1 },
-      target: () => v2Target(cdp),
       keyOf: () => 's:t',
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
@@ -117,8 +139,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp),
+      ...v2RuntimePorts(cdp),
       keyOf: () => 's:t',
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
@@ -176,12 +197,11 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
-      ...v2RuntimePorts(),
+      ...v2RuntimePorts(cdp),
       verifyLayout: vi.fn(async () => {
         order.push('verify-layout')
         return v2Layout()
       }),
-      target: () => v2Target(cdp),
       keyOf: () => 'fixed:tab',
       touch: () => {},
       projection: () => undefined,
@@ -222,8 +242,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(): Promise<unknown> }
     cdp.send = async () => ({})
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp),
+      ...v2RuntimePorts(cdp),
       keyOf: () => 's:t',
       touch: () => {},
       projection: () => undefined,
@@ -269,8 +288,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp, { width: 390, height: 844 }),
+      ...v2RuntimePorts(cdp, { width: 390, height: 844 }),
       keyOf: () => 's:t',
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
@@ -319,8 +337,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp),
+      ...v2RuntimePorts(cdp),
       keyOf: () => 'desktop:tab',
       touch: () => {},
       projection: () => undefined,
@@ -370,8 +387,7 @@ describe('managed browser stream protocol', () => {
       return {}
     }
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp),
+      ...v2RuntimePorts(cdp),
       keyOf: () => 'flow:tab',
       touch: () => {},
       projection: () => undefined,
@@ -430,8 +446,7 @@ describe('managed browser stream protocol', () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => method === 'Page.captureScreenshot' ? { data: jpeg } : {}
     const runtime = {
-      ...v2RuntimePorts(),
-      target: () => v2Target(cdp),
+      ...v2RuntimePorts(cdp),
       keyOf: () => 'timer:tab',
       touch: () => {},
       projection: () => undefined,
