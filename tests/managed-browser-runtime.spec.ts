@@ -375,6 +375,34 @@ describe('ManagedBrowserRuntime', () => {
     await runtime.dispose()
   })
 
+  it('never lets an old exact target identity address a replacement record', async () => {
+    const box = harness()
+    const tab = { sessionId: 'target-identity', tabId: 'replacement' }
+    await box.runtime.ensure(tab, 'https://one.example')
+    const first = box.runtime.target(tab)
+    if (first === undefined) throw new Error('missing first target')
+
+    await box.runtime.close(tab)
+    await box.runtime.ensure(tab, 'https://two.example')
+    const second = box.runtime.target(tab)
+    if (second === undefined) throw new Error('missing replacement target')
+
+    expect(second.identity).not.toBe(first.identity)
+    expect(box.runtime.target(tab, first.identity)).toBeUndefined()
+    await expect(box.runtime.proposeLayout(
+      tab,
+      { mode: 'phone', viewport: { width: 390, height: 844 } },
+      first.identity,
+    )).rejects.toThrow('target is no longer current')
+    expect(box.runtime.layout(tab)).toMatchObject({ revision: 1, mode: 'fit', viewport: { width: 720, height: 860 } })
+    await expect(box.runtime.proposeLayout(
+      tab,
+      { mode: 'phone', viewport: { width: 390, height: 844 } },
+      second.identity,
+    )).resolves.toMatchObject({ revision: 2, mode: 'phone', viewport: { width: 390, height: 844 } })
+    await box.runtime.dispose()
+  })
+
   it('cancels every pending Page identity on dispose', async () => {
     const page = new FakePage()
     let signalStarted!: () => void

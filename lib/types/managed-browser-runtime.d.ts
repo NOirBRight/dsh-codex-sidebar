@@ -219,6 +219,11 @@ type LayoutProposal = {
     mode: BrowserLayoutMode;
     viewport: BrowserSize;
 };
+declare const managedBrowserTargetIdentity: unique symbol;
+/** Opaque object identity for one exact managed Page/CDP record. */
+export type ManagedBrowserTargetIdentity = Readonly<{
+    readonly [managedBrowserTargetIdentity]: true;
+}>;
 export declare class ManagedBrowserRuntime {
     #private;
     readonly profileDir: string;
@@ -238,7 +243,8 @@ export declare class ManagedBrowserRuntime {
     forward(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     resize(tab: ManagedTabKey, width: number, height: number): Promise<void>;
-    proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal): Promise<BrowserLayout>;
+    /** Commit a proposal only when the optional exact target still owns the Tab. */
+    proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout>;
     snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult>;
     outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult>;
     trackRect(tab: ManagedTabKey, selector: string): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult>;
@@ -251,7 +257,9 @@ export declare class ManagedBrowserRuntime {
         layoutRevision: number;
         mediaGeneration: number;
     } | undefined;
-    target(tab: ManagedTabKey): {
+    /** Resolve the current target, optionally requiring one previously returned opaque identity. */
+    target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): {
+        identity: ManagedBrowserTargetIdentity;
         page: PageLike;
         cdp: ManagedCdpSession;
         documentId: string;

@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
-import type { ManagedBrowserRuntime, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts'
+import type { ManagedBrowserRuntime, ManagedBrowserTargetIdentity, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts'
 import {
   decodeBrowserClientMessage,
   encodeBrowserStreamFrameV2,
@@ -529,7 +529,7 @@ export class ManagedBrowserStream {
   async #attach(
     socket: WebSocket,
     tab: ManagedTabKey,
-    target: { cdp: ManagedCdpSession; layout: BrowserLayout },
+    target: { identity: ManagedBrowserTargetIdentity; cdp: ManagedCdpSession; layout: BrowserLayout },
     profile: BrowserStreamTransportProfile,
   ): Promise<void> {
     const cdp = target.cdp
@@ -575,10 +575,17 @@ export class ManagedBrowserStream {
     let startTask: Promise<void> | undefined
     let noteMediaActivity = (): void => {}
     const fallbackActivity = new BrowserFallbackActivityBudget(profile.interactionBurstFrames)
-    const currentLayout = (): BrowserLayout | undefined => this.#runtime.layout(tab)
+    const currentTarget = (): ReturnType<ManagedBrowserRuntime['target']> => {
+      const current = this.#runtime.target(tab, target.identity)
+      if (current?.identity === target.identity) return current
+      if (!detached && socket.readyState === WebSocket.OPEN) socket.close(4002, 'Browser target replaced')
+      return undefined
+    }
+    const currentLayout = (): BrowserLayout | undefined => currentTarget()?.layout
     let releaseLease: (() => void) | undefined
     const sendProjection = (): boolean => {
       if (socket.readyState !== WebSocket.OPEN) return false
+      if (currentTarget() === undefined) return false
       const projection = this.#runtime.projection(tab)
       if (projection === undefined) return false
       const signature = projection.documentId + ':' + projection.status + ':' + projection.url + ':' + projection.title
@@ -1045,6 +1052,7 @@ export class ManagedBrowserStream {
     helloTimer.unref()
     // DSH Mobile's loopback bridge forwards client text messages as binary Buffers.
     socket.on('message', (data) => {
+      if (currentTarget() === undefined) return
       const raw = data.toString()
       if (!handshaken) {
         const hello = decodeBrowserClientMessage(raw)
@@ -1127,10 +1135,10 @@ export class ManagedBrowserStream {
           return
         }
       }
-      void this.#onMessage(socket, tab, cdp, message, requestFrame, commitLayout, currentLayout, noteMediaActivity, {
+      void this.#onMessage(socket, tab, target.identity, cdp, message, requestFrame, commitLayout, currentLayout, noteMediaActivity, {
         get latest() { return latestProposalSequence },
         set latest(value: number) { latestProposalSequence = value },
-      }).catch(() => undefined)
+      }).catch(() => { currentTarget() })
     })
     const activate = async (): Promise<void> => {
       await previousCleanup
@@ -1153,6 +1161,7 @@ export class ManagedBrowserStream {
   async #onMessage(
     socket: WebSocket,
     tab: ManagedTabKey,
+    targetIdentity: ManagedBrowserTargetIdentity,
     cdp: ManagedCdpSession,
     message: Exclude<ReturnType<typeof decodeBrowserClientMessage>, undefined | { type: 'hello' } | { type: 'frame-ack' }>,
     requestFrame: (kind: 'activity' | 'passive') => void,
@@ -1177,7 +1186,9 @@ export class ManagedBrowserStream {
       if (message.proposalSequence <= proposal.latest) return
       proposal.latest = message.proposalSequence
       this.#diagnostics.layoutProposals += 1
-      const layout = await this.#runtime.proposeLayout(tab, { mode: message.mode, viewport: message.viewport })
+      const layout = await this.#runtime.proposeLayout(tab, { mode: message.mode, viewport: message.viewport }, targetIdentity)
+      const current = currentLayout()
+      if (current === undefined || current.revision !== layout.revision || current.mediaGeneration !== layout.mediaGeneration) return
       commitLayout(layout)
       return
     }

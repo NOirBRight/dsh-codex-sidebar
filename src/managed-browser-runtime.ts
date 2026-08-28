@@ -208,6 +208,7 @@ export type ManagedBrowserRuntimeOptions = ManagedBrowserConfig & {
 type RefTarget = { documentId: string; selector: string }
 
 type PageRecord = {
+  identity: ManagedBrowserTargetIdentity
   tab: ManagedTabKey
   key: string
   page: PageLike
@@ -232,6 +233,11 @@ type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: 
 type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
 type TabIdentity = { tab: ManagedTabKey }
 type PendingPageRecord = { tab: ManagedTabKey; cancelled: boolean; promise: Promise<PageRecord> }
+
+declare const managedBrowserTargetIdentity: unique symbol
+
+/** Opaque object identity for one exact managed Page/CDP record. */
+export type ManagedBrowserTargetIdentity = Readonly<{ readonly [managedBrowserTargetIdentity]: true }>
 
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
@@ -459,9 +465,11 @@ export class ManagedBrowserRuntime {
     await this.proposeLayout(tab, { mode: 'fit', viewport: { width, height } })
   }
 
-  async proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal): Promise<BrowserLayout> {
+  /** Commit a proposal only when the optional exact target still owns the Tab. */
+  async proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout> {
     const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined) throw new Error('Browser page is not ready')
+    if (record === undefined) throw new Error(expectedTarget === undefined ? 'Browser page is not ready' : 'Browser target is no longer current')
+    if (expectedTarget !== undefined && record.identity !== expectedTarget) throw new Error('Browser target is no longer current')
     const normalized = normalizeLayoutProposal(proposal, this.#layoutPolicy)
     return await new Promise<BrowserLayout>((resolve, reject) => {
       const waiter = { resolve, reject }
@@ -555,11 +563,13 @@ export class ManagedBrowserRuntime {
     return { documentId: record.documentId, layoutRevision: record.layout.revision, mediaGeneration: record.layout.mediaGeneration }
   }
 
-  target(tab: ManagedTabKey): { page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout } | undefined {
+  /** Resolve the current target, optionally requiring one previously returned opaque identity. */
+  target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.page.isClosed()) return undefined
-    if (record.status === 'error' || record.status === 'crashed') return undefined
-    return { page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout) }
+    if (expectedTarget !== undefined && record.identity !== expectedTarget) return undefined
+    if (expectedTarget === undefined && (record.status === 'error' || record.status === 'crashed')) return undefined
+    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout) }
   }
 
   /** Lease one narrow media Page from the same persistent Chromium context. */
@@ -698,6 +708,7 @@ export class ManagedBrowserRuntime {
 
   #commitRecord(tab: ManagedTabKey, key: string, page: PageLike, cdp: ManagedCdpSession, requestedViewport: BrowserSize | undefined): PageRecord {
     const record: PageRecord = {
+      identity: Object.freeze({}) as ManagedBrowserTargetIdentity,
       tab,
       key,
       page,
