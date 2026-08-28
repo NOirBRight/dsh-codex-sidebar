@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
-import { browserPresentationObservation, writeBrowserPresentationObservation } from './managed-browser-observability.ts'
+import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
 import { decodeBrowserHostMessage, type BrowserInput, type BrowserLayout, type BrowserMediaIdentity, type BrowserReadyMessage, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
@@ -55,6 +55,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   const visibilityGraceRef = useRef<BrowserVisibilityGrace | null>(null)
   const fallbackRetryRef = useRef<BrowserMediaRetryState>()
   const mediaRouteRef = useRef<BrowserMediaPresentationRoute>('reconnecting')
+  const presentationConnectionRef = useRef<BrowserPresentationConnection>('connecting')
   const surfaceVisibleRef = useRef(true)
   const surfaceActiveRef = useRef(active)
   const visibilityUpdateRef = useRef<() => void>(() => {})
@@ -118,24 +119,21 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     if (request.message !== undefined) send(socketRef.current, request.message)
   }
 
-  const publishPresentationObservation = (): void => {
-    const target = surfaceRef.current
-    const layout = layoutRef.current
-    if (target === null || layout === null) return
-    writeBrowserPresentationObservation(
-      target,
-      browserPresentationObservation(
-        layout.snapshot(),
-        mediaRouteRef.current,
-        videoPresentationRef.current?.snapshot() ?? { presenter: 'canvas' },
-      ),
-    )
+  const publishPresentation = (state: BrowserPresentationState): void => {
+    presentationConnectionRef.current = state.connection
+    mediaRouteRef.current = state.mediaRoute
+    publishBrowserPresentation(surfaceRef.current ?? undefined, state)
+    setMediaRoute(state.mediaRoute)
   }
 
   const publishMediaRoute = (route: BrowserMediaPresentationRoute): void => {
-    mediaRouteRef.current = route
-    publishPresentationObservation()
-    setMediaRoute(route)
+    const connected = presentationConnectionRef.current === 'connected'
+    publishPresentation({
+      connection: presentationConnectionRef.current,
+      layout: connected ? layoutRef.current?.snapshot() ?? null : null,
+      mediaRoute: route,
+      source: connected ? videoPresentationRef.current?.snapshot() ?? { presenter: 'canvas' } : { presenter: 'none' },
+    })
   }
 
   const publishSurfaceVisibility = (visible: boolean, socket: WebSocket | null = socketRef.current): void => {
@@ -151,7 +149,6 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       surfaceRef.current.style.width = surface.width + 'px'
       surfaceRef.current.style.height = surface.height + 'px'
     }
-    publishPresentationObservation()
     setSurfaceSize((current) => current.width === surface.width && current.height === surface.height ? current : surface)
   }
 
@@ -178,6 +175,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     if (bounds.width <= 0 || bounds.height <= 0) return
     layoutRef.current?.observeContainer({ width: bounds.width, height: bounds.height }, performance.now())
     updateSurface()
+    publishMediaRoute(mediaRouteRef.current)
     armLayoutTimer()
   }
 
@@ -279,12 +277,12 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       const second = secondVideoRef.current
       const canvas = canvasRef.current
       if (first === null || second === null || canvas === null) return undefined
-      const presentation = new BrowserVideoPresentationSwitch([first, second], canvas, undefined, publishPresentationObservation)
+      const presentation = new BrowserVideoPresentationSwitch([first, second], canvas)
       videoPresentationRef.current = presentation
       return presentation
     }
 
-    const disposeMedia = (route: BrowserMediaPresentationRoute = 'unavailable'): void => {
+    const disposeMedia = (): void => {
       const receiver = receiverRef.current
       const activeReceiver = activeReceiverRef.current
       receiver?.dispose()
@@ -292,7 +290,6 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       receiverRef.current = null
       activeReceiverRef.current = null
       videoPresentationRef.current?.clear()
-      publishMediaRoute(route)
     }
 
     const prepareMediaGeneration = (): void => {
@@ -332,6 +329,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
                 if (presented !== undefined) viewportRef.current = presented.viewport
                 videoPresentation()?.showCanvas()
                 updateSurface()
+                publishMediaRoute(mediaRouteRef.current)
                 const activeReceiver = activeReceiverRef.current
                 activeReceiverRef.current = null
                 if (activeReceiver !== receiverRef.current) activeReceiver?.dispose()
@@ -361,6 +359,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
 
     const connect = async (): Promise<void> => {
       setStatus('connecting')
+      presentationConnectionRef.current = 'connecting'
       publishMediaRoute('reconnecting')
       const ticket = await ticketRef.current(tabId)
       if (stopped) return
@@ -611,6 +610,8 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
                 hysteresisPx: ready.layoutPolicy.hysteresisPx,
                 viewportLimits: { min: ready.layoutPolicy.minViewport, max: ready.layoutPolicy.maxViewport },
               })
+              presentationConnectionRef.current = 'connected'
+              publishMediaRoute(mediaRouteRef.current)
               earlyCandidates.clear()
               observeContainer()
               sendLayoutProposal(layoutRef.current.selectMode(deviceRef.current, performance.now()), socket)
@@ -655,7 +656,9 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           if (layoutTimerRef.current !== undefined) clearTimeout(layoutTimerRef.current)
           layoutTimerRef.current = undefined
           setStatus('connecting')
-          disposeMedia('reconnecting')
+          presentationConnectionRef.current = 'disconnected'
+          publishMediaRoute('reconnecting')
+          disposeMedia()
           readyRef.current = null
           earlyCandidates.clear()
           cleanupMediaListeners()
@@ -673,6 +676,8 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       layoutRef.current = null
       readyRef.current = null
       earlyCandidates.clear()
+      presentationConnectionRef.current = 'disconnected'
+      publishMediaRoute('unavailable')
       disposeMedia()
       cleanupMediaListeners()
       socketRef.current?.close(1000, 'Browser surface hidden')
@@ -821,7 +826,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           autoPlay
           playsInline
           hidden
-          onResize={() => { videoPresentationRef.current?.refresh() }}
+          onResize={() => { publishMediaRoute(mediaRouteRef.current) }}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <video
@@ -831,7 +836,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           autoPlay
           playsInline
           hidden
-          onResize={() => { videoPresentationRef.current?.refresh() }}
+          onResize={() => { publishMediaRoute(mediaRouteRef.current) }}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
         />
         <canvas

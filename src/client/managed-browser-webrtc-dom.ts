@@ -79,7 +79,6 @@ export class BrowserVideoPresentationSwitch {
   #videos: readonly [PresentationVideo, PresentationVideo]
   #canvas: PresentationCanvas
   #createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown
-  #onPresentationChange: () => void
   #active: BrowserVideoStage | undefined
   #pending: BrowserVideoStage | undefined
 
@@ -87,12 +86,10 @@ export class BrowserVideoPresentationSwitch {
     videos: readonly [PresentationVideo, PresentationVideo],
     canvas: PresentationCanvas,
     createStream: (tracks: BrowserMediaReceiverTrack[]) => unknown = (tracks) => new MediaStream(tracks as MediaStreamTrack[]),
-    onPresentationChange: () => void = () => {},
   ) {
     this.#videos = videos
     this.#canvas = canvas
     this.#createStream = createStream
-    this.#onPresentationChange = onPresentationChange
     videos[0].hidden = true
     videos[1].hidden = true
     canvas.style.opacity = '1'
@@ -121,7 +118,6 @@ export class BrowserVideoPresentationSwitch {
       this.#videos[previous.slot].hidden = true
       previous.surface.clear()
     }
-    this.#onPresentationChange()
     return true
   }
 
@@ -158,11 +154,6 @@ export class BrowserVideoPresentationSwitch {
     }
   }
 
-  /** Refresh diagnostics after the active video's intrinsic dimensions change. */
-  refresh(): void {
-    this.#onPresentationChange()
-  }
-
   /** Reveal an already-painted fallback canvas before releasing the previous video. */
   showCanvas(): void {
     this.#canvas.style.opacity = '1'
@@ -172,7 +163,6 @@ export class BrowserVideoPresentationSwitch {
       this.#videos[active.slot].hidden = true
       active.surface.clear()
     }
-    this.#onPresentationChange()
   }
 
   /** Release both visible and staged video attachments. */
