@@ -1088,7 +1088,7 @@ export class ManagedBrowserStream {
         },
         layoutPolicy: this.#runtime.layoutPolicy(),
       }))
-      const layout = currentLayout()
+      const layout = currentTarget()?.layout
       if (layout === undefined) {
         socket.close(1011, 'Browser layout is not ready')
         return
@@ -1249,7 +1249,9 @@ export class ManagedBrowserStream {
       proposal.latest = message.proposalSequence
       this.#diagnostics.layoutProposals += 1
       const layout = await this.#runtime.proposeLayout(tab, { mode: message.mode, viewport: message.viewport }, targetIdentity)
-      const current = currentLayout()
+      // A reconnect verification may already hold the visual-read gate after this
+      // proposal committed. Control-plane commits only require the exact Page owner.
+      const current = currentTarget()?.layout
       if (current === undefined || current.revision !== layout.revision || current.mediaGeneration !== layout.mediaGeneration) return
       commitLayout(layout)
       return
