@@ -256,7 +256,6 @@ const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
 const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
 const VIEWPORT_PAINT_EXPRESSION = 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
-const VIEWPORT_PAINT_WORLD = 'dsh-browser-layout-paint'
 const DEFAULT_LAYOUT_PAINT_TIMEOUT_MS = 1_000
 const DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
@@ -1059,25 +1058,7 @@ export class ManagedBrowserRuntime {
   }
 
   async #waitForViewportPaint(record: PageRecord): Promise<void> {
-    const paint = (async () => {
-      const tree = await record.cdp.send('Page.getFrameTree') as { frameTree?: { frame?: { id?: unknown } } }
-      this.#assertLayoutRecordCurrent(record)
-      const frameId = tree.frameTree?.frame?.id
-      if (typeof frameId !== 'string') throw new Error('Chromium did not return the Browser main frame')
-      const world = await record.cdp.send('Page.createIsolatedWorld', {
-        frameId,
-        worldName: VIEWPORT_PAINT_WORLD,
-        grantUniveralAccess: false,
-      }) as { executionContextId?: unknown }
-      this.#assertLayoutRecordCurrent(record)
-      if (!Number.isInteger(world.executionContextId)) throw new Error('Chromium did not create the Browser paint world')
-      await record.cdp.send('Runtime.evaluate', {
-        expression: VIEWPORT_PAINT_EXPRESSION,
-        contextId: world.executionContextId,
-        awaitPromise: true,
-        returnByValue: true,
-      })
-    })()
+    const paint = record.page.evaluate(VIEWPORT_PAINT_EXPRESSION)
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => { reject(new Error('Chromium Browser viewport paint timed out')) }, this.#layoutPaintTimeoutMs)
