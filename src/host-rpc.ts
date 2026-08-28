@@ -19,7 +19,6 @@ import type { createRegistry } from './registry.ts'
 import type { ManagedBrowserStream } from './managed-browser-stream.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 import type { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
-import { browserDeviceViewport } from './browser.ts'
 import type { BrowserEvidence, SidebarSnapshot } from './session.ts'
 import { readPreview, type WorkspaceInspector } from './workspace-inspector.ts'
 import {
@@ -75,9 +74,6 @@ export async function handleSidebarRpcAsync(
       if (projection.status === 'error' || projection.status === 'crashed') {
         return fail(projection.error ?? 'Browser page is not ready')
       }
-      const mode = snapshot.browsers[tabId]?.device ?? 'fit'
-      const viewport = browserDeviceViewport(mode)
-      if (viewport !== null) await services.managedBrowser.proposeLayout(tabKey, { mode, viewport })
       return { ok: true, value: services.browserStream.issue(tabKey) }
     }
     if (endpoint === SIDEBAR_BROWSER_CAPTURE_ENDPOINT) {

@@ -564,7 +564,7 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.status).toBe('loaded')
   })
 
-  it('persists compact device presets and requests fixed managed viewports', () => {
+  it('persists compact device presets without bypassing the v2 control connection', () => {
     const resized: Array<{ tabId: string; mode: BrowserDevice; width: number; height: number }> = []
     const browser = {
       ...fakeBrowser(),
@@ -572,21 +572,19 @@ describe('Browser seam', () => {
     }
     const box = session(browser)
     box.dispatch({ type: 'open-url', url: PAGE_URL })
-    const tabId = box.snapshot().active as string
     expect(box.snapshot().browser.device).toBe('fit')
     expect(browserDeviceViewport('phone')).toEqual({ width: 390, height: 844 })
 
     box.dispatch({ type: 'browser-set-device', device: 'phone' })
     expect(box.snapshot().browser.device).toBe('phone')
-    expect(resized.at(-1)).toEqual({ tabId, mode: 'phone', width: 390, height: 844 })
 
     box.dispatch({ type: 'browser-set-device', device: 'laptop' })
     expect(box.snapshot().browser.device).toBe('laptop')
-    expect(resized.at(-1)).toEqual({ tabId, mode: 'laptop', width: 1280, height: 800 })
 
     box.dispatch({ type: 'browser-set-device', device: 'fit' })
     expect(box.snapshot().browser.device).toBe('fit')
     expect(browserDeviceViewport('fit')).toBeNull()
+    expect(resized).toEqual([])
   })
 
   it('keeps the last http URL when Chromium reports chrome-error://', () => {

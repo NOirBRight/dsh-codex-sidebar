@@ -231,14 +231,15 @@ describe('real managed Chromium', () => {
     })
     const initialCommit = nextLayoutCommit(client)
     const initialFrame = nextStreamFrame(client, () => true, 'initial fit frame')
-    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'fit', viewport: { width: 720, height: 860 } }))
-    await expect(initialCommit).resolves.toMatchObject({ mode: 'fit', viewport: { width: 720, height: 860 } })
+    client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'fit', viewport: { width: 559, height: 621 } }))
+    await expect(initialCommit).resolves.toMatchObject({ mode: 'fit', viewport: { width: 559, height: 621 } })
     const frame = await initialFrame
     const size = jpegSize(frame.jpeg)
-    expect(frame.viewport).toEqual({ width: 720, height: 860 })
-    expect(size).toEqual({ width: 1080, height: 1290 })
+    expect(frame.viewport).toEqual({ width: 559, height: 621 })
+    expect(size).toEqual({ width: 839, height: 932 })
     const page = runtime.target(tab)?.page
     if (page === undefined) throw new Error('missing managed Page')
+    expect(await page.evaluate('({ width: innerWidth, height: innerHeight })')).toEqual({ width: 559, height: 621 })
     expect(await jpegCenterPixel(page as Page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
     now += 100

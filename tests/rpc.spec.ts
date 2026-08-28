@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
 import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
@@ -36,6 +36,36 @@ function memoryPersist(): PersistPort {
 }
 
 describe('sidebar RPC', () => {
+  it('issues a Browser control ticket without committing the persisted preset out of band', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const gate = { sessionId: 'sess-preset', cwd: '/tmp', busy: false }
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      ...gate, intent: { type: 'open-url', url: 'https://example.com' },
+    })
+    if (!opened.ok) throw new Error('failed to open Browser Tab')
+    const tabId = (opened.value as { snapshot: { active: string } }).snapshot.active
+    const selected = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      ...gate, intent: { type: 'browser-set-device', device: 'phone' },
+    })
+    expect(selected).toMatchObject({ ok: true, value: { snapshot: { browser: { device: 'phone' } } } })
+
+    const ensure = vi.fn(async () => ({ status: 'ready' }))
+    const proposeLayout = vi.fn(async () => ({
+      revision: 2, mode: 'phone', viewport: { width: 390, height: 844 }, mediaGeneration: 2,
+    }))
+    const issue = vi.fn(() => ({ path: '/browser?ticket=one', expiresAt: 123 }))
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, {
+      ...gate, tabId,
+    }, {
+      managedBrowser: { ensure, proposeLayout } as never,
+      browserStream: { issue } as never,
+    })).resolves.toEqual({ ok: true, value: { path: '/browser?ticket=one', expiresAt: 123 } })
+
+    expect(ensure).toHaveBeenCalledOnce()
+    expect(proposeLayout).not.toHaveBeenCalled()
+    expect(issue).toHaveBeenCalledOnce()
+  })
+
   it('requires exact Browser layout identity for capture and temporary evidence commit', async () => {
     const registry = createRegistry({ persist: memoryPersist() })
     const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
