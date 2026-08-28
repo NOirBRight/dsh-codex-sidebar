@@ -208,6 +208,9 @@ describe('real managed Chromium', () => {
     const tab = { sessionId: 'stream-real', tabId: 'page' }
     const url = 'http://127.0.0.1:' + pageAddress.port + '/'
     await expect(runtime.ensure(tab, url)).resolves.toMatchObject({ status: 'ready', title: 'Stream test' })
+    const page = runtime.target(tab)?.page
+    if (page === undefined) throw new Error('missing managed Page')
+    const initialDeviceScaleFactor = await page.evaluate<number>('devicePixelRatio')
     let client: WebSocket | undefined
     cleanups.push(async () => {
       client?.close()
@@ -237,9 +240,13 @@ describe('real managed Chromium', () => {
     const size = jpegSize(frame.jpeg)
     expect(frame.viewport).toEqual({ width: 559, height: 621 })
     expect(size).toEqual({ width: 839, height: 932 })
-    const page = runtime.target(tab)?.page
-    if (page === undefined) throw new Error('missing managed Page')
-    expect(await page.evaluate('({ width: innerWidth, height: innerHeight })')).toEqual({ width: 559, height: 621 })
+    const firstViewport = await page.evaluate<{ width: number; height: number; deviceScaleFactor: number }>('({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })')
+    expect(firstViewport).toMatchObject({
+      width: 559,
+      height: 621,
+    })
+    expect(initialDeviceScaleFactor).toBeGreaterThan(0)
+    expect(firstViewport.deviceScaleFactor).toBeGreaterThan(0)
     expect(await jpegCenterPixel(page as Page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
     now += 100
@@ -247,6 +254,12 @@ describe('real managed Chromium', () => {
     const resizedFrame = nextStreamFrame(client, (candidate) => candidate.viewport.width === 390 && candidate.viewport.height === 844, 'resized frame')
     client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 2, mode: 'phone', viewport: { width: 390, height: 844 } }))
     await expect(resizedCommit).resolves.toMatchObject({ mode: 'phone', viewport: { width: 390, height: 844 } })
+    expect(await page.evaluate('({ width: innerWidth, height: innerHeight, contentWidth: document.querySelector(".top")?.getBoundingClientRect().width, deviceScaleFactor: devicePixelRatio })')).toEqual({
+      width: 390,
+      height: 844,
+      contentWidth: 390,
+      deviceScaleFactor: firstViewport.deviceScaleFactor,
+    })
     const resized = await resizedFrame
     expect(jpegSize(resized.jpeg)).toEqual({ width: 585, height: 1266 })
     client.send(JSON.stringify({ type: 'frame-ack', sequence: resized.sequence, revision: resized.revision, mediaGeneration: resized.mediaGeneration }))

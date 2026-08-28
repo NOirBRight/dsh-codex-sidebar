@@ -13,6 +13,12 @@ class FakePage {
   clicked: string[] = []
   filled: Array<{ selector: string; text: string }> = []
   size = { width: 720, height: 860 }
+  domSize = { width: 720, height: 860 }
+  domDeviceScaleFactor = 2
+  setViewportUpdatesDom = true
+  cdpOverrideUpdatesDom = true
+  cdpOverrideError: Error | undefined
+  cssViewportError: Error | undefined
   history: string[] = []
   resizeCalls: Array<{ width: number; height: number }> = []
   resizeReleases: Array<() => void> = []
@@ -47,10 +53,15 @@ class FakePage {
     this.resizeCalls.push(size)
     if (this.blockResizes) await new Promise<void>((resolve) => { this.resizeReleases.push(resolve) })
     this.size = size
+    if (this.setViewportUpdatesDom) this.domSize = size
   }
   async evaluate<T>(source?: string, argument?: unknown): Promise<T> {
     if (source !== undefined) this.evaluations.push({ source, argument })
     await this.onEvaluate?.()
+    if (source === '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })') {
+      if (this.cssViewportError !== undefined) throw this.cssViewportError
+      return { width: this.domSize.width, height: this.domSize.height, deviceScaleFactor: this.domDeviceScaleFactor } as T
+    }
     return [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }] as T
   }
   async exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
@@ -78,9 +89,11 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
   runtime: ManagedBrowserRuntime
   pages: FakePage[]
   closed: { context: boolean; sessions: number; createdSessions: number }
+  cdpCommands: Array<{ method: string; params?: Record<string, unknown> }>
 } {
   const pages: FakePage[] = []
   const closed = { context: false, sessions: 0, createdSessions: 0 }
+  const cdpCommands: Array<{ method: string; params?: Record<string, unknown> }> = []
   const runtime = new ManagedBrowserRuntime({
     executablePath: '/bin/true',
     profileDir: '/tmp/dcs-managed-runtime-test-' + Math.random().toString(36).slice(2),
@@ -90,10 +103,18 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
         pages.push(page)
         return page
       },
-      async newCDPSession() {
+      async newCDPSession(page) {
         closed.createdSessions += 1
         return {
-          async send() {},
+          async send(method, params) {
+            cdpCommands.push({ method, ...(params === undefined ? {} : { params }) })
+            if (method === 'Emulation.setDeviceMetricsOverride' && (page as FakePage).cdpOverrideError !== undefined) {
+              throw (page as FakePage).cdpOverrideError
+            }
+            if (method === 'Emulation.setDeviceMetricsOverride' && (page as FakePage).cdpOverrideUpdatesDom) {
+              ;(page as FakePage).domSize = { width: Number(params?.width), height: Number(params?.height) }
+            }
+          },
           on() {},
           off() {},
           async detach() { closed.sessions += 1 },
@@ -104,7 +125,7 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
     }),
     ...opts,
   })
-  return { runtime, pages, closed }
+  return { runtime, pages, closed, cdpCommands }
 }
 
 class GatedLocalHtmlGateway extends LocalHtmlGateway {
@@ -675,6 +696,123 @@ describe('ManagedBrowserRuntime', () => {
     await expect(first).resolves.toMatchObject({ revision: 2, viewport: { width: 800, height: 600 } })
     await expect(superseded).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
     await expect(latest).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    await box.runtime.dispose()
+  })
+
+  it('falls back to exact-record CDP metrics when Playwright resolves without changing the CSS viewport', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-fallback' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.setViewportUpdatesDom = false
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+    })).resolves.toMatchObject({
+      revision: 2,
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+      mediaGeneration: 2,
+    })
+
+    expect(box.cdpCommands).toContainEqual({
+      method: 'Emulation.setDeviceMetricsOverride',
+      params: {
+        width: 1280,
+        height: 800,
+        deviceScaleFactor: 2,
+        mobile: false,
+        screenWidth: 1280,
+        screenHeight: 800,
+      },
+    })
+    expect(page.domSize).toEqual({ width: 1280, height: 800 })
+    expect(page.domDeviceScaleFactor).toBe(2)
+    expect(box.runtime.layout(tab)).toMatchObject({ revision: 2, viewport: page.domSize })
+    await box.runtime.dispose()
+  })
+
+  it('verifies the actual CSS viewport before taking the same-layout fast path', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-same-layout' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.domSize = { width: 720, height: 773 }
+    page.setViewportUpdatesDom = false
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'fit',
+      viewport: { width: 720, height: 860 },
+    })).resolves.toMatchObject({
+      revision: 1,
+      mode: 'fit',
+      viewport: { width: 720, height: 860 },
+      mediaGeneration: 1,
+    })
+
+    expect(page.domSize).toEqual({ width: 720, height: 860 })
+    expect(box.cdpCommands.some((command) => command.method === 'Emulation.setDeviceMetricsOverride')).toBe(true)
+    await box.runtime.dispose()
+  })
+
+  it('closes the exact target and rejects the proposal when Chromium still violates the viewport postcondition', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-failed' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.setViewportUpdatesDom = false
+    page.cdpOverrideUpdatesDom = false
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'tablet',
+      viewport: { width: 768, height: 1024 },
+    })).rejects.toThrow('did not apply')
+
+    expect(page.closed).toBe(true)
+    expect(box.closed.sessions).toBe(1)
+    expect(box.runtime.target(tab)).toBeUndefined()
+    expect(box.runtime.layout(tab)).toBeUndefined()
+    await box.runtime.dispose()
+  })
+
+  it('closes the exact target when the CDP viewport fallback fails', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-cdp-failed' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.setViewportUpdatesDom = false
+    page.cdpOverrideError = new Error('CDP override failed')
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'phone',
+      viewport: { width: 390, height: 844 },
+    })).rejects.toThrow('CDP override failed')
+
+    expect(page.closed).toBe(true)
+    expect(box.runtime.target(tab)).toBeUndefined()
+    await box.runtime.dispose()
+  })
+
+  it('closes the exact target when same-layout postcondition evaluation fails', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-evaluate-failed' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.cssViewportError = new Error('viewport evaluation failed')
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'fit',
+      viewport: { width: 720, height: 860 },
+    })).rejects.toThrow('viewport evaluation failed')
+
+    expect(page.closed).toBe(true)
+    expect(box.runtime.target(tab)).toBeUndefined()
     await box.runtime.dispose()
   })
 

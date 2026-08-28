@@ -243,7 +243,7 @@ export declare class ManagedBrowserRuntime {
     forward(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     reload(tab: ManagedTabKey): Promise<ManagedBrowserProjection | undefined>;
     resize(tab: ManagedTabKey, width: number, height: number): Promise<void>;
-    /** Commit a proposal only when the optional exact target still owns the Tab. */
+    /** Commit a proposal only when the optional exact target owns the Tab and reports the requested CSS viewport. */
     proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout>;
     snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult>;
     outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult>;

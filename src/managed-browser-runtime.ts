@@ -229,6 +229,7 @@ type PageRecord = {
 }
 
 type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
+type CssViewport = BrowserSize & { deviceScaleFactor: number }
 type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
 type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
 type TabIdentity = { tab: ManagedTabKey }
@@ -243,6 +244,7 @@ const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
+const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
   maxViewport: Object.freeze({ width: 1920, height: 1440 }),
@@ -465,7 +467,7 @@ export class ManagedBrowserRuntime {
     await this.proposeLayout(tab, { mode: 'fit', viewport: { width, height } })
   }
 
-  /** Commit a proposal only when the optional exact target still owns the Tab. */
+  /** Commit a proposal only when the optional exact target owns the Tab and reports the requested CSS viewport. */
   async proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined) throw new Error(expectedTarget === undefined ? 'Browser page is not ready' : 'Browser target is no longer current')
@@ -859,11 +861,11 @@ export class ManagedBrowserRuntime {
           const current = record.layout
           const next = pending.proposal
           if (current.mode === next.mode && sameSize(current.viewport, next.viewport)) {
+            await this.#applyViewport(record, next.viewport, true)
             for (const waiter of pending.waiters) waiter.resolve(cloneLayout(current))
             continue
           }
-          await record.page.setViewportSize(next.viewport)
-          if (this.#pages.get(record.key) !== record || record.page.isClosed()) throw new Error('Browser page closed during layout commit')
+          await this.#applyViewport(record, next.viewport)
           record.layout = {
             revision: current.revision + 1,
             mode: next.mode,
@@ -879,6 +881,42 @@ export class ManagedBrowserRuntime {
       record.layoutRunning = false
       if (record.pendingLayout !== undefined) void this.#drainLayouts(record)
     }
+  }
+
+  async #applyViewport(record: PageRecord, viewport: BrowserSize, verifyFirst = false): Promise<void> {
+    try {
+      const before = await this.#cssViewport(record)
+      const deviceScaleFactor = positiveDeviceScaleFactor(before.deviceScaleFactor)
+      if (verifyFirst && cssViewportMatches(before, viewport, deviceScaleFactor)) return
+      await record.page.setViewportSize(viewport)
+      this.#assertLayoutRecordCurrent(record)
+      const actual = await this.#cssViewport(record)
+      if (cssViewportMatches(actual, viewport, deviceScaleFactor)) return
+      await record.cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor,
+        mobile: false,
+        screenWidth: viewport.width,
+        screenHeight: viewport.height,
+      })
+      this.#assertLayoutRecordCurrent(record)
+      const overridden = await this.#cssViewport(record)
+      if (!cssViewportMatches(overridden, viewport, deviceScaleFactor)) throw new Error('Chromium did not apply the Browser viewport')
+    } catch (error) {
+      if (this.#pages.get(record.key) === record) await this.#closeTab(record.tab, false)
+      throw error
+    }
+  }
+
+  async #cssViewport(record: PageRecord): Promise<CssViewport> {
+    const viewport = await record.page.evaluate<CssViewport>(CSS_VIEWPORT_EXPRESSION)
+    this.#assertLayoutRecordCurrent(record)
+    return viewport
+  }
+
+  #assertLayoutRecordCurrent(record: PageRecord): void {
+    if (this.#pages.get(record.key) !== record || record.page.isClosed()) throw new Error('Browser page closed during layout commit')
   }
 
   async #refresh(record: PageRecord): Promise<void> {
@@ -1057,6 +1095,14 @@ function normalizeFitViewport(viewport: BrowserSize, policy: ManagedBrowserLayou
 
 function sameSize(left: BrowserSize, right: BrowserSize): boolean {
   return left.width === right.width && left.height === right.height
+}
+
+function positiveDeviceScaleFactor(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_DEVICE_SCALE_FACTOR
+}
+
+function cssViewportMatches(actual: CssViewport, expected: BrowserSize, deviceScaleFactor: number): boolean {
+  return sameSize(actual, expected) && actual.deviceScaleFactor === deviceScaleFactor
 }
 
 function sameLayoutIdentity(left: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>, right: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): boolean {
