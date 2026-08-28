@@ -251,6 +251,7 @@ type BrowserMediaCapacityOwner = {
 
 type BrowserTabConnection = {
   socket: WebSocket
+  targetIdentity: ManagedBrowserTargetIdentity
   cleanup(): Promise<void>
 }
 
@@ -442,6 +443,12 @@ export class ManagedBrowserStream {
     this.#tabConnections.get(this.#runtime.keyOf(tab))?.socket.close(1000, 'Browser Tab closed')
   }
 
+  /** Close the control connection only when it still owns the invalidated target. */
+  invalidateTarget(tab: ManagedTabKey, targetIdentity: ManagedBrowserTargetIdentity): void {
+    const connection = this.#tabConnections.get(this.#runtime.keyOf(tab))
+    if (connection?.targetIdentity === targetIdentity) connection.socket.close(4002, 'Browser target replaced')
+  }
+
   closeSession(sessionId: string): void {
     for (const [key, connection] of this.#tabConnections) {
       if (key.startsWith(sessionId + ':')) connection.socket.close(1000, 'Browser session disposed')
@@ -538,6 +545,7 @@ export class ManagedBrowserStream {
     let cleanupPromise: Promise<void> | undefined
     const connection: BrowserTabConnection = {
       socket,
+      targetIdentity: target.identity,
       cleanup: () => cleanupPromise ??= detach(),
     }
     this.#tabConnections.set(tabKey, connection)

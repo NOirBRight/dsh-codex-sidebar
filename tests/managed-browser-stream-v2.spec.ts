@@ -225,6 +225,55 @@ describe('managed Browser Host protocol v2', () => {
     }
   })
 
+  it('closes an idle control connection when its exact target is invalidated', async () => {
+    const identity = Object.freeze({ target: 'idle' })
+    const layout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 } satisfies BrowserLayout
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method) => method === 'Page.getLayoutMetrics'
+      ? { visualViewport: { pageX: 0, pageY: 0 } }
+      : method === 'Page.captureScreenshot'
+        ? { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+        : {}
+    const tab = { sessionId: 'idle-replacement', tabId: 'tab' }
+    const runtime = {
+      target: () => ({ identity, cdp, layout }), keyOf: () => 'idle-replacement:tab', touch: () => {}, acquire: () => () => {},
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      mediaPageCount: () => 0,
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, preferredMediaRoute: 'jpeg-only' })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue(tab).path)
+    let closeCode: number | undefined
+    client.on('close', (code) => { closeCode = code })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(stream.resources().sockets).toBe(1) })
+
+      stream.invalidateTarget(tab, identity as never)
+
+      await vi.waitFor(() => { expect(client.readyState).toBe(WebSocket.CLOSED) })
+      expect(closeCode).toBe(4002)
+      expect(stream.resources().sockets).toBe(0)
+    } finally {
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
   it('stops an in-flight wheel at the exact target replacement before paint or selector tracking', async () => {
     const firstIdentity = Object.freeze({ target: 'first' })
     const secondIdentity = Object.freeze({ target: 'second' })

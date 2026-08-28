@@ -86,7 +86,7 @@ export type ManagedBrowserConfig = {
   mediaIdleTimeoutMs?: number
   /** Keep the Browser control connection alive this long after its surface becomes hidden. */
   mediaHideGraceMs?: number
-  /** Force-close Browser stream sockets and stop waiting for work after this shutdown deadline. */
+  /** Stop waiting for Browser stream and runtime teardown after this shutdown deadline. */
   streamShutdownTimeoutMs?: number
   /** Maximum concurrent encoder Pages owned by the managed Browser runtime. */
   maxEncoderPages?: number
@@ -235,7 +235,7 @@ type CssViewport = BrowserSize & { deviceScaleFactor: number }
 type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
 type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
 type TabIdentity = { tab: ManagedTabKey }
-type PendingPageRecord = { tab: ManagedTabKey; cancelled: boolean; promise: Promise<PageRecord> }
+type PendingPageRecord = { tab: ManagedTabKey; context?: ContextLike; cancelled: boolean; promise: Promise<PageRecord> }
 
 declare const managedBrowserTargetIdentity: unique symbol
 
@@ -247,6 +247,7 @@ const NAVIGATION_TIMEOUT_MS = 30_000
 const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
 const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
+const DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
   maxViewport: Object.freeze({ width: 1920, height: 1440 }),
@@ -275,6 +276,7 @@ export class ManagedBrowserRuntime {
   #captureSeq = 0
   #onProjection: ((projection: ManagedBrowserProjection) => void) | undefined
   #onPopup: ((opener: ManagedTabKey, page: unknown) => void) | undefined
+  #targetInvalidationListeners = new Set<(tab: ManagedTabKey, identity: ManagedBrowserTargetIdentity) => void>()
   #now: () => number
   #maxLivePages: number
   #idleMs: number
@@ -285,6 +287,7 @@ export class ManagedBrowserRuntime {
   #mediaPages = new Set<{ page: PageLike; close: () => Promise<void> }>()
   #mediaPageReservations = 0
   #maxEncoderPages: number
+  #shutdownTimeoutMs: number
   #localHtml: LocalHtmlGateway
   #disposed = false
   #disposePromise: Promise<void> | undefined
@@ -302,12 +305,23 @@ export class ManagedBrowserRuntime {
     this.#cacheBudgetBytes = cacheBudgetBytes(opts.cacheBudgetBytes)
     this.#layoutPolicy = layoutPolicy(opts)
     this.#maxEncoderPages = configuredPositiveInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
+    this.#shutdownTimeoutMs = configuredPositiveInteger(opts.streamShutdownTimeoutMs, DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_MS, 'streamShutdownTimeoutMs')
     this.#onWarning = opts.onWarning ?? ((message) => { console.warn('[dsh-codex-sidebar] ' + message) })
     this.#localHtml = opts.localHtmlGateway ?? new LocalHtmlGateway()
   }
 
   keyOf(tab: ManagedTabKey): string {
     return tab.sessionId + ':' + tab.tabId
+  }
+
+  /**
+   * Observe removal of an exact managed Page/CDP target.
+   * @param listener - Synchronous observer invoked before owned target teardown starts.
+   * @returns A disposer for this exact observer.
+   */
+  onTargetInvalidated(listener: (tab: ManagedTabKey, identity: ManagedBrowserTargetIdentity) => void): () => void {
+    this.#targetInvalidationListeners.add(listener)
+    return () => { this.#targetInvalidationListeners.delete(listener) }
   }
 
   list(): ManagedBrowserProjection[] {
@@ -660,10 +674,10 @@ export class ManagedBrowserRuntime {
     if (pending !== undefined) pending.cancelled = true
     const record = this.#pages.get(key)
     if (record === undefined) return
+    this.#invalidateTarget(record)
     this.#pages.delete(key)
     rejectPendingLayout(record, new Error('Browser page closed'))
-    await record.cdp.detach().catch(() => undefined)
-    if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
+    await this.#waitForCleanup(this.#cleanupRecord(record))
   }
 
   dispose(): Promise<void> {
@@ -677,22 +691,25 @@ export class ManagedBrowserRuntime {
     for (const pending of pendingPages) pending.cancelled = true
     this.#pendingPages.clear()
     const pages = [...this.#pages.values()]
+    for (const record of pages) this.#invalidateTarget(record)
     this.#pages.clear()
     this.#requestedViewports.clear()
     this.#leases.clear()
     this.#tabIdentities.clear()
     this.#ensureCommands.clear()
+    this.#targetInvalidationListeners.clear()
     const mediaPages = [...this.#mediaPages]
     const context = this.#liveContext
     this.#liveContext = undefined
     this.#context = undefined
+    const localHtmlClose = this.#localHtml.dispose().catch((error) => {
+      this.#onWarning('managed Browser local HTML shutdown failed: ' + errorMessage(error))
+    })
     const contextClose = context?.close().catch(() => undefined) ?? Promise.resolve()
-    await Promise.all([contextClose, ...pages.map(async (record) => {
+    await this.#waitForCleanup(Promise.all([contextClose, localHtmlClose, ...pages.map((record) => {
       rejectPendingLayout(record, new Error('Managed Browser disposed'))
-      await record.cdp.detach().catch(() => undefined)
-      if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
-    }), ...mediaPages.map((lease) => lease.close().catch(() => undefined))])
-    await this.#localHtml.dispose()
+      return this.#cleanupRecord(record)
+    }), ...mediaPages.map((lease) => lease.close().catch(() => undefined))]).then(() => undefined))
   }
 
   async #record(tab: ManagedTabKey): Promise<PageRecord> {
@@ -715,20 +732,23 @@ export class ManagedBrowserRuntime {
   async #createRecord(tab: ManagedTabKey, pending: PendingPageRecord): Promise<PageRecord> {
     const key = this.keyOf(tab)
     const context = await this.#ensureContext()
-    if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+    pending.context = context
+    this.#assertPendingPageCurrent(pending, context)
     const page = await context.newPage()
     let cdp: ManagedCdpSession | undefined
     try {
-      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      this.#assertPendingPageCurrent(pending, context)
       const requestedViewport = this.#requestedViewports.get(key)
       if (requestedViewport !== undefined) await page.setViewportSize(requestedViewport)
-      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      this.#assertPendingPageCurrent(pending, context)
       cdp = await context.newCDPSession(page)
-      if (pending.cancelled || this.#disposed) throw new Error('Browser Page creation was cancelled')
+      this.#assertPendingPageCurrent(pending, context)
       return this.#commitRecord(tab, key, page, cdp, requestedViewport)
     } catch (error) {
-      await cdp?.detach().catch(() => undefined)
-      if (!page.isClosed()) await page.close().catch(() => undefined)
+      await this.#waitForCleanup(Promise.all([
+        cdp?.detach().catch(() => undefined) ?? Promise.resolve(),
+        page.isClosed() ? Promise.resolve() : page.close().catch(() => undefined),
+      ]).then(() => undefined))
       throw error
     }
   }
@@ -785,6 +805,7 @@ export class ManagedBrowserRuntime {
     })
     page.on('close', () => {
       if (this.#pages.get(key) !== record) return
+      this.#invalidateTarget(record)
       this.#pages.delete(key)
       this.#localHtml.release(key)
     })
@@ -818,10 +839,14 @@ export class ManagedBrowserRuntime {
       context.on('close', () => {
         contextClosed = true
         if (this.#liveContext === context) this.#liveContext = undefined
+        for (const pendingPage of this.#pendingPages.values()) {
+          if (pendingPage.context === context) pendingPage.cancelled = true
+        }
         if (this.#context !== pending) return
         this.#context = undefined
         this.#mediaPages.clear()
         const records = [...this.#pages.values()]
+        for (const record of records) this.#invalidateTarget(record)
         this.#pages.clear()
         for (const record of records) {
           this.#localHtml.release(record.key)
@@ -1003,6 +1028,39 @@ export class ManagedBrowserRuntime {
   #publish(record: PageRecord): void {
     if (this.#pages.get(record.key) !== record) return
     this.#onProjection?.(project(record))
+  }
+
+  #invalidateTarget(record: PageRecord): void {
+    for (const listener of this.#targetInvalidationListeners) {
+      try {
+        listener(record.tab, record.identity)
+      } catch (error) {
+        this.#onWarning('managed Browser target invalidation observer failed: ' + errorMessage(error))
+      }
+    }
+  }
+
+  #assertPendingPageCurrent(pending: PendingPageRecord, context: ContextLike): void {
+    if (pending.cancelled || this.#disposed || this.#liveContext !== context) {
+      throw new Error('Browser Page creation was cancelled')
+    }
+  }
+
+  async #waitForCleanup(cleanup: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>((resolveDeadline) => {
+      timer = setTimeout(resolveDeadline, this.#shutdownTimeoutMs)
+      timer.unref()
+    })
+    await Promise.race([cleanup, deadline])
+    if (timer !== undefined) clearTimeout(timer)
+  }
+
+  async #cleanupRecord(record: PageRecord): Promise<void> {
+    await Promise.all([
+      record.cdp.detach().catch(() => undefined),
+      record.page.isClosed() ? Promise.resolve() : record.page.close().catch(() => undefined),
+    ])
   }
 
   #publicPageUrl(record: PageRecord, navigationUrl: string): string {

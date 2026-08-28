@@ -133,10 +133,14 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   const persist = createFilePersist()
   const workspace = createWorkspaceInspector()
   ctx.effect(() => {
+    const releaseTargetInvalidation = managedBrowser.onTargetInvalidated((tab, identity) => {
+      managedStream.invalidateTarget(tab, identity)
+    })
     const timer = setInterval(() => { void managedBrowser.reap() }, 15_000)
     timer.unref()
     return () => {
       clearInterval(timer)
+      releaseTargetInvalidation()
       void persist.flush()
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }

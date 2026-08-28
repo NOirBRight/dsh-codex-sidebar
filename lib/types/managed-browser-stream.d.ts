@@ -1,7 +1,7 @@
 /** Authenticated same-origin screencast and input transport for managed Browser Tabs. */
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import type { ManagedBrowserRuntime, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts';
+import type { ManagedBrowserRuntime, ManagedBrowserTargetIdentity, ManagedCdpSession, ManagedTabKey } from './managed-browser-runtime.ts';
 import { type BrowserInput, type BrowserLayout, type BrowserSize, type BrowserRtcCandidate, type BrowserRtcDescription } from './managed-browser-protocol.ts';
 import { type BrowserMediaFrame, type ManagedBrowserWebRtcEncoderOptions } from './managed-browser-webrtc.ts';
 export declare const MANAGED_BROWSER_STREAM_PATH = "/__dcs/browser-stream";
@@ -172,6 +172,8 @@ export declare class ManagedBrowserStream {
     handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
     dispose(): Promise<void>;
     closeTab(tab: ManagedTabKey): void;
+    /** Close the control connection only when it still owns the invalidated target. */
+    invalidateTarget(tab: ManagedTabKey, targetIdentity: ManagedBrowserTargetIdentity): void;
     closeSession(sessionId: string): void;
     resources(): ManagedBrowserStreamResources;
     /** Return cumulative protocol/media counters without changing owned-resource accounting. */

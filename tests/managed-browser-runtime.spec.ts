@@ -396,6 +396,34 @@ describe('ManagedBrowserRuntime', () => {
     await runtime.dispose()
   })
 
+  it('stops waiting for committed Page teardown at the Browser shutdown deadline', async () => {
+    const page = new FakePage()
+    const never = new Promise<void>(() => {})
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-bounded-close-' + Math.random().toString(36).slice(2),
+      streamShutdownTimeoutMs: 20,
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() { await never } } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'close', tabId: 'bounded' }
+    await runtime.ensure(tab, 'https://example.com')
+
+    const closing = runtime.close(tab)
+
+    await expect(Promise.race([
+      closing.then(() => 'closed'),
+      new Promise<string>((resolve) => { setTimeout(() => { resolve('still-waiting') }, 200) }),
+    ])).resolves.toBe('closed')
+    expect(runtime.target(tab)).toBeUndefined()
+    expect(page.closed).toBe(true)
+    await runtime.dispose()
+  })
+
   it('never lets an old exact target identity address a replacement record', async () => {
     const box = harness()
     const tab = { sessionId: 'target-identity', tabId: 'replacement' }
@@ -421,6 +449,27 @@ describe('ManagedBrowserRuntime', () => {
       { mode: 'phone', viewport: { width: 390, height: 844 } },
       second.identity,
     )).resolves.toMatchObject({ revision: 2, mode: 'phone', viewport: { width: 390, height: 844 } })
+    await box.runtime.dispose()
+  })
+
+  it('invalidates the exact target before closing its Page and CDP', async () => {
+    const warnings: string[] = []
+    const box = harness({ onWarning: (message) => { warnings.push(message) } })
+    const tab = { sessionId: 'target-identity', tabId: 'invalidation' }
+    await box.runtime.ensure(tab, 'https://one.example')
+    const target = box.runtime.target(tab)
+    if (target === undefined) throw new Error('missing target')
+    const invalidations: Array<{ tab: typeof tab; identity: object; pageClosed: boolean; detached: number }> = []
+    box.runtime.onTargetInvalidated(() => { throw new Error('observer failed') })
+    const release = box.runtime.onTargetInvalidated((invalidatedTab, identity) => {
+      invalidations.push({ tab: invalidatedTab, identity, pageClosed: box.pages[0]?.closed ?? false, detached: box.closed.sessions })
+    })
+
+    await box.runtime.close(tab)
+
+    expect(invalidations).toEqual([{ tab, identity: target.identity, pageClosed: false, detached: 0 }])
+    expect(warnings).toEqual(['managed Browser target invalidation observer failed: observer failed'])
+    release()
     await box.runtime.dispose()
   })
 
@@ -456,6 +505,42 @@ describe('ManagedBrowserRuntime', () => {
     expect(runtime.list()).toEqual([])
   })
 
+  it('revokes local HTML immediately and stops waiting at the Browser shutdown deadline', async () => {
+    let signalGatewayDisposed!: () => void
+    const gatewayDisposed = new Promise<void>((resolve) => { signalGatewayDisposed = resolve })
+    class ObservedGateway extends LocalHtmlGateway {
+      override async dispose(): Promise<void> { signalGatewayDisposed() }
+    }
+    const page = new FakePage()
+    const never = new Promise<void>(() => {})
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-bounded-dispose-' + Math.random().toString(36).slice(2),
+      localHtmlGateway: new ObservedGateway(),
+      streamShutdownTimeoutMs: 20,
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() { await never } } },
+        on() {},
+        async close() { await never },
+      }),
+    })
+    await runtime.ensure({ sessionId: 'dispose', tabId: 'bounded' }, 'https://example.com')
+
+    const disposing = runtime.dispose()
+    const revokedImmediately = await Promise.race([
+      gatewayDisposed.then(() => true),
+      new Promise<false>((resolve) => { setImmediate(() => { resolve(false) }) }),
+    ])
+
+    expect(revokedImmediately).toBe(true)
+    await expect(Promise.race([
+      disposing.then(() => 'disposed'),
+      new Promise<string>((resolve) => { setTimeout(() => { resolve('still-waiting') }, 200) }),
+    ])).resolves.toBe('disposed')
+    expect(runtime.list()).toEqual([])
+  })
+
   it('clears a failed pending Page identity so the same Tab can retry', async () => {
     const page = new FakePage()
     let attempts = 0
@@ -479,6 +564,45 @@ describe('ManagedBrowserRuntime', () => {
     await expect(runtime.ensure(tab, 'https://two.example')).resolves.toMatchObject({ status: 'ready', url: 'https://two.example' })
     expect(attempts).toBe(2)
     expect(runtime.target(tab)?.page).toBe(page)
+    await runtime.dispose()
+  })
+
+  it('cancels pending Page creation when its owning Chromium Context closes', async () => {
+    const page = new FakePage()
+    let contextClosed: (() => void) | undefined
+    let signalCdpStarted!: () => void
+    let resumeCdp!: () => void
+    const cdpStarted = new Promise<void>((resolve) => { signalCdpStarted = resolve })
+    const cdpGate = new Promise<void>((resolve) => { resumeCdp = resolve })
+    const never = new Promise<void>(() => {})
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-context-generation-' + Math.random().toString(36).slice(2),
+      streamShutdownTimeoutMs: 20,
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() {
+          signalCdpStarted()
+          await cdpGate
+          return { async send() {}, on() {}, off() {}, async detach() { await never } }
+        },
+        on(event, listener) { if (event === 'close') contextClosed = listener },
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'pending', tabId: 'context-generation' }
+    const opening = runtime.ensure(tab, 'https://example.com')
+    await cdpStarted
+
+    contextClosed?.()
+    resumeCdp()
+
+    await expect(Promise.race([
+      opening.then(() => 'resolved', (error: unknown) => error instanceof Error ? error.message : String(error)),
+      new Promise<string>((resolve) => { setTimeout(() => { resolve('still-waiting') }, 200) }),
+    ])).resolves.toContain('cancelled')
+    expect(page.closed).toBe(true)
+    expect(runtime.target(tab)).toBeUndefined()
     await runtime.dispose()
   })
 
@@ -609,6 +733,36 @@ describe('ManagedBrowserRuntime', () => {
     }
     await expect(box.runtime.capture(tab, { revision: 2, mediaGeneration: 2 })).resolves.toMatchObject({ ok: false, code: 'stale-layout' })
     await box.runtime.dispose()
+  })
+
+  it('drops asynchronous control results when their exact target is replaced', async () => {
+    for (const operation of ['outline', 'track-rect'] as const) {
+      const box = harness()
+      const tab = { sessionId: 'exact-async', tabId: operation }
+      await box.runtime.ensure(tab, 'https://one.example')
+      const target = box.runtime.target(tab)
+      const page = box.pages[0]
+      if (target === undefined || page === undefined) throw new Error('missing first target')
+      let signalEvaluationStarted!: () => void
+      let resumeEvaluation!: () => void
+      const evaluationStarted = new Promise<void>((resolve) => { signalEvaluationStarted = resolve })
+      const evaluationGate = new Promise<void>((resolve) => { resumeEvaluation = resolve })
+      page.onEvaluate = async () => {
+        signalEvaluationStarted()
+        await evaluationGate
+      }
+      const result = operation === 'outline'
+        ? box.runtime.outline(tab, target.identity)
+        : box.runtime.trackRect(tab, '#save', target.identity)
+      await evaluationStarted
+
+      await box.runtime.close(tab)
+      await box.runtime.ensure(tab, 'https://two.example')
+      resumeEvaluation()
+
+      await expect(result).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+      await box.runtime.dispose()
+    }
   })
 
   it('leases narrow owned media Pages from the persistent context with an exact capacity', async () => {
