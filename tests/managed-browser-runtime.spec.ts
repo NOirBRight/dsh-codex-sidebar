@@ -19,7 +19,7 @@ class FakePage {
   setViewportUpdatesDom = true
   cdpOverrideUpdatesDom = true
   cdpOverrideError: Error | undefined
-  pagePaintHangs = false
+  cdpPaintHangs = false
   cssViewportError: Error | undefined
   history: string[] = []
   resizeCalls: Array<{ width: number; height: number }> = []
@@ -67,9 +67,6 @@ class FakePage {
       if (this.cssViewportError !== undefined) throw this.cssViewportError
       return { width: this.domSize.width, height: this.domSize.height, deviceScaleFactor: this.domDeviceScaleFactor } as T
     }
-    if (source === 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))' && this.pagePaintHangs) {
-      return await new Promise<T>(() => {})
-    }
     return this.evaluatedNodes as T
   }
   async exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
@@ -116,6 +113,7 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
         return {
           async send(method, params) {
             cdpCommands.push({ method, ...(params === undefined ? {} : { params }) })
+            if (method === 'Page.captureScreenshot' && (page as FakePage).cdpPaintHangs) return await new Promise(() => {})
             if (method === 'Emulation.setDeviceMetricsOverride' && (page as FakePage).cdpOverrideError !== undefined) {
               throw (page as FakePage).cdpOverrideError
             }
@@ -1159,7 +1157,10 @@ describe('ManagedBrowserRuntime', () => {
       viewport: { width: 1280, height: 800 },
     })
 
-    expect(page.evaluations.at(-1)?.source).toBe('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    expect(box.cdpCommands.at(-1)).toEqual({
+      method: 'Page.captureScreenshot',
+      params: { format: 'jpeg', quality: 1, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true },
+    })
     await box.runtime.dispose()
   })
 
@@ -1169,7 +1170,7 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.ensure(tab, 'https://example.com')
     const page = box.pages[0]
     if (page === undefined) throw new Error('missing fake Page')
-    page.pagePaintHangs = true
+    page.cdpPaintHangs = true
 
     await expect(box.runtime.proposeLayout(tab, {
       mode: 'laptop',

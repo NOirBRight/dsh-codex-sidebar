@@ -578,6 +578,7 @@ export class ManagedBrowserStream {
     let mediaIdleSuspended = false
     let mediaStarted = false
     let mediaVerified = false
+    let suppressNextSourceFrame = false
     let pendingMediaLayout: BrowserLayout | undefined
     let surfaceHidden = false
     let mediaTransition = Promise.resolve()
@@ -1013,6 +1014,7 @@ export class ManagedBrowserStream {
     }
     const commitLayout = (layout: BrowserLayout): void => {
       this.#diagnostics.layoutCommits += 1
+      suppressNextSourceFrame = true
       if (unacked !== undefined
         && (unacked.revision !== layout.revision || unacked.mediaGeneration !== layout.mediaGeneration)) {
         unacked = undefined
@@ -1036,6 +1038,10 @@ export class ManagedBrowserStream {
       const projectionChanged = sendProjection()
       if (typeof payload.sessionId === 'number') void cdp.send('Page.screencastFrameAck', { sessionId: payload.sessionId }).catch(() => undefined)
       this.#runtime.touch(tab)
+      if (suppressNextSourceFrame) {
+        suppressNextSourceFrame = false
+        return
+      }
       if (!mediaVerified) return
       if (typeof payload.data === 'string') noteMediaActivity()
       if (typeof payload.data === 'string') requestFrame(projectionChanged ? 'activity' : 'passive')

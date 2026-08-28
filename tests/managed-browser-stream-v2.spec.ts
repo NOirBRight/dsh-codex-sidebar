@@ -578,11 +578,12 @@ describe('managed Browser Host protocol v2', () => {
       await new Promise((resolve) => { setTimeout(resolve, 30) })
       expect(messages.filter((message) => message.type === 'frame')).toHaveLength(2)
       client.send(JSON.stringify({ type: 'frame-ack', sequence: second.sequence, revision: 5, mediaGeneration: 4 }))
+      cdp.emit('Page.screencastFrame', { data: 'current', sessionId: 12, metadata: { deviceWidth: 1280, deviceHeight: 800, pageScaleFactor: 1 } })
       await vi.waitFor(() => { expect(messages.filter((message) => message.type === 'frame')).toHaveLength(3) })
       const third = messages.filter((message) => message.type === 'frame')[2]
       expect(third).toMatchObject({ revision: 5, mediaGeneration: 4, viewport: { width: 1280, height: 800 } })
       expect(clips.at(-1)).toMatchObject({ width: 1280, height: 800 })
-      expect(sourceAcks).toEqual([11])
+      expect(sourceAcks).toEqual([11, 12])
     } finally {
       client.close()
       await vi.waitFor(() => { expect(stream.resources()).toMatchObject({ sockets: 0, timers: 0, captures: 0, unackedFrames: 0 }) })
