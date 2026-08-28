@@ -59,6 +59,7 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Mana
       layoutMaxViewport: { width: 1920, height: 1440 }
       layoutSettleMs: 180
       layoutHysteresisPx: 8
+      layoutPaintTimeoutMs: 1000
       preferredMediaRoute: webrtc-preferred
       stunUrls: []
       webrtcNegotiationTimeoutMs: 5000

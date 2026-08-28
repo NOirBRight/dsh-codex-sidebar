@@ -19,6 +19,7 @@ class FakePage {
   setViewportUpdatesDom = true
   cdpOverrideUpdatesDom = true
   cdpOverrideError: Error | undefined
+  cdpPaintHangs = false
   cssViewportError: Error | undefined
   history: string[] = []
   resizeCalls: Array<{ width: number; height: number }> = []
@@ -112,6 +113,9 @@ function harness(opts: ConstructorParameters<typeof ManagedBrowserRuntime>[0] = 
         return {
           async send(method, params) {
             cdpCommands.push({ method, ...(params === undefined ? {} : { params }) })
+            if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame' } } }
+            if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 }
+            if (method === 'Runtime.evaluate' && (page as FakePage).cdpPaintHangs) return await new Promise(() => {})
             if (method === 'Emulation.setDeviceMetricsOverride' && (page as FakePage).cdpOverrideError !== undefined) {
               throw (page as FakePage).cdpOverrideError
             }
@@ -1155,7 +1159,34 @@ describe('ManagedBrowserRuntime', () => {
       viewport: { width: 1280, height: 800 },
     })
 
-    expect(page.evaluations.at(-1)?.source).toBe('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    expect(box.cdpCommands.slice(-3)).toEqual([
+      { method: 'Page.getFrameTree' },
+      { method: 'Page.createIsolatedWorld', params: { frameId: 'main-frame', worldName: 'dsh-browser-layout-paint', grantUniveralAccess: false } },
+      { method: 'Runtime.evaluate', params: {
+        expression: 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+        contextId: 7,
+        awaitPromise: true,
+        returnByValue: true,
+      } },
+    ])
+    await box.runtime.dispose()
+  })
+
+  it('fails closed when Chromium never confirms the viewport paint', async () => {
+    const box = harness({ layoutPaintTimeoutMs: 20 })
+    const tab = { sessionId: 'layout', tabId: 'postcondition-paint-timeout' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    page.cdpPaintHangs = true
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'laptop',
+      viewport: { width: 1280, height: 800 },
+    })).rejects.toThrow('viewport paint timed out')
+
+    expect(page.closed).toBe(true)
+    expect(box.runtime.target(tab)).toBeUndefined()
     await box.runtime.dispose()
   })
 
@@ -1177,7 +1208,7 @@ describe('ManagedBrowserRuntime', () => {
 
     expect(box.runtime.layout(tab)).toEqual(committed)
     expect(page.domSize).toEqual({ width: 1280, height: 800 })
-    expect(box.cdpCommands.at(-1)).toMatchObject({
+    expect(box.cdpCommands.findLast((command) => command.method === 'Emulation.setDeviceMetricsOverride')).toMatchObject({
       method: 'Emulation.setDeviceMetricsOverride',
       params: { width: 1280, height: 800 },
     })

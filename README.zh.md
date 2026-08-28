@@ -59,6 +59,7 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
       layoutMaxViewport: { width: 1920, height: 1440 }
       layoutSettleMs: 180
       layoutHysteresisPx: 8
+      layoutPaintTimeoutMs: 1000
       preferredMediaRoute: webrtc-preferred
       stunUrls: []
       webrtcNegotiationTimeoutMs: 5000
