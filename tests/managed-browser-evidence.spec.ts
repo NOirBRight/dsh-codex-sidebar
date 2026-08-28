@@ -18,6 +18,7 @@ async function fixture() {
     documentId: 's1:b1:d1',
     layoutRevision: 4,
     mediaGeneration: 7,
+    layoutEpoch: 11,
     url: 'https://example.com',
     title: 'Example',
     image: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
@@ -27,7 +28,7 @@ async function fixture() {
     nodes: [{ ref: '@d1e1', role: 'button', name: 'Save', selector: '#save', rect: { x: 1, y: 2, w: 3, h: 4 } }],
     targetIdentity,
   }))
-  let identity = { documentId: 's1:b1:d1', layoutRevision: 4, mediaGeneration: 7 }
+  let identity = { documentId: 's1:b1:d1', layoutRevision: 4, mediaGeneration: 7, layoutEpoch: 11 }
   let currentTargetIdentity = targetIdentity
   let identityReads = 0
   let replaceAtIdentityRead: number | undefined
@@ -54,6 +55,7 @@ describe('ManagedBrowserEvidenceStore', () => {
     const metadata = await box.store.capture({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
     expect(metadata).toMatchObject({ captureId: 's1:b1:d1:c1', documentId: 's1:b1:d1', layoutRevision: 4, mediaGeneration: 7, nodes: [{ selector: '#save' }] })
     expect(metadata).not.toHaveProperty('targetIdentity')
+    expect(metadata).not.toHaveProperty('layoutEpoch')
     expect(box.capture).toHaveBeenCalledWith({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
     expect(await readdir(box.root)).toEqual([])
 
@@ -76,7 +78,16 @@ describe('ManagedBrowserEvidenceStore', () => {
   it('rejects a temporary capture after navigation or layout reflow and writes no evidence', async () => {
     const box = await fixture()
     const metadata = await box.store.capture({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
-    box.setIdentity({ documentId: 's1:b1:d2', layoutRevision: 5, mediaGeneration: 8 })
+    box.setIdentity({ documentId: 's1:b1:d2', layoutRevision: 5, mediaGeneration: 8, layoutEpoch: 12 })
+    await expect(box.store.commit('s1', metadata.captureId, { revision: 4, mediaGeneration: 7 })).rejects.toThrow('stale')
+    expect(await readdir(box.root)).toEqual([])
+  })
+
+  it('rejects a temporary capture after a same-layout viewport verification epoch', async () => {
+    const box = await fixture()
+    const metadata = await box.store.capture({ sessionId: 's1', tabId: 'b1' }, { revision: 4, mediaGeneration: 7 })
+    box.setIdentity({ documentId: 's1:b1:d1', layoutRevision: 4, mediaGeneration: 7, layoutEpoch: 12 })
+
     await expect(box.store.commit('s1', metadata.captureId, { revision: 4, mediaGeneration: 7 })).rejects.toThrow('stale')
     expect(await readdir(box.root)).toEqual([])
   })

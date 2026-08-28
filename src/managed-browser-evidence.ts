@@ -158,9 +158,10 @@ function metadata(capture: ManagedBrowserCapture): BrowserCaptureMetadata {
 }
 
 function sameCaptureIdentity(
-  current: { documentId: string; layoutRevision: number; mediaGeneration: number } | undefined,
-  capture: Pick<ManagedBrowserCapture, 'documentId' | 'layoutRevision' | 'mediaGeneration'>,
+  current: { documentId: string; layoutRevision: number; mediaGeneration: number; layoutEpoch: number } | undefined,
+  capture: Pick<ManagedBrowserCapture, 'documentId' | 'layoutRevision' | 'mediaGeneration' | 'layoutEpoch'>,
 ): boolean {
   return current !== undefined && current.documentId === capture.documentId
     && current.layoutRevision === capture.layoutRevision && current.mediaGeneration === capture.mediaGeneration
+    && current.layoutEpoch === capture.layoutEpoch
 }

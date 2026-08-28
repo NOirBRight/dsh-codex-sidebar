@@ -132,6 +132,8 @@ export type ManagedBrowserTrackedRect = {
 export type ManagedBrowserCapture = {
   /** Exact same-process Page/CDP identity that produced this capture. */
   targetIdentity: ManagedBrowserTargetIdentity
+  /** Internal viewport transition epoch that produced this capture. */
+  layoutEpoch: number
   captureId: string
   documentId: string
   layoutRevision: number
@@ -226,8 +228,10 @@ type PageRecord = {
   lastAccess: number
   blocked?: boolean
   layout: BrowserLayout
+  layoutEpoch: number
   layoutRunning: boolean
   pendingLayouts: PendingLayout[]
+  visualOperationTail: Promise<void>
 }
 
 type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
@@ -515,10 +519,12 @@ export class ManagedBrowserRuntime {
   }
 
   async snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return notReady()
+    const record = this.#readableRecord(tab)
+    if (record === undefined) return notReady()
+    const layoutEpoch = record.layoutEpoch
     this.#touch(record)
     const nodes = await this.#nodes(record)
+    if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
     return {
       url: record.url,
       title: record.title,
@@ -536,11 +542,11 @@ export class ManagedBrowserRuntime {
    * @returns Outline nodes, or a not-ready result when the target is absent or replaced.
    */
   async outline(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserOutline | ManagedBrowserActionResult> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return notReady()
-    if (expectedTarget !== undefined && record.identity !== expectedTarget) return notReady()
+    const record = this.#readableRecord(tab, expectedTarget)
+    if (record === undefined) return notReady()
+    const layoutEpoch = record.layoutEpoch
     const nodes = await this.#outlineNodes(record)
-    if (this.#pages.get(record.key) !== record || record.status !== 'ready' || record.page.isClosed()) return notReady()
+    if (!this.#recordReadable(record, expectedTarget, layoutEpoch)) return notReady()
     return { documentId: record.documentId, nodes }
   }
 
@@ -552,9 +558,9 @@ export class ManagedBrowserRuntime {
    * @returns Tracked rectangle, or a not-ready result when the target is absent or replaced.
    */
   async trackRect(tab: ManagedTabKey, selector: string, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return notReady()
-    if (expectedTarget !== undefined && record.identity !== expectedTarget) return notReady()
+    const record = this.#readableRecord(tab, expectedTarget)
+    if (record === undefined) return notReady()
+    const layoutEpoch = record.layoutEpoch
     const encoded = JSON.stringify(selector)
     const rect = await record.page.evaluate<{ x: number; y: number; w: number; h: number } | null>(String.raw`(() => {
       try {
@@ -565,7 +571,7 @@ export class ManagedBrowserRuntime {
         return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
       } catch { return null; }
     })()`)
-    if (this.#pages.get(record.key) !== record || record.status !== 'ready' || record.page.isClosed()) return notReady()
+    if (!this.#recordReadable(record, expectedTarget, layoutEpoch)) return notReady()
     return { documentId: record.documentId, selector, rect }
   }
 
@@ -578,19 +584,21 @@ export class ManagedBrowserRuntime {
   }
 
   async capture(tab: ManagedTabKey, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<ManagedBrowserCapture | ManagedBrowserActionResult | ManagedBrowserCaptureFailure> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return notReady()
+    const record = this.#readableRecord(tab)
+    if (record === undefined) return notReady()
+    const layoutEpoch = record.layoutEpoch
     const documentId = record.documentId
     const layout = cloneLayout(record.layout)
     if (!sameLayoutIdentity(layout, expected)) return staleLayout()
     const nodes = await this.#outlineNodes(record)
-    if (!this.#captureStillCurrent(record, documentId, layout)) return staleLayout()
+    if (!this.#captureStillCurrent(record, documentId, layout, layoutEpoch)) return staleLayout()
     const image = await record.page.screenshot({ type: 'jpeg', quality: EVIDENCE_QUALITY })
-    if (!this.#captureStillCurrent(record, documentId, layout)) return staleLayout()
+    if (!this.#captureStillCurrent(record, documentId, layout, layoutEpoch)) return staleLayout()
     const viewport = record.page.viewportSize() ?? DEFAULT_VIEWPORT
     this.#captureSeq += 1
     return {
       targetIdentity: record.identity,
+      layoutEpoch,
       captureId: documentId + ':c' + this.#captureSeq,
       documentId,
       layoutRevision: layout.revision,
@@ -611,20 +619,55 @@ export class ManagedBrowserRuntime {
    * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
    * @returns Public document and layout identity, or undefined when the target is absent or replaced.
    */
-  captureIdentity(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { documentId: string; layoutRevision: number; mediaGeneration: number } | undefined {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready' || record.page.isClosed()) return undefined
-    if (expectedTarget !== undefined && record.identity !== expectedTarget) return undefined
-    return { documentId: record.documentId, layoutRevision: record.layout.revision, mediaGeneration: record.layout.mediaGeneration }
+  captureIdentity(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { documentId: string; layoutRevision: number; mediaGeneration: number; layoutEpoch: number } | undefined {
+    const record = this.#readableRecord(tab, expectedTarget)
+    if (record === undefined) return undefined
+    return { documentId: record.documentId, layoutRevision: record.layout.revision, mediaGeneration: record.layout.mediaGeneration, layoutEpoch: record.layoutEpoch }
   }
 
-  /** Resolve the current target, optionally requiring one previously returned opaque identity. */
-  target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout } | undefined {
+  /** Resolve one exact target only when its committed viewport is safe for visual reads. */
+  target(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.page.isClosed()) return undefined
     if (expectedTarget !== undefined && record.identity !== expectedTarget) return undefined
     if (expectedTarget === undefined && (record.status === 'error' || record.status === 'crashed')) return undefined
-    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout) }
+    if (record.layoutRunning) return undefined
+    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch }
+  }
+
+  /** Resolve an exact target owner for control lifecycle checks without granting visual-read readiness. */
+  ownedTarget(tab: ManagedTabKey, expectedTarget: ManagedBrowserTargetIdentity): { identity: ManagedBrowserTargetIdentity; page: PageLike; cdp: ManagedCdpSession; documentId: string; layout: BrowserLayout; layoutEpoch: number } | undefined {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.page.isClosed() || record.identity !== expectedTarget) return undefined
+    return { identity: record.identity, page: record.page, cdp: record.cdp, documentId: record.documentId, layout: cloneLayout(record.layout), layoutEpoch: record.layoutEpoch }
+  }
+
+  /**
+   * Run one browser input atomically with respect to viewport transitions.
+   * @param tab Browser Tab owner.
+   * @param expectedTarget Exact Page identity accepted for the input.
+   * @param expectedLayout Committed revision and internal transition epoch accepted for the input.
+   * @param action Complete input gesture to run against the owned CDP session.
+   * @returns Whether the gesture ran against the expected target and layout epoch.
+   */
+  async runInput(
+    tab: ManagedTabKey,
+    expectedTarget: ManagedBrowserTargetIdentity,
+    expectedLayout: Pick<BrowserLayout, 'revision'> & { layoutEpoch: number },
+    action: (cdp: ManagedCdpSession, targetIsCurrent: () => boolean) => Promise<void>,
+  ): Promise<boolean> {
+    const record = this.#pages.get(this.keyOf(tab))
+    if (record === undefined || record.identity !== expectedTarget || record.page.isClosed()) return false
+    const release = await this.#acquireVisualOperation(record)
+    try {
+      if (!this.#recordReadable(record, expectedTarget, expectedLayout.layoutEpoch)
+        || record.layout.revision !== expectedLayout.revision) return false
+      await action(record.cdp, () => this.#pages.get(record.key) === record && !record.page.isClosed() && record.identity === expectedTarget)
+      return this.#pages.get(record.key) === record && !record.page.isClosed() && record.identity === expectedTarget
+        && record.layoutEpoch === expectedLayout.layoutEpoch && record.layout.revision === expectedLayout.revision
+    } finally {
+      release()
+    }
   }
 
   /** Lease one narrow media Page from the same persistent Chromium context. */
@@ -788,8 +831,10 @@ export class ManagedBrowserRuntime {
         viewport: { ...(page.viewportSize() ?? requestedViewport ?? DEFAULT_VIEWPORT) },
         mediaGeneration: 1,
       },
+      layoutEpoch: 0,
       layoutRunning: false,
       pendingLayouts: [],
+      visualOperationTail: Promise.resolve(),
     }
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return
@@ -920,22 +965,24 @@ export class ManagedBrowserRuntime {
     return project(record)
   }
 
-  #captureStillCurrent(record: PageRecord, documentId: string, layout: BrowserLayout): boolean {
-    return this.#pages.get(record.key) === record && !record.page.isClosed() && record.status === 'ready'
-      && record.documentId === documentId && sameLayoutIdentity(record.layout, layout)
+  #captureStillCurrent(record: PageRecord, documentId: string, layout: BrowserLayout, layoutEpoch: number): boolean {
+    return this.#recordReadable(record, undefined, layoutEpoch) && record.documentId === documentId && sameLayoutIdentity(record.layout, layout)
   }
 
   async #drainLayouts(record: PageRecord): Promise<void> {
     if (record.layoutRunning) return
     record.layoutRunning = true
+    const release = await this.#acquireVisualOperation(record)
     try {
       while (record.pendingLayouts.length > 0) {
         const pending = record.pendingLayouts.shift()
         if (pending === undefined) continue
+        record.layoutEpoch += 1
         try {
           if (pending.kind === 'verification') {
             if (!sameLayout(record.layout, pending.expected)) throw new Error('Browser layout is no longer current')
             await this.#applyViewport(record, pending.expected.viewport, true)
+            this.#assertLayoutRecordCurrent(record)
             if (!sameLayout(record.layout, pending.expected)) throw new Error('Browser layout changed during viewport verification')
             for (const waiter of pending.waiters) waiter.resolve(cloneLayout(record.layout))
             continue
@@ -944,10 +991,12 @@ export class ManagedBrowserRuntime {
           const next = pending.proposal
           if (current.mode === next.mode && sameSize(current.viewport, next.viewport)) {
             await this.#applyViewport(record, next.viewport, true)
+            this.#assertLayoutRecordCurrent(record)
             for (const waiter of pending.waiters) waiter.resolve(cloneLayout(current))
             continue
           }
           await this.#applyViewport(record, next.viewport)
+          this.#assertLayoutRecordCurrent(record)
           record.layout = {
             revision: current.revision + 1,
             mode: next.mode,
@@ -960,6 +1009,7 @@ export class ManagedBrowserRuntime {
         }
       }
     } finally {
+      release()
       record.layoutRunning = false
       if (record.pendingLayouts.length > 0) void this.#drainLayouts(record)
     }
@@ -999,6 +1049,25 @@ export class ManagedBrowserRuntime {
 
   #assertLayoutRecordCurrent(record: PageRecord): void {
     if (this.#pages.get(record.key) !== record || record.page.isClosed()) throw new Error('Browser page closed during layout commit')
+  }
+
+  #readableRecord(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): PageRecord | undefined {
+    const record = this.#pages.get(this.keyOf(tab))
+    return record !== undefined && this.#recordReadable(record, expectedTarget) ? record : undefined
+  }
+
+  #recordReadable(record: PageRecord, expectedTarget?: ManagedBrowserTargetIdentity, expectedLayoutEpoch?: number): boolean {
+    return this.#pages.get(record.key) === record && record.status === 'ready' && !record.page.isClosed()
+      && !record.layoutRunning && (expectedTarget === undefined || record.identity === expectedTarget)
+      && (expectedLayoutEpoch === undefined || record.layoutEpoch === expectedLayoutEpoch)
+  }
+
+  async #acquireVisualOperation(record: PageRecord): Promise<() => void> {
+    const previous = record.visualOperationTail
+    let release!: () => void
+    record.visualOperationTail = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    return release
   }
 
   async #refresh(record: PageRecord): Promise<void> {
@@ -1114,8 +1183,9 @@ export class ManagedBrowserRuntime {
   }
 
   async #act(tab: ManagedTabKey, ref: string, action: (locator: LocatorLike) => Promise<void>): Promise<ManagedBrowserActionResult> {
-    const record = this.#pages.get(this.keyOf(tab))
-    if (record === undefined || record.status !== 'ready') return notReady()
+    const record = this.#readableRecord(tab)
+    if (record === undefined) return notReady()
+    const layoutEpoch = record.layoutEpoch
     this.#touch(record)
     const target = record.refs.get(ref)
     if (target === undefined) {
@@ -1123,11 +1193,16 @@ export class ManagedBrowserRuntime {
       return { ok: false, code: 'unknown-ref', message: '找不到 ' + ref + '，先 browser_snapshot 再操作' }
     }
     if (target.documentId !== record.documentId) return { ok: false, code: 'stale-ref', message: '页面已导航，先重新 browser_snapshot' }
+    const release = await this.#acquireVisualOperation(record)
     try {
+      if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
       await action(record.page.locator(target.selector))
+      if (!this.#recordReadable(record, undefined, layoutEpoch)) return notReady()
       return { ok: true }
     } catch (error) {
       return { ok: false, code: 'navigation-failed', message: error instanceof Error ? error.message : String(error) }
+    } finally {
+      release()
     }
   }
 

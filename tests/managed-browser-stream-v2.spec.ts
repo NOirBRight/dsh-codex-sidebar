@@ -23,7 +23,8 @@ describe('managed Browser Host protocol v2', () => {
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 'fit:tab', touch: () => {}, acquire: () => () => {},
+      target: () => ({ cdp, layout }), ownedTarget: () => ({ cdp, layout }), keyOf: () => 'fit:tab', touch: () => {}, acquire: () => () => {},
+      runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
@@ -92,7 +93,8 @@ describe('managed Browser Host protocol v2', () => {
       return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
     }
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 'preset:tab', touch: () => {}, acquire: () => () => {},
+      target: () => ({ cdp, layout }), ownedTarget: () => ({ cdp, layout }), keyOf: () => 'preset:tab', touch: () => {}, acquire: () => () => {},
+      runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
@@ -141,6 +143,117 @@ describe('managed Browser Host protocol v2', () => {
     }
   })
 
+  it('drops a screenshot across a viewport epoch and keeps the control socket alive while resize blocks media and input', async () => {
+    const identity = Object.freeze({ target: 'transition' })
+    let layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    let layoutEpoch = 1
+    let transitioning = false
+    let releaseCapture!: () => void
+    let markCaptureStarted!: () => void
+    let gatedCapture = false
+    const captureStarted = new Promise<void>((resolve) => { markCaptureStarted = resolve })
+    let releaseProposal!: () => void
+    let markProposalStarted!: () => void
+    const proposalStarted = new Promise<void>((resolve) => { markProposalStarted = resolve })
+    let captureCalls = 0
+    const inputCalls: string[] = []
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method, params) => {
+      if (method === 'Page.captureScreenshot') {
+        captureCalls += 1
+        if (gatedCapture) {
+          gatedCapture = false
+          markCaptureStarted()
+          await new Promise<void>((resolve) => { releaseCapture = resolve })
+        }
+        return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      }
+      if (method === 'Input.dispatchMouseEvent') inputCalls.push(String(params?.type))
+      return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    }
+    const exactTarget = () => ({ identity, cdp, layout, layoutEpoch })
+    const runtime = {
+      target: (_tab: unknown, expected?: object) => !transitioning && (expected === undefined || expected === identity) ? exactTarget() : undefined,
+      ownedTarget: (_tab: unknown, expected?: object) => expected === identity ? exactTarget() : undefined,
+      keyOf: () => 'transition:tab', touch: () => {}, acquire: () => () => {},
+      layout: () => layout,
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
+      mediaPageCount: () => 0,
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async (_tab: unknown, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }) => {
+        transitioning = true
+        layoutEpoch += 1
+        markProposalStarted()
+        await new Promise<void>((resolve) => { releaseProposal = resolve })
+        layout = { revision: 2, mode: proposal.mode, viewport: proposal.viewport, mediaGeneration: 2 }
+        transitioning = false
+        return layout
+      },
+      runInput: async (_tab: unknown, expected: object, expectedLayout: { revision: number; layoutEpoch: number }, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => {
+        if (transitioning || expected !== identity || expectedLayout.layoutEpoch !== layoutEpoch || expectedLayout.revision !== layout.revision) return false
+        await action(cdp, () => !transitioning && expected === identity)
+        return !transitioning && expectedLayout.layoutEpoch === layoutEpoch
+      },
+      outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, preferredMediaRoute: 'jpeg-only', mobileJpegFrameIntervalMs: 1 })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'transition', tabId: 'tab' }).path)
+    const messages: Array<Record<string, unknown>> = []
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(1) })
+      const first = messages.find(({ type }) => type === 'frame') as { sequence: number; revision: number; mediaGeneration: number }
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: first.sequence, revision: first.revision, mediaGeneration: first.mediaGeneration }))
+      await vi.waitFor(() => { expect(stream.resources().unackedFrames).toBe(0) })
+
+      gatedCapture = true
+      client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 1, y: 1 } }))
+      await captureStarted
+      transitioning = true
+      layoutEpoch += 1
+      transitioning = false
+      releaseCapture()
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(1)
+
+      inputCalls.length = 0
+      client.send(JSON.stringify({ type: 'layout-propose', proposalSequence: 1, mode: 'phone', viewport: { width: 390, height: 844 } }))
+      await proposalStarted
+      const capturesBeforeTransitionEvent = captureCalls
+      cdp.emit('Page.screencastFrame', { data: 'during-transition', sessionId: 3 })
+      client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'tap', x: 2, y: 2 } }))
+      await new Promise((resolve) => { setTimeout(resolve, 20) })
+      expect(client.readyState).toBe(WebSocket.OPEN)
+      expect(captureCalls).toBe(capturesBeforeTransitionEvent)
+      expect(inputCalls).toEqual([])
+
+      releaseProposal()
+      await vi.waitFor(() => { expect(messages.some(({ type, layout: committed }) => type === 'layout-commit' && (committed as BrowserLayout).revision === 2)).toBe(true) })
+      await vi.waitFor(() => { expect(messages.filter(({ type }) => type === 'frame')).toHaveLength(2) })
+      expect(messages.filter(({ type }) => type === 'frame')[1]).toMatchObject({ revision: 2, mediaGeneration: 2, viewport: { width: 390, height: 844 } })
+    } finally {
+      releaseCapture?.()
+      releaseProposal?.()
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
   it('rejects every old socket operation after the same Tab receives a replacement target', async () => {
     for (const trigger of ['capture', 'proposal', 'input'] as const) {
       const firstIdentity = Object.freeze({ target: 'first' })
@@ -162,6 +275,8 @@ describe('managed Browser Host protocol v2', () => {
       const proposals: BrowserLayout['mode'][] = []
       const runtime = {
         target: () => current,
+        ownedTarget: () => current,
+        runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof firstCdp, current: () => boolean) => Promise<void>) => { await action(current.cdp, () => true); return true },
         keyOf: () => 'replacement:tab', touch: () => {}, acquire: () => () => {},
         layout: () => ({ ...current.layout, viewport: { ...current.layout.viewport } }),
         layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
@@ -239,7 +354,8 @@ describe('managed Browser Host protocol v2', () => {
         : {}
     const tab = { sessionId: 'idle-replacement', tabId: 'tab' }
     const runtime = {
-      target: () => ({ identity, cdp, layout }), keyOf: () => 'idle-replacement:tab', touch: () => {}, acquire: () => () => {},
+      target: () => ({ identity, cdp, layout }), ownedTarget: () => ({ identity, cdp, layout }), keyOf: () => 'idle-replacement:tab', touch: () => {}, acquire: () => () => {},
+      runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       mediaPageCount: () => 0,
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
@@ -303,9 +419,16 @@ describe('managed Browser Host protocol v2', () => {
     let trackRectCalls = 0
     const runtime = {
       target: (_tab: unknown, expected?: object) => expected === undefined || expected === current.identity ? current : undefined,
+      ownedTarget: (_tab: unknown, expected?: object) => expected === undefined || expected === current.identity ? current : undefined,
+      runInput: async (_tab: unknown, expected: object, _layout: unknown, action: (session: typeof firstCdp, current: () => boolean) => Promise<void>) => {
+        if (expected !== current.identity) return false
+        await action(current.cdp, () => expected === current.identity)
+        return expected === current.identity
+      },
       keyOf: () => 'wheel-replacement:tab', touch: () => {}, acquire: () => () => {},
       layout: () => layout,
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
       mediaPageCount: () => 0,
       projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
       outline: async () => ({ documentId: 'd1', nodes: [] }),
@@ -366,7 +489,8 @@ describe('managed Browser Host protocol v2', () => {
     }
     const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
     const runtime = {
-      target: () => ({ cdp, layout }), keyOf: () => 'animation:tab', touch: () => {}, acquire: () => () => {},
+      target: () => ({ cdp, layout }), ownedTarget: () => ({ cdp, layout }), keyOf: () => 'animation:tab', touch: () => {}, acquire: () => () => {},
+      runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       layout: () => layout,
       layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
       verifyLayout: async () => layout,
@@ -446,6 +570,8 @@ describe('managed Browser Host protocol v2', () => {
     }
     const runtime = {
       target: () => ({ page: { viewportSize: () => layout.viewport }, cdp, layout }),
+      ownedTarget: () => ({ page: { viewportSize: () => layout.viewport }, cdp, layout }),
+      runInput: async (_tab: unknown, _target: unknown, _layout: unknown, action: (session: typeof cdp, current: () => boolean) => Promise<void>) => { await action(cdp, () => true); return true },
       keyOf: () => 's:t',
       touch: () => {},
       acquire: () => () => {},

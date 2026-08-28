@@ -28,6 +28,7 @@ class FakePage {
   exposedBindings: Array<{ name: string; callback: (source: unknown, payload: unknown) => void }> = []
   evaluations: Array<{ source: string; argument: unknown }> = []
   onEvaluate: (() => void | Promise<void>) | undefined
+  onIsClosed: (() => void) | undefined
   onScreenshot: (() => void | Promise<void>) | undefined
 
   async goto(url: string): Promise<void> {
@@ -45,7 +46,7 @@ class FakePage {
   async goForward(): Promise<void> {}
   async reload(): Promise<void> { this.emit('framenavigated', this.frame) }
   async close(): Promise<void> { this.closed = true; this.emit('close') }
-  isClosed(): boolean { return this.closed }
+  isClosed(): boolean { this.onIsClosed?.(); return this.closed }
   url(): string { return this.currentUrl }
   async title(): Promise<string> { return this.currentTitle }
   viewportSize(): { width: number; height: number } { return this.size }
@@ -850,6 +851,124 @@ describe('ManagedBrowserRuntime', () => {
     await expect(first).resolves.toMatchObject({ revision: 2, viewport: { width: 800, height: 600 } })
     await expect(superseded).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
     await expect(latest).resolves.toMatchObject({ revision: 3, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    await box.runtime.dispose()
+  })
+
+  it('blocks every visual read and input while one exact Page is applying a viewport, then resumes after commit', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'transition-gate' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    await box.runtime.snapshot(tab)
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing target')
+    page.blockResizes = true
+
+    const proposal = box.runtime.proposeLayout(tab, { mode: 'phone', viewport: { width: 390, height: 844 } }, target.identity)
+    await vi.waitFor(() => { expect(page.resizeCalls).toEqual([{ width: 390, height: 844 }]) })
+
+    expect(box.runtime.target(tab, target.identity)).toBeUndefined()
+    expect(box.runtime.ownedTarget(tab, target.identity)?.identity).toBe(target.identity)
+    expect(box.runtime.captureIdentity(tab, target.identity)).toBeUndefined()
+    await expect(box.runtime.capture(tab, { revision: 1, mediaGeneration: 1 })).resolves.toMatchObject({ ok: false })
+    await expect(box.runtime.snapshot(tab)).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    await expect(box.runtime.outline(tab, target.identity)).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    await expect(box.runtime.trackRect(tab, '#save', target.identity)).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    await expect(box.runtime.click(tab, '@d1e1')).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+
+    page.resizeReleases.shift()?.()
+    await expect(proposal).resolves.toMatchObject({ revision: 2, mediaGeneration: 2, viewport: { width: 390, height: 844 } })
+    expect(box.runtime.target(tab, target.identity)?.identity).toBe(target.identity)
+    expect(box.runtime.captureIdentity(tab, target.identity)).toMatchObject({ layoutRevision: 2, mediaGeneration: 2 })
+    await expect(box.runtime.capture(tab, { revision: 2, mediaGeneration: 2 })).resolves.toMatchObject({ captureId: expect.any(String) })
+    await box.runtime.dispose()
+  })
+
+  it('rejects a viewport proposal when the exact Page is invalidated after postcondition verification but before commit', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'postcondition-continuation-race' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing page')
+    let closedChecks = 0
+    let closing: Promise<void> | undefined
+    page.onIsClosed = () => {
+      closedChecks += 1
+      if (closedChecks !== 3) return
+      queueMicrotask(() => { closing = box.runtime.close(tab) })
+    }
+
+    await expect(box.runtime.proposeLayout(tab, {
+      mode: 'phone', viewport: { width: 390, height: 844 },
+    })).rejects.toThrow('closed during layout commit')
+    await vi.waitFor(() => { expect(closing).toBeDefined() })
+    await closing
+    expect(box.runtime.layout(tab)).toBeUndefined()
+    await box.runtime.dispose()
+  })
+
+  it('drops a capture that spans a completed same-layout viewport verification', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'capture-epoch' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing target')
+    let releaseScreenshot!: () => void
+    const screenshotStarted = new Promise<void>((resolveStarted) => {
+      page.onScreenshot = async () => {
+        resolveStarted()
+        await new Promise<void>((resolve) => { releaseScreenshot = resolve })
+      }
+    })
+
+    const capture = box.runtime.capture(tab, target.layout)
+    await screenshotStarted
+    page.domSize = { width: 701, height: 811 }
+    await expect(box.runtime.verifyLayout(tab, target.layout, target.identity)).resolves.toEqual(target.layout)
+    releaseScreenshot()
+
+    await expect(capture).resolves.toMatchObject({ ok: false, code: 'stale-layout' })
+    expect(box.runtime.target(tab, target.identity)?.layoutEpoch).toBe(target.layoutEpoch + 1)
+    await box.runtime.dispose()
+  })
+
+  it('serializes one complete input gesture ahead of a queued viewport transition', async () => {
+    const box = harness()
+    const tab = { sessionId: 'layout', tabId: 'input-barrier' }
+    await box.runtime.ensure(tab, 'https://example.com')
+    const target = box.runtime.target(tab)
+    const page = box.pages[0]
+    if (target === undefined || page === undefined) throw new Error('missing target')
+    let releaseGesture!: () => void
+    let markGestureStarted!: () => void
+    const gestureStarted = new Promise<void>((resolve) => { markGestureStarted = resolve })
+    const input = box.runtime.runInput(tab, target.identity, {
+      revision: target.layout.revision,
+      layoutEpoch: target.layoutEpoch,
+    }, async (cdp) => {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed' })
+      markGestureStarted()
+      await new Promise<void>((resolve) => { releaseGesture = resolve })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased' })
+    })
+    await gestureStarted
+
+    const proposal = box.runtime.proposeLayout(tab, { mode: 'phone', viewport: { width: 390, height: 844 } }, target.identity)
+    await vi.waitFor(() => { expect(box.runtime.target(tab, target.identity)).toBeUndefined() })
+    expect(page.resizeCalls).toEqual([])
+    expect(box.cdpCommands.filter(({ method }) => method === 'Input.dispatchMouseEvent')).toEqual([
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed' } },
+    ])
+
+    releaseGesture()
+    await expect(input).resolves.toBe(true)
+    await expect(proposal).resolves.toMatchObject({ revision: 2, mediaGeneration: 2 })
+    expect(box.cdpCommands.filter(({ method }) => method === 'Input.dispatchMouseEvent')).toEqual([
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed' } },
+      { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased' } },
+    ])
+    expect(page.resizeCalls).toEqual([{ width: 390, height: 844 }])
     await box.runtime.dispose()
   })
 
