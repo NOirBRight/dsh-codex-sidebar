@@ -256,6 +256,7 @@ const EVIDENCE_QUALITY = 85
 const DEFAULT_DEVICE_SCALE_FACTOR = 2
 const CSS_VIEWPORT_EXPRESSION = '({ width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio })'
 const DEFAULT_LAYOUT_PAINT_TIMEOUT_MS = 1_000
+const COMPOSITOR_SETTLE_MS = 34
 const DEFAULT_BROWSER_CLEANUP_TIMEOUT_MS = 2_000
 const DEFAULT_LAYOUT_POLICY: ManagedBrowserLayoutPolicy = Object.freeze({
   minViewport: Object.freeze({ width: 320, height: 240 }),
@@ -1057,13 +1058,17 @@ export class ManagedBrowserRuntime {
   }
 
   async #waitForViewportPaint(record: PageRecord): Promise<void> {
-    const paint = record.cdp.send('Page.captureScreenshot', {
-      format: 'jpeg',
-      quality: 1,
-      fromSurface: true,
-      captureBeyondViewport: false,
-      optimizeForSpeed: true,
+    let settleTimer: ReturnType<typeof setTimeout> | undefined
+    const capture = () => record.cdp.send('Page.captureScreenshot', {
+      format: 'jpeg', quality: 1, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true,
     })
+    const paint = (async () => {
+      await record.cdp.send('Page.bringToFront')
+      await capture()
+      await new Promise<void>((resolve) => { settleTimer = setTimeout(resolve, COMPOSITOR_SETTLE_MS) })
+      settleTimer = undefined
+      await capture()
+    })()
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => { reject(new Error('Chromium Browser viewport paint timed out')) }, this.#layoutPaintTimeoutMs)
@@ -1073,6 +1078,7 @@ export class ManagedBrowserRuntime {
       await Promise.race([paint, deadline])
       this.#assertLayoutRecordCurrent(record)
     } finally {
+      if (settleTimer !== undefined) clearTimeout(settleTimer)
       if (timer !== undefined) clearTimeout(timer)
     }
   }

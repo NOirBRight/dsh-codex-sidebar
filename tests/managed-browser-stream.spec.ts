@@ -119,7 +119,7 @@ describe('managed browser stream protocol', () => {
     await harness.dispose()
   })
 
-  it('requires hello before ready and advertises the Mobile frame protocol before stalled CDP startup', async () => {
+  it('advertises ready before startup and bounds a stalled screencast across owner replacement', async () => {
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
     cdp.send = async (method: string) => {
       if (method === 'Page.startScreencast') return await new Promise(() => {})
@@ -131,7 +131,7 @@ describe('managed browser stream protocol', () => {
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
-    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, shutdownTimeoutMs: 20 })
     const harness = await ManagedBrowserStreamHarness.start(stream)
     const ticket = stream.issue({ sessionId: 's', tabId: 't' })
     const client = await harness.connect({ sessionId: 's', tabId: 't' }, { path: ticket.path })
@@ -159,6 +159,20 @@ describe('managed browser stream protocol', () => {
         flowControl: 'frame-ack-v2',
         media: { hideGraceMs: 15_000 },
       })
+      const replacement = await harness.connect({ sessionId: 's', tabId: 't' })
+      try {
+        harness.hello(replacement, { frameEncodings: ['binary-v2', 'json-base64-v2'] })
+        const ready = await Promise.race([
+          new Promise<string>((resolve, reject) => {
+            replacement.once('message', (data) => { resolve(Buffer.from(data as Buffer).toString('utf8')) })
+            replacement.once('error', reject)
+          }),
+          new Promise<string>((_resolve, reject) => { setTimeout(() => { reject(new Error('replacement owner stayed blocked')) }, 200) }),
+        ])
+        expect(JSON.parse(ready)).toMatchObject({ type: 'ready', version: MANAGED_BROWSER_STREAM_VERSION })
+      } finally {
+        replacement.close()
+      }
     } finally {
       await harness.dispose()
     }

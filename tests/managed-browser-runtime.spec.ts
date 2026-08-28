@@ -1157,6 +1157,10 @@ describe('ManagedBrowserRuntime', () => {
       viewport: { width: 1280, height: 800 },
     })
 
+    const paintCommands = box.cdpCommands.filter(({ method }) => method === 'Page.bringToFront' || method === 'Page.captureScreenshot')
+    expect(paintCommands.slice(-3).map(({ method }) => method)).toEqual([
+      'Page.bringToFront', 'Page.captureScreenshot', 'Page.captureScreenshot',
+    ])
     expect(box.cdpCommands.at(-1)).toEqual({
       method: 'Page.captureScreenshot',
       params: { format: 'jpeg', quality: 1, fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true },

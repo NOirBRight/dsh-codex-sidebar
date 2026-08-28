@@ -580,7 +580,9 @@ export class ManagedBrowserStream {
     let mediaVerified = false
     let pendingMediaLayout: BrowserLayout | undefined
     let sourceState: 'stopped' | 'gated' | 'active' | 'closed' = 'stopped'
-    let inputInFlight = 0
+    let nextInputSequence = 0
+    let passiveInputBarrier: number | undefined
+    let lifecycleTerminal = false
     let surfaceHidden = false
     let mediaTransition = Promise.resolve()
     let layoutControlTransition = Promise.resolve()
@@ -676,7 +678,7 @@ export class ManagedBrowserStream {
     }
     const pump = (): void => {
       if (detached || !handshaken || socket.readyState !== WebSocket.OPEN) return
-      if (inputInFlight > 0 || captureInFlight || unacked !== undefined || dirty === undefined) return
+      if (passiveInputBarrier !== undefined || captureInFlight || unacked !== undefined || dirty === undefined) return
       const activeFrameIntervalMs = mediaAttempt?.connected === true
         ? Math.ceil(1000 / this.#directVideoFrameRate)
         : profile.frameIntervalMs
@@ -796,6 +798,27 @@ export class ManagedBrowserStream {
       dirty = { kind: kind === 'activity' || dirty?.kind === 'activity' ? 'activity' : 'passive' }
       if (kind === 'passive') armFrameTimer(1, pump)
       else pump()
+    }
+    const awaitLifecycleCommand = async <T>(task: Promise<T>, timeoutMessage: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      this.#timerCount += 1
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error(timeoutMessage)) }, this.#shutdownTimeoutMs)
+        timer.unref()
+      })
+      try {
+        return await Promise.race([task, deadline])
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+        this.#timerCount -= 1
+      }
+    }
+    const failLifecycle = (error: unknown, fallback: string): void => {
+      lifecycleTerminal = true
+      mediaVerified = false
+      if (!detached && socket.readyState === WebSocket.OPEN) {
+        socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : fallback)
+      }
     }
     const clearMediaTimer = (attempt: BrowserMediaAttempt, field: 'negotiationTimer' | 'idleTimer'): void => {
       const timer = attempt[field]
@@ -966,7 +989,7 @@ export class ManagedBrowserStream {
       replaceMediaAttempt(layout)
     }
     const startCommittedMedia = async (layout: BrowserLayout): Promise<void> => {
-      if (detached) return
+      if (detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
       const firstStart = !mediaStarted
       mediaStarted = true
       pendingMediaLayout = layout
@@ -977,34 +1000,30 @@ export class ManagedBrowserStream {
       }
       sendLayout(layout)
       if (firstStart) sendMediaRoute('jpeg-fallback', clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'reconnecting' : 'active')
-      try {
-        await cdp.send('Page.startScreencast', {
-          format: 'jpeg',
-          quality: profile.quality,
-          maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
-          maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
-          everyNthFrame: profile.everyNthFrame,
-        })
-        screencastStarted = true
-        if (detached) return
-        await this.#runtime.verifyLayout(tab, layout, target.identity)
-        if (detached) return
-        const current = currentLayout()
-        if (!sameMediaLayout(current, layout) || !sameMediaLayout(pendingMediaLayout, layout)) return
-        mediaVerified = true
-        sourceState = 'active'
-        replaceMediaAttempt(layout)
-        // A settled page may not emit a screencast frame until it repaints.
-        requestFrame('activity')
-      } catch (error) {
-        if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot start screencast')
-      }
+      await awaitLifecycleCommand(cdp.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: profile.quality,
+        maxWidth: MANAGED_BROWSER_STREAM_MAX_WIDTH,
+        maxHeight: MANAGED_BROWSER_STREAM_MAX_HEIGHT,
+        everyNthFrame: profile.everyNthFrame,
+      }), 'Browser screencast start timed out')
+      screencastStarted = true
+      if (detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
+      await this.#runtime.verifyLayout(tab, layout, target.identity)
+      if (detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
+      const current = currentLayout()
+      if (!sameMediaLayout(current, layout) || !sameMediaLayout(pendingMediaLayout, layout)) return
+      mediaVerified = true
+      sourceState = 'active'
+      replaceMediaAttempt(layout)
+      // A settled page may not emit a screencast frame until it repaints.
+      requestFrame('activity')
     }
     const pauseCommittedMedia = async (): Promise<void> => {
       mediaVerified = false
       sourceState = 'gated'
       if (!screencastStarted) return
-      await cdp.send('Page.stopScreencast')
+      await awaitLifecycleCommand(cdp.send('Page.stopScreencast'), 'Browser screencast stop timed out')
       screencastStarted = false
     }
     const commitLayout = async (layout: BrowserLayout): Promise<void> => {
@@ -1024,10 +1043,10 @@ export class ManagedBrowserStream {
     const proposeCommittedLayout = async (proposalSequence: number, proposal: { mode: BrowserLayout['mode']; viewport: BrowserLayout['viewport'] }): Promise<void> => {
       try {
         await queueLayoutControl(async () => {
-          if (proposalSequence !== latestProposalSequence || detached) return
+          if (proposalSequence !== latestProposalSequence || detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
           await pauseCommittedMedia()
           const layout = await this.#runtime.proposeLayout(tab, proposal, target.identity)
-          if (proposalSequence !== latestProposalSequence || detached) return
+          if (proposalSequence !== latestProposalSequence || detached || lifecycleTerminal || socket.readyState !== WebSocket.OPEN) return
           // A reconnect verification may already hold the visual-read gate after this
           // proposal committed. Control-plane commits only require the exact Page owner.
           const current = currentTarget()?.layout
@@ -1035,7 +1054,7 @@ export class ManagedBrowserStream {
           await commitLayout(layout)
         })
       } catch (error) {
-        if (!detached) socket.close(1011, error instanceof Error ? error.message.slice(0, 120) : 'Cannot apply Browser layout')
+        failLifecycle(error, 'Cannot apply Browser layout')
         throw error
       }
     }
@@ -1078,7 +1097,7 @@ export class ManagedBrowserStream {
       const stopScreencast = layoutControlTransition.then(async () => {
         if (!screencastStarted) return
         screencastStarted = false
-        await cdp.send('Page.stopScreencast').catch(() => undefined)
+        await awaitLifecycleCommand(cdp.send('Page.stopScreencast'), 'Browser screencast cleanup timed out').catch(() => undefined)
       })
       await Promise.all([previousCleanup, mediaTransition, layoutControlTransition, releaseMedia, stopScreencast, captureTask, startTask])
     }
@@ -1108,7 +1127,13 @@ export class ManagedBrowserStream {
         return
       }
       sendProjection()
-      if (layout.mode !== 'fit') await queueLayoutControl(async () => { await startCommittedMedia(layout) })
+      if (layout.mode !== 'fit') {
+        try {
+          await queueLayoutControl(async () => { await startCommittedMedia(layout) })
+        } catch (error) {
+          failLifecycle(error, 'Cannot start Browser screencast')
+        }
+      }
     }
     let helloTimerActive = true
     const clearHelloTimer = (): void => {
@@ -1211,13 +1236,16 @@ export class ManagedBrowserStream {
           return
         }
       }
-      if (message.type === 'input') inputInFlight += 1
+      const inputSequence = message.type === 'input' ? ++nextInputSequence : undefined
+      if (inputSequence !== undefined && dirty?.kind === 'passive' && !captureInFlight && passiveInputBarrier === undefined) {
+        passiveInputBarrier = inputSequence
+      }
       const messageTask = this.#onMessage(socket, tab, target.identity, message, requestFrame, proposeCommittedLayout, currentTarget, currentLayout, noteMediaActivity, {
         get latest() { return latestProposalSequence },
         set latest(value: number) { latestProposalSequence = value },
       }).catch(() => { currentTarget() }).finally(() => {
-        if (message.type !== 'input') return
-        inputInFlight -= 1
+        if (inputSequence === undefined || passiveInputBarrier !== inputSequence) return
+        passiveInputBarrier = undefined
         pump()
       })
       this.#track(messageTask)

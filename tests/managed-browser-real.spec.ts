@@ -276,7 +276,7 @@ describe('real managed Chromium', () => {
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('keeps a committed laptop viewport when the first stream starts without a new proposal', async () => {
     const pageServer = createServer((_req, res) => {
       res.setHeader('content-type', 'text/html')
-      res.end('<!doctype html><title>Fixed stream test</title><style>*{margin:0}.top{height:100px;width:100%;background:#e11d48}</style><section class="top"></section>')
+      res.end('<!doctype html><title>Fixed stream test</title><style>*{margin:0}body{min-height:100vh;background:#e11d48}@media(min-width:1000px){body{background:#16a34a}}.top{height:100px;width:100%;background:#e11d48}</style><section class="top"></section>')
     })
     await new Promise<void>((resolve, reject) => {
       pageServer.once('error', reject)
@@ -338,6 +338,9 @@ describe('real managed Chromium', () => {
     await expect(committed).resolves.toMatchObject({ mode: 'laptop', viewport: { width: 1280, height: 800 } })
     const frame = await firstFrame
     expect(frame.viewport).toEqual({ width: 1280, height: 800 })
+    const pixel = await jpegCenterPixel(page as Page, frame)
+    expect(pixel[1]).toBeGreaterThan(120)
+    expect(pixel[0]).toBeLessThan(80)
     await expect(page.evaluate('({ width: innerWidth, height: innerHeight, contentWidth: document.querySelector(".top")?.getBoundingClientRect().width })')).resolves.toEqual({
       width: 1280,
       height: 800,

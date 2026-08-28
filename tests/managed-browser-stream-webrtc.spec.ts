@@ -195,7 +195,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
       expect(encoders).toHaveLength(1)
       expect(acquisitions).toBe(1)
       expect(releases).toBe(1)
-      await vi.waitFor(() => { expect(stream.resources().timers).toBe(0) })
+      await vi.waitFor(() => { expect(stream.resources().timers).toBe(1) })
 
       const rejected = new Promise<{ code: number; reason: string }>((resolve) => {
         second?.client.once('close', (code, reason) => { resolve({ code, reason: reason.toString() }) })
@@ -206,6 +206,7 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
 
       releaseEncoder?.()
       releaseScreencast?.()
+      await vi.waitFor(() => { expect(stream.resources().timers).toBe(0) })
       await new Promise<void>((resolve) => { setImmediate(resolve) })
       expect(second.messages).toEqual([])
       expect(encoders).toHaveLength(1)
