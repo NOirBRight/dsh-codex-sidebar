@@ -388,7 +388,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   }
 
   function applyBrowser(intent: { type: string }): Effect[] | undefined {
-    const id = browserTabId()
+    const requestedTabId = 'tabId' in intent && typeof intent.tabId === 'string' ? intent.tabId : undefined
+    const id = requestedTabId ?? browserTabId()
+    if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) return undefined
     if (id === undefined) return undefined
     const next = reduceBrowser(pages[id] ?? emptyBrowser(), intent, opts.browser)
     if (next === undefined) return undefined
@@ -784,7 +786,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       }
       case 'browser-note-add': {
-        const id = browserTabId()
+        const requestedTabId = (intent as BrowserIntent & { type: 'browser-note-add' }).tabId
+        const id = requestedTabId ?? browserTabId()
+        if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) break
         const current = id === undefined ? undefined : pages[id]
         if (id === undefined || current === undefined || current.pendingMark === null) break
         const evidence = (intent as BrowserIntent & { type: 'browser-note-add' }).evidence ?? current.pendingEvidence
@@ -816,7 +820,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       }
       case 'browser-note-send': {
-        const id = browserTabId()
+        const requestedTabId = (intent as BrowserIntent & { type: 'browser-note-send' }).tabId
+        const id = requestedTabId ?? browserTabId()
+        if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) break
         const current = id === undefined ? undefined : pages[id]
         if (id === undefined || current === undefined || current.pendingMark === null) break
         const evidence = (intent as BrowserIntent & { type: 'browser-note-send' }).evidence ?? current.pendingEvidence

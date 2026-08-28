@@ -54,11 +54,11 @@ export type BrowserIntent =
   | { type: 'browser-open-external' }
   | { type: 'browser-runtime-sync'; tabId: string; url: string; title: string; documentId: string; status: BrowserRuntimeStatus; error?: string }
   | { type: 'browser-set-annotate'; on: boolean }
-  | { type: 'browser-click-content'; mark: string; x: number; y: number; captureId: string; documentId: string; layoutRevision: number; mediaGeneration: number; selector?: string; rect?: AnnotationRect }
+  | { type: 'browser-click-content'; tabId?: string; mark: string; x: number; y: number; captureId: string; documentId: string; layoutRevision: number; mediaGeneration: number; selector?: string; rect?: AnnotationRect }
   | { type: 'browser-dismiss-note' }
   | { type: 'browser-set-note-draft'; text: string }
-  | { type: 'browser-note-add'; evidence?: BrowserEvidence }
-  | { type: 'browser-note-send'; evidence?: BrowserEvidence }
+  | { type: 'browser-note-add'; tabId?: string; evidence?: BrowserEvidence }
+  | { type: 'browser-note-send'; tabId?: string; evidence?: BrowserEvidence }
 
 export type BrowserPort = {
   load(url: string): PageDocument | undefined

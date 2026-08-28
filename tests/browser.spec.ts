@@ -185,6 +185,44 @@ describe('Browser seam', () => {
     expect(box.snapshot().browsers[secondId ?? '']?.history).toEqual([OTHER_URL])
   })
 
+  it('routes a delayed Browser surface capture to its originating Tab', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const firstId = box.snapshot().active as string
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({ type: 'open-url', url: OTHER_URL })
+    const secondId = box.snapshot().active as string
+
+    box.dispatch({
+      type: 'browser-click-content',
+      tabId: firstId,
+      mark: 'button.submit',
+      x: 40,
+      y: 80,
+      captureId: 'capture-first',
+      documentId: 'document-first',
+      layoutRevision: 4,
+      mediaGeneration: 7,
+    })
+
+    expect(box.snapshot().active).toBe(secondId)
+    expect(box.snapshot().browsers[firstId]).toMatchObject({
+      pendingMark: 'button.submit',
+      pendingCaptureId: 'capture-first',
+    })
+    expect(box.snapshot().browsers[secondId]?.pendingMark).toBeNull()
+
+    box.dispatch({ type: 'browser-note-add', tabId: firstId, evidence: {
+      ...browserEvidence(4),
+      captureId: 'capture-first',
+      documentId: 'document-first',
+      mediaGeneration: 7,
+    } })
+    expect(box.snapshot().browsers[firstId]?.pendingMark).toBeNull()
+    expect(box.snapshot().attachments.at(-1)).toMatchObject({ source: 'browser', url: PAGE_URL, from: 'button.submit' })
+    expect(box.snapshot().browsers[secondId]?.pendingMark).toBeNull()
+  })
+
   it('reopens a managed Browser page when its Tab is selected again', () => {
     const browser = fakeBrowser()
     const box = session(browser)

@@ -126,6 +126,7 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
       const y = anchor.y + (page?.offsetTop ?? 0)
       onIntent({
         type: 'browser-click-content',
+        tabId,
         mark: hit === undefined ? areaCaption(rect) : nodeCaption(hit),
         x: body === null ? x : Math.min(body.clientWidth - 12, Math.max(12, x)),
         y: body === null ? y : Math.min(body.clientHeight - 12, Math.max(12, y)),
@@ -215,8 +216,8 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
           editing={browser.editingId !== null}
           onDelete={() => { if (browser.editingId !== null) onIntent({ type: 'remove-attachment', id: browser.editingId }) }}
           onChange={(text) => { onIntent({ type: 'browser-set-note-draft', text }) }}
-          onAdd={() => { onIntent({ type: 'browser-note-add' }) }}
-          onSend={() => { onIntent({ type: 'browser-note-send' }) }}
+          onAdd={() => { onIntent({ type: 'browser-note-add', ...(tabId === undefined ? {} : { tabId }) }) }}
+          onSend={() => { onIntent({ type: 'browser-note-send', ...(tabId === undefined ? {} : { tabId }) }) }}
           onDismiss={() => { onIntent({ type: 'browser-dismiss-note' }) }}
         />
       )}

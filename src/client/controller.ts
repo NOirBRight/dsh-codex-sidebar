@@ -249,7 +249,7 @@ export class SidebarController {
   ): Promise<Intent | undefined> {
     if (intent.type !== 'browser-note-add' && intent.type !== 'browser-note-send') return intent
     const snapshot = this.snap(sessionId)
-    const tabId = snapshot?.active
+    const tabId = intent.tabId ?? snapshot?.active
     const browser = tabId === null || tabId === undefined ? undefined : snapshot?.browsers[tabId]
     if (browser === undefined) return undefined
     let evidence = browser.pendingEvidence
@@ -267,7 +267,7 @@ export class SidebarController {
     if (browser.pendingDocumentId !== null && evidence.documentId !== browser.pendingDocumentId) return undefined
     if (browser.pendingLayoutRevision !== null && evidence.layoutRevision !== browser.pendingLayoutRevision) return undefined
     if (browser.pendingMediaGeneration !== null && evidence.mediaGeneration !== browser.pendingMediaGeneration) return undefined
-    return { ...intent, evidence }
+    return { ...intent, tabId, evidence }
   }
 
   #enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
