@@ -1135,7 +1135,7 @@ export class ManagedBrowserStream {
           return
         }
       }
-      void this.#onMessage(socket, tab, target.identity, cdp, message, requestFrame, commitLayout, currentLayout, noteMediaActivity, {
+      void this.#onMessage(socket, tab, target.identity, cdp, message, requestFrame, commitLayout, currentTarget, currentLayout, noteMediaActivity, {
         get latest() { return latestProposalSequence },
         set latest(value: number) { latestProposalSequence = value },
       }).catch(() => { currentTarget() })
@@ -1166,14 +1166,16 @@ export class ManagedBrowserStream {
     message: Exclude<ReturnType<typeof decodeBrowserClientMessage>, undefined | { type: 'hello' } | { type: 'frame-ack' }>,
     requestFrame: (kind: 'activity' | 'passive') => void,
     commitLayout: (layout: BrowserLayout) => void,
+    currentTarget: () => ReturnType<ManagedBrowserRuntime['target']>,
     currentLayout: () => BrowserLayout | undefined,
     noteMediaActivity: () => void,
     proposal: { latest: number },
   ): Promise<void> {
     if (message.type === 'rtc-answer' || message.type === 'rtc-candidate' || message.type === 'media-retry' || message.type === 'media-decline') return
     if (message.type === 'outline') {
-      const outline = await this.#runtime.outline(tab)
-      if ('nodes' in outline && socket.readyState === WebSocket.OPEN) {
+      if (currentTarget() === undefined) return
+      const outline = await this.#runtime.outline(tab, targetIdentity)
+      if (currentTarget() !== undefined && 'nodes' in outline && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           type: 'outline',
           documentId: outline.documentId,
@@ -1203,12 +1205,18 @@ export class ManagedBrowserStream {
     }
     noteMediaActivity()
     this.#runtime.touch(tab)
+    if (currentTarget() === undefined) return
     await dispatchBrowserInput(cdp, message.input)
-    if (message.input.type === 'wheel') await waitForBrowserPaint(cdp)
+    if (currentTarget() === undefined) return
+    if (message.input.type === 'wheel') {
+      await waitForBrowserPaint(cdp)
+      if (currentTarget() === undefined) return
+    }
     requestFrame('activity')
     if (message.input.type === 'wheel' && message.input.selector !== undefined) {
-      const tracked = await this.#runtime.trackRect(tab, message.input.selector)
-      if ('rect' in tracked && socket.readyState === WebSocket.OPEN) {
+      if (currentTarget() === undefined) return
+      const tracked = await this.#runtime.trackRect(tab, message.input.selector, targetIdentity)
+      if (currentTarget() !== undefined && 'rect' in tracked && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'tracked-rect', ...tracked }))
       }
     }

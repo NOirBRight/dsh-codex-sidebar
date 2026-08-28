@@ -52,7 +52,7 @@ export class ManagedBrowserEvidenceStore {
       if (!('captureId' in result)) {
         throw new Error(result.ok ? 'Browser capture returned no image' : result.message)
       }
-      if (!sameCaptureIdentity(this.#runtime.captureIdentity(tab), result)) continue
+      if (!sameCaptureIdentity(this.#runtime.captureIdentity(tab, result.targetIdentity), result)) continue
       if (result.image.byteLength > MAX_EVIDENCE_BYTES) throw new Error('Browser screenshot exceeds the 5 MB attachment limit')
       this.#captures.set(result.captureId, { tab, capture: result, expiresAt: this.#now() + TEMP_CAPTURE_TTL_MS })
       return metadata(result)
@@ -74,7 +74,7 @@ export class ManagedBrowserEvidenceStore {
     if (temporary === undefined || temporary.tab.sessionId !== sessionId) throw new Error('Browser capture is missing or expired')
     const capture = temporary.capture
     if (capture.layoutRevision !== expected.revision || capture.mediaGeneration !== expected.mediaGeneration
-      || !sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab), capture)) {
+      || !sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab, capture.targetIdentity), capture)) {
       this.#captures.delete(captureId)
       throw new Error('Browser capture is stale after navigation or layout change')
     }
@@ -85,7 +85,7 @@ export class ManagedBrowserEvidenceStore {
     const tempPath = finalPath + '.tmp-' + process.pid + '-' + Date.now()
     await mkdir(resolve(this.root, sessionDir), { recursive: true, mode: 0o700 })
     await writeFile(tempPath, capture.image, { mode: 0o600 })
-    if (!sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab), capture)) {
+    if (!sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab, capture.targetIdentity), capture)) {
       await rm(tempPath, { force: true })
       this.#captures.delete(captureId)
       throw new Error('Browser capture is stale after navigation or layout change')
@@ -95,7 +95,7 @@ export class ManagedBrowserEvidenceStore {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     })
     this.#captures.delete(captureId)
-    if (!sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab), capture)) {
+    if (!sameCaptureIdentity(this.#runtime.captureIdentity(temporary.tab, capture.targetIdentity), capture)) {
       throw new Error('Browser capture is stale after navigation or layout change')
     }
     const evidence: BrowserEvidence = {

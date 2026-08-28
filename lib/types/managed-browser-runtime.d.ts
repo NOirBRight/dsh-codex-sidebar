@@ -122,6 +122,8 @@ export type ManagedBrowserTrackedRect = {
     } | null;
 };
 export type ManagedBrowserCapture = {
+    /** Exact same-process Page/CDP identity that produced this capture. */
+    targetIdentity: ManagedBrowserTargetIdentity;
     captureId: string;
     documentId: string;
     layoutRevision: number;
@@ -246,13 +248,31 @@ export declare class ManagedBrowserRuntime {
     /** Commit a proposal only when the optional exact target owns the Tab and reports the requested CSS viewport. */
     proposeLayout(tab: ManagedTabKey, proposal: LayoutProposal, expectedTarget?: ManagedBrowserTargetIdentity): Promise<BrowserLayout>;
     snapshot(tab: ManagedTabKey): Promise<DriveSnapshot | ManagedBrowserActionResult>;
-    outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult>;
-    trackRect(tab: ManagedTabKey, selector: string): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult>;
+    /**
+     * Read visible outline nodes only while one optional exact target still owns the Tab.
+     * @param tab Managed Browser Tab key.
+     * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+     * @returns Outline nodes, or a not-ready result when the target is absent or replaced.
+     */
+    outline(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserOutline | ManagedBrowserActionResult>;
+    /**
+     * Read one selector rectangle only while one optional exact target still owns the Tab.
+     * @param tab Managed Browser Tab key.
+     * @param selector CSS selector to measure.
+     * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+     * @returns Tracked rectangle, or a not-ready result when the target is absent or replaced.
+     */
+    trackRect(tab: ManagedTabKey, selector: string, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult>;
     click(tab: ManagedTabKey, ref: string): Promise<ManagedBrowserActionResult>;
     fill(tab: ManagedTabKey, ref: string, text: string): Promise<ManagedBrowserActionResult>;
     capture(tab: ManagedTabKey, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<ManagedBrowserCapture | ManagedBrowserActionResult | ManagedBrowserCaptureFailure>;
-    /** Return the current document and committed layout identity without exposing the target Page. */
-    captureIdentity(tab: ManagedTabKey): {
+    /**
+     * Return the current public capture identity only while one optional exact target owns the Tab.
+     * @param tab Managed Browser Tab key.
+     * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+     * @returns Public document and layout identity, or undefined when the target is absent or replaced.
+     */
+    captureIdentity(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): {
         documentId: string;
         layoutRevision: number;
         mediaGeneration: number;

@@ -130,6 +130,8 @@ export type ManagedBrowserTrackedRect = {
 }
 
 export type ManagedBrowserCapture = {
+  /** Exact same-process Page/CDP identity that produced this capture. */
+  targetIdentity: ManagedBrowserTargetIdentity
   captureId: string
   documentId: string
   layoutRevision: number
@@ -499,17 +501,32 @@ export class ManagedBrowserRuntime {
     }
   }
 
-  async outline(tab: ManagedTabKey): Promise<ManagedBrowserOutline | ManagedBrowserActionResult> {
+  /**
+   * Read visible outline nodes only while one optional exact target still owns the Tab.
+   * @param tab Managed Browser Tab key.
+   * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+   * @returns Outline nodes, or a not-ready result when the target is absent or replaced.
+   */
+  async outline(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserOutline | ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
-    return { documentId: record.documentId, nodes: await this.#outlineNodes(record) }
+    if (expectedTarget !== undefined && record.identity !== expectedTarget) return notReady()
+    const nodes = await this.#outlineNodes(record)
+    if (this.#pages.get(record.key) !== record || record.status !== 'ready' || record.page.isClosed()) return notReady()
+    return { documentId: record.documentId, nodes }
   }
 
-
-
-  async trackRect(tab: ManagedTabKey, selector: string): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult> {
+  /**
+   * Read one selector rectangle only while one optional exact target still owns the Tab.
+   * @param tab Managed Browser Tab key.
+   * @param selector CSS selector to measure.
+   * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+   * @returns Tracked rectangle, or a not-ready result when the target is absent or replaced.
+   */
+  async trackRect(tab: ManagedTabKey, selector: string, expectedTarget?: ManagedBrowserTargetIdentity): Promise<ManagedBrowserTrackedRect | ManagedBrowserActionResult> {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready') return notReady()
+    if (expectedTarget !== undefined && record.identity !== expectedTarget) return notReady()
     const encoded = JSON.stringify(selector)
     const rect = await record.page.evaluate<{ x: number; y: number; w: number; h: number } | null>(String.raw`(() => {
       try {
@@ -520,6 +537,7 @@ export class ManagedBrowserRuntime {
         return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
       } catch { return null; }
     })()`)
+    if (this.#pages.get(record.key) !== record || record.status !== 'ready' || record.page.isClosed()) return notReady()
     return { documentId: record.documentId, selector, rect }
   }
 
@@ -544,6 +562,7 @@ export class ManagedBrowserRuntime {
     const viewport = record.page.viewportSize() ?? DEFAULT_VIEWPORT
     this.#captureSeq += 1
     return {
+      targetIdentity: record.identity,
       captureId: documentId + ':c' + this.#captureSeq,
       documentId,
       layoutRevision: layout.revision,
@@ -558,10 +577,16 @@ export class ManagedBrowserRuntime {
     }
   }
 
-  /** Return the current document and committed layout identity without exposing the target Page. */
-  captureIdentity(tab: ManagedTabKey): { documentId: string; layoutRevision: number; mediaGeneration: number } | undefined {
+  /**
+   * Return the current public capture identity only while one optional exact target owns the Tab.
+   * @param tab Managed Browser Tab key.
+   * @param expectedTarget Optional opaque Page/CDP identity captured by the caller.
+   * @returns Public document and layout identity, or undefined when the target is absent or replaced.
+   */
+  captureIdentity(tab: ManagedTabKey, expectedTarget?: ManagedBrowserTargetIdentity): { documentId: string; layoutRevision: number; mediaGeneration: number } | undefined {
     const record = this.#pages.get(this.keyOf(tab))
     if (record === undefined || record.status !== 'ready' || record.page.isClosed()) return undefined
+    if (expectedTarget !== undefined && record.identity !== expectedTarget) return undefined
     return { documentId: record.documentId, layoutRevision: record.layout.revision, mediaGeneration: record.layout.mediaGeneration }
   }
 
@@ -807,17 +832,27 @@ export class ManagedBrowserRuntime {
           this.#onProjection?.(project(record))
         }
       })
-      if (derivedCacheBytes > this.#cacheBudgetBytes) {
-        await clearChromiumBrowserCache(context).catch((error) => {
-          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
-        })
-      }
-      if (contextClosed) throw new Error('Chromium context closed during startup')
-      if (this.#disposed) {
-        await context.close().catch(() => undefined)
-        throw new Error('Managed Browser is disposed')
-      }
       this.#liveContext = context
+      const assertContextAvailable = async (): Promise<void> => {
+        if (!contextClosed && !this.#disposed && this.#liveContext === context) return
+        const disposed = this.#disposed
+        if (this.#liveContext === context) {
+          this.#liveContext = undefined
+          if (!contextClosed) await context.close().catch(() => undefined)
+        }
+        throw new Error(disposed ? 'Managed Browser is disposed' : 'Chromium context closed during startup')
+      }
+      await assertContextAvailable()
+      if (derivedCacheBytes > this.#cacheBudgetBytes) {
+        try {
+          await clearChromiumBrowserCache(context)
+        } catch (error) {
+          await assertContextAvailable()
+          this.#onWarning('managed Browser cache clear failed: ' + errorMessage(error))
+        }
+        await assertContextAvailable()
+      }
+      await assertContextAvailable()
       return context
     })()
     this.#context = pending

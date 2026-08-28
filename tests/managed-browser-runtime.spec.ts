@@ -899,6 +899,35 @@ describe('ManagedBrowserRuntime', () => {
     await runtime.dispose()
   })
 
+  it.each(['outline', 'trackRect'] as const)('rejects a stale exact target after async %s work when the Tab has a replacement Page', async (operation) => {
+    const box = harness()
+    const tab = { sessionId: 'exact-async', tabId: operation }
+    await box.runtime.ensure(tab, 'https://one.example')
+    const target = box.runtime.target(tab)
+    const firstPage = box.pages[0]
+    if (target === undefined || firstPage === undefined) throw new Error('missing first target')
+    let resume!: () => void
+    let started!: () => void
+    const evaluationStarted = new Promise<void>((resolve) => { started = resolve })
+    const evaluationGate = new Promise<void>((resolve) => { resume = resolve })
+    firstPage.onEvaluate = async () => {
+      started()
+      await evaluationGate
+    }
+
+    const pending = operation === 'outline'
+      ? box.runtime.outline(tab, target.identity)
+      : box.runtime.trackRect(tab, '#save', target.identity)
+    await evaluationStarted
+    await box.runtime.close(tab)
+    await box.runtime.ensure(tab, 'https://two.example')
+    resume()
+
+    await expect(pending).resolves.toMatchObject({ ok: false, code: 'not-ready' })
+    expect(box.runtime.target(tab)?.identity).not.toBe(target.identity)
+    await box.runtime.dispose()
+  })
+
   it('captures one exact viewport image with the current nodes', async () => {
     const box = harness()
     const tab = { sessionId: 's2', tabId: 'browser-2' }
@@ -1033,6 +1062,52 @@ describe('ManagedBrowserRuntime', () => {
     expect((await readdir(profileDir)).some((name) => name.startsWith('.dcs-'))).toBe(false)
     expect((await readdir(join(profileDir, 'Default'))).some((name) => name.startsWith('.dcs-'))).toBe(false)
     await runtime.dispose()
+    await rm(profileDir, { recursive: true, force: true })
+  })
+
+  it('closes a launched context promptly when dispose races a suspended cache clear', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-browser-cache-dispose-'))
+    await mkdir(join(profileDir, 'Default', 'Cache'), { recursive: true })
+    await writeFile(join(profileDir, 'Default', 'Cache', 'data'), '12345678')
+    const temporaryPage = new FakePage()
+    const closeHandlers: Array<() => void> = []
+    let releaseClear!: () => void
+    let clearStarted!: () => void
+    const clearGate = new Promise<void>((resolve) => { releaseClear = resolve })
+    const clearSuspended = new Promise<void>((resolve) => { clearStarted = resolve })
+    let closeCalls = 0
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir,
+      cacheBudgetBytes: 1,
+      launch: async () => ({
+        async newPage() { return temporaryPage },
+        async newCDPSession() {
+          return {
+            async send(method: string) {
+              if (method !== 'Network.clearBrowserCache') return
+              clearStarted()
+              await clearGate
+            },
+            on() {}, off() {}, async detach() {},
+          }
+        },
+        on(_event: 'close', listener: () => void) { closeHandlers.push(listener) },
+        async close() {
+          closeCalls += 1
+          for (const listener of closeHandlers) listener()
+        },
+      }),
+    })
+    const opening = runtime.ensure({ sessionId: 'cache-dispose', tabId: 'tab' }, 'https://example.com')
+    await clearSuspended
+
+    await runtime.dispose()
+    expect(closeCalls).toBe(1)
+    expect(temporaryPage.closed).toBe(false)
+
+    releaseClear()
+    await expect(opening).rejects.toThrow(/disposed|closed/)
     await rm(profileDir, { recursive: true, force: true })
   })
 

@@ -225,6 +225,83 @@ describe('managed Browser Host protocol v2', () => {
     }
   })
 
+  it('stops an in-flight wheel at the exact target replacement before paint or selector tracking', async () => {
+    const firstIdentity = Object.freeze({ target: 'first' })
+    const secondIdentity = Object.freeze({ target: 'second' })
+    let releaseWheel!: () => void
+    let wheelStarted!: () => void
+    const wheelGate = new Promise<void>((resolve) => { releaseWheel = resolve })
+    const wheelDispatched = new Promise<void>((resolve) => { wheelStarted = resolve })
+    const firstCalls: string[] = []
+    const firstCdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    firstCdp.send = async (method) => {
+      firstCalls.push(method)
+      if (method === 'Input.dispatchMouseEvent') {
+        wheelStarted()
+        await wheelGate
+      }
+      if (method === 'Page.captureScreenshot') return { data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }
+      return method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    }
+    const secondCalls: string[] = []
+    const secondCdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    secondCdp.send = async (method) => { secondCalls.push(method); return {} }
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    let current = { identity: firstIdentity, cdp: firstCdp, layout }
+    let trackRectCalls = 0
+    const runtime = {
+      target: (_tab: unknown, expected?: object) => expected === undefined || expected === current.identity ? current : undefined,
+      keyOf: () => 'wheel-replacement:tab', touch: () => {}, acquire: () => () => {},
+      layout: () => layout,
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      mediaPageCount: () => 0,
+      projection: () => ({ tabId: 'tab', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => { trackRectCalls += 1; return { documentId: 'd1', selector: '#target', rect: null } },
+    }
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, preferredMediaRoute: 'jpeg-only' })
+    const server = createServer()
+    server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing stream port')
+    const client = new WebSocket('ws://127.0.0.1:' + address.port + stream.issue({ sessionId: 'wheel-replacement', tabId: 'tab' }).path)
+    const messages: Array<Record<string, unknown>> = []
+    let closeCode: number | undefined
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    client.on('close', (code) => { closeCode = code })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => {
+          client.send(JSON.stringify({ type: 'hello', version: 2, frameEncodings: ['json-base64-v2'], flowControl: ['frame-ack-v2'], media: { webrtcVideo: false } }))
+          resolve()
+        })
+        client.once('error', reject)
+      })
+      await vi.waitFor(() => { expect(messages.some((message) => message.type === 'frame')).toBe(true) })
+      const frame = messages.find((message) => message.type === 'frame') as { sequence: number; revision: number; mediaGeneration: number }
+      client.send(JSON.stringify({ type: 'frame-ack', sequence: frame.sequence, revision: frame.revision, mediaGeneration: frame.mediaGeneration }))
+      await vi.waitFor(() => { expect(stream.resources().unackedFrames).toBe(0) })
+      firstCalls.length = 0
+
+      client.send(JSON.stringify({ type: 'input', revision: 1, input: { type: 'wheel', x: 10, y: 20, deltaX: 0, deltaY: 100, selector: '#target' } }))
+      await wheelDispatched
+      current = { identity: secondIdentity, cdp: secondCdp, layout }
+      releaseWheel()
+
+      await vi.waitFor(() => { expect(client.readyState).toBe(WebSocket.CLOSED) })
+      expect(closeCode).toBe(4002)
+      expect(firstCalls.filter((method) => method !== 'Page.stopScreencast')).toEqual(['Input.dispatchMouseEvent'])
+      expect(secondCalls).toEqual([])
+      expect(trackRectCalls).toBe(0)
+    } finally {
+      releaseWheel()
+      client.close()
+      await stream.dispose()
+      await new Promise<void>((resolve) => { server.close(() => resolve()) })
+    }
+  })
+
   it('hard-limits twenty acknowledged interactions and bounds later passive animation', async () => {
     const captureTimes: number[] = []
     const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
