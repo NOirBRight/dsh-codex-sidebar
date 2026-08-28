@@ -360,10 +360,15 @@ describe('ManagedBrowserRuntime', () => {
     await started
 
     const closing = runtime.close(tab)
+    const closedBeforePageResumes = await Promise.race([
+      closing.then(() => true),
+      new Promise<false>((resolve) => { setImmediate(() => { resolve(false) }) }),
+    ])
     resumePage()
 
     await expect(opening).rejects.toThrow('cancelled')
     await closing
+    expect(closedBeforePageResumes).toBe(true)
     expect(cdpSessions).toBe(0)
     expect(page.closed).toBe(true)
     expect(runtime.target(tab)).toBeUndefined()
@@ -376,6 +381,7 @@ describe('ManagedBrowserRuntime', () => {
     let resumePage!: () => void
     const started = new Promise<void>((resolve) => { signalStarted = resolve })
     const gate = new Promise<void>((resolve) => { resumePage = resolve })
+    let contextCloseCalls = 0
     const runtime = new ManagedBrowserRuntime({
       executablePath: '/bin/true',
       profileDir: '/tmp/dcs-managed-runtime-pending-dispose-' + Math.random().toString(36).slice(2),
@@ -383,17 +389,20 @@ describe('ManagedBrowserRuntime', () => {
         async newPage() { signalStarted(); await gate; return page },
         async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
         on() {},
-        async close() {},
+        async close() { contextCloseCalls += 1 },
       }),
     })
     const opening = runtime.ensure({ sessionId: 'pending', tabId: 'dispose' }, 'https://example.com')
     await started
 
     const disposing = runtime.dispose()
+    await new Promise<void>((resolve) => { setImmediate(resolve) })
+    const closeCallsBeforePageResumes = contextCloseCalls
     resumePage()
 
     await expect(opening).rejects.toThrow('cancelled')
     await disposing
+    expect(closeCallsBeforePageResumes).toBe(1)
     expect(page.closed).toBe(true)
     expect(runtime.list()).toEqual([])
   })
@@ -421,6 +430,107 @@ describe('ManagedBrowserRuntime', () => {
     await expect(runtime.ensure(tab, 'https://two.example')).resolves.toMatchObject({ status: 'ready', url: 'https://two.example' })
     expect(attempts).toBe(2)
     expect(runtime.target(tab)?.page).toBe(page)
+    await runtime.dispose()
+  })
+
+  it('cancels pending and queued Page work when its session closes', async () => {
+    const page = new FakePage()
+    let signalStarted!: () => void
+    let resumePage!: () => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const gate = new Promise<void>((resolve) => { resumePage = resolve })
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-pending-session-' + Math.random().toString(36).slice(2),
+      launch: async () => ({
+        async newPage() { signalStarted(); await gate; return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'pending-session', tabId: 'browser' }
+    const opening = runtime.ensure(tab, 'https://one.example')
+    await started
+    const queued = runtime.ensure(tab, 'https://two.example')
+
+    await runtime.closeSession(tab.sessionId)
+    resumePage()
+
+    await expect(opening).rejects.toThrow('cancelled')
+    await expect(queued).rejects.toThrow('closed')
+    expect(page.closed).toBe(true)
+    expect(runtime.target(tab)).toBeUndefined()
+    await runtime.dispose()
+  })
+
+  it('continues a queued valid ensure after an internal self-block reset', async () => {
+    const box = harness()
+    const tab = { sessionId: 'guard', tabId: 'queued' }
+    await box.runtime.ensure(tab, 'https://one.example')
+
+    const blocked = box.runtime.ensure(tab, 'http://127.0.0.1:3080/')
+    const valid = box.runtime.ensure(tab, 'https://two.example')
+
+    await expect(blocked).resolves.toMatchObject({ status: 'error' })
+    await expect(valid).resolves.toMatchObject({ status: 'ready', url: 'https://two.example' })
+    expect(box.runtime.projection(tab)?.url).toBe('https://two.example')
+    expect(box.pages).toHaveLength(2)
+    expect(box.pages[0]?.closed).toBe(true)
+    expect(box.pages[1]?.closed).toBe(false)
+    await box.runtime.dispose()
+  })
+
+  it('does not publish an obsolete record after its Tab closes', async () => {
+    class GatedNavigationPage extends FakePage {
+      blockNext = false
+      readonly navigationStarted: Promise<void>
+      #signalNavigationStarted!: () => void
+      #resumeNavigation!: () => void
+      #navigationGate: Promise<void>
+
+      constructor() {
+        super()
+        this.navigationStarted = new Promise((resolve) => { this.#signalNavigationStarted = resolve })
+        this.#navigationGate = new Promise((resolve) => { this.#resumeNavigation = resolve })
+      }
+
+      resumeNavigation(): void { this.#resumeNavigation() }
+
+      override async goto(url: string): Promise<void> {
+        if (!this.blockNext) return super.goto(url)
+        this.#signalNavigationStarted()
+        await this.#navigationGate
+        throw new Error('obsolete navigation failed')
+      }
+    }
+    const page = new GatedNavigationPage()
+    const projections: unknown[] = []
+    const runtime = new ManagedBrowserRuntime({
+      executablePath: '/bin/true',
+      profileDir: '/tmp/dcs-managed-runtime-stale-publish-' + Math.random().toString(36).slice(2),
+      onProjection: (projection) => { projections.push(projection) },
+      launch: async () => ({
+        async newPage() { return page },
+        async newCDPSession() { return { async send() {}, on() {}, off() {}, async detach() {} } },
+        on() {},
+        async close() {},
+      }),
+    })
+    const tab = { sessionId: 'stale', tabId: 'publish' }
+    await runtime.ensure(tab, 'https://one.example')
+    projections.length = 0
+    page.blockNext = true
+    const navigating = runtime.ensure(tab, 'https://two.example')
+    await page.navigationStarted
+
+    await runtime.close(tab)
+    projections.length = 0
+    page.resumeNavigation()
+    await navigating
+
+    expect(projections).toEqual([])
+    expect(runtime.target(tab)).toBeUndefined()
     await runtime.dispose()
   })
 

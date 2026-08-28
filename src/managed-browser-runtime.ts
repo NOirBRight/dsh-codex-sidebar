@@ -230,7 +230,8 @@ type PageRecord = {
 type LayoutProposal = { mode: BrowserLayoutMode; viewport: BrowserSize }
 type LayoutWaiter = { resolve: (layout: BrowserLayout) => void; reject: (error: unknown) => void }
 type PendingLayout = { proposal: LayoutProposal; waiters: LayoutWaiter[] }
-type PendingPageRecord = { cancelled: boolean; promise: Promise<PageRecord> }
+type TabIdentity = { tab: ManagedTabKey }
+type PendingPageRecord = { tab: ManagedTabKey; cancelled: boolean; promise: Promise<PageRecord> }
 
 const DEFAULT_VIEWPORT = Object.freeze({ width: 720, height: 860 })
 const NAVIGATION_TIMEOUT_MS = 30_000
@@ -254,10 +255,11 @@ export class ManagedBrowserRuntime {
   #executablePath: string | undefined
   #launch: LaunchContext
   #context: Promise<ContextLike> | undefined
+  #liveContext: ContextLike | undefined
   #pages = new Map<string, PageRecord>()
   #pendingPages = new Map<string, PendingPageRecord>()
   #ensureCommands = new Map<string, Promise<void>>()
-  #tabIdentities = new Map<string, object>()
+  #tabIdentities = new Map<string, TabIdentity>()
   #requestedViewports = new Map<string, { width: number; height: number }>()
   #leases = new Map<string, Set<object>>()
   #captureSeq = 0
@@ -323,12 +325,12 @@ export class ManagedBrowserRuntime {
 
   async ensure(tab: ManagedTabKey, url: string): Promise<ManagedBrowserProjection> {
     const key = this.keyOf(tab)
-    const identity = this.#tabIdentities.get(key) ?? {}
+    const identity = this.#tabIdentities.get(key) ?? { tab }
     this.#tabIdentities.set(key, identity)
     return this.#serializeEnsure(key, identity, async () => this.#ensure(tab, url, key, identity))
   }
 
-  async #ensure(tab: ManagedTabKey, url: string, key: string, identity: object): Promise<ManagedBrowserProjection> {
+  async #ensure(tab: ManagedTabKey, url: string, key: string, identity: TabIdentity): Promise<ManagedBrowserProjection> {
     this.#assertEnsureCurrent(key, identity)
     const publicUrl = managedBrowserHref(url)
     if (publicUrl === undefined) {
@@ -347,7 +349,7 @@ export class ManagedBrowserRuntime {
     }
     const blocked = harnessSelfBlockReason(publicUrl)
     if (blocked !== undefined) {
-      if (this.#pages.has(key)) await this.close(tab)
+      if (this.#pages.has(key)) await this.#closeTab(tab, false)
       return failedProjection(tab, key, publicUrl, blocked)
     }
     let record: PageRecord
@@ -382,8 +384,17 @@ export class ManagedBrowserRuntime {
   }
 
   async closeSession(sessionId: string): Promise<void> {
-    const tabs = [...this.#pages.values()].filter((record) => record.tab.sessionId === sessionId).map((record) => record.tab)
-    await Promise.all(tabs.map((tab) => this.close(tab)))
+    const tabs = new Map<string, ManagedTabKey>()
+    for (const record of this.#pages.values()) {
+      if (record.tab.sessionId === sessionId) tabs.set(record.key, record.tab)
+    }
+    for (const identity of this.#tabIdentities.values()) {
+      if (identity.tab.sessionId === sessionId) tabs.set(this.keyOf(identity.tab), identity.tab)
+    }
+    for (const pending of this.#pendingPages.values()) {
+      if (pending.tab.sessionId === sessionId) tabs.set(this.keyOf(pending.tab), pending.tab)
+    }
+    await Promise.all([...tabs.values()].map((tab) => this.close(tab)))
   }
 
   async reap(): Promise<void> {
@@ -392,12 +403,12 @@ export class ManagedBrowserRuntime {
     try {
       const now = this.#now()
       for (const record of [...this.#pages.values()]) {
-        if (!this.#leased(record.key) && now - record.lastAccess >= this.#idleMs) await this.close(record.tab)
+        if (!this.#leased(record.key) && now - record.lastAccess >= this.#idleMs) await this.#closeTab(record.tab, false)
       }
       const live = [...this.#pages.values()].filter((record) => !this.#leased(record.key)).sort((left, right) => left.lastAccess - right.lastAccess)
       while (this.#pages.size > this.#maxLivePages && live.length > 0) {
         const oldest = live.shift()
-        if (oldest !== undefined) await this.close(oldest.tab)
+        if (oldest !== undefined) await this.#closeTab(oldest.tab, false)
       }
     } finally {
       this.#reaping = false
@@ -599,16 +610,17 @@ export class ManagedBrowserRuntime {
   }
 
   async close(tab: ManagedTabKey): Promise<void> {
+    await this.#closeTab(tab, true)
+  }
+
+  async #closeTab(tab: ManagedTabKey, invalidateIdentity: boolean): Promise<void> {
     const key = this.keyOf(tab)
-    this.#tabIdentities.delete(key)
+    if (invalidateIdentity || !this.#ensureCommands.has(key)) this.#tabIdentities.delete(key)
     this.#requestedViewports.delete(key)
     this.#leases.delete(key)
     this.#localHtml.release(key)
     const pending = this.#pendingPages.get(key)
-    if (pending !== undefined) {
-      pending.cancelled = true
-      await pending.promise.catch(() => undefined)
-    }
+    if (pending !== undefined) pending.cancelled = true
     const record = this.#pages.get(key)
     if (record === undefined) return
     this.#pages.delete(key)
@@ -626,21 +638,23 @@ export class ManagedBrowserRuntime {
     this.#disposed = true
     const pendingPages = [...this.#pendingPages.values()]
     for (const pending of pendingPages) pending.cancelled = true
-    await Promise.all(pendingPages.map((pending) => pending.promise.catch(() => undefined)))
+    this.#pendingPages.clear()
     const pages = [...this.#pages.values()]
     this.#pages.clear()
     this.#requestedViewports.clear()
     this.#leases.clear()
     this.#tabIdentities.clear()
+    this.#ensureCommands.clear()
     const mediaPages = [...this.#mediaPages]
-    await Promise.all([...pages.map(async (record) => {
+    const context = this.#liveContext
+    this.#liveContext = undefined
+    this.#context = undefined
+    const contextClose = context?.close().catch(() => undefined) ?? Promise.resolve()
+    await Promise.all([contextClose, ...pages.map(async (record) => {
       rejectPendingLayout(record, new Error('Managed Browser disposed'))
       await record.cdp.detach().catch(() => undefined)
       if (!record.page.isClosed()) await record.page.close().catch(() => undefined)
     }), ...mediaPages.map((lease) => lease.close().catch(() => undefined))])
-    const context = this.#context
-    this.#context = undefined
-    if (context !== undefined) await (await context).close().catch(() => undefined)
     await this.#localHtml.dispose()
   }
 
@@ -651,7 +665,7 @@ export class ManagedBrowserRuntime {
     if (existing !== undefined) return existing
     const active = this.#pendingPages.get(key)
     if (active !== undefined) return active.promise
-    const pending: PendingPageRecord = { cancelled: false, promise: Promise.resolve(undefined as never) }
+    const pending: PendingPageRecord = { tab, cancelled: false, promise: Promise.resolve(undefined as never) }
     this.#pendingPages.set(key, pending)
     pending.promise = this.#createRecord(tab, pending)
     try {
@@ -765,6 +779,7 @@ export class ManagedBrowserRuntime {
       let contextClosed = false
       context.on('close', () => {
         contextClosed = true
+        if (this.#liveContext === context) this.#liveContext = undefined
         if (this.#context !== pending) return
         this.#context = undefined
         this.#mediaPages.clear()
@@ -776,7 +791,7 @@ export class ManagedBrowserRuntime {
           record.status = 'crashed'
           record.error = 'Chromium context exited'
           record.refs.clear()
-          this.#publish(record)
+          this.#onProjection?.(project(record))
         }
       })
       if (derivedCacheBytes > this.#cacheBudgetBytes) {
@@ -785,6 +800,11 @@ export class ManagedBrowserRuntime {
         })
       }
       if (contextClosed) throw new Error('Chromium context closed during startup')
+      if (this.#disposed) {
+        await context.close().catch(() => undefined)
+        throw new Error('Managed Browser is disposed')
+      }
+      this.#liveContext = context
       return context
     })()
     this.#context = pending
@@ -897,6 +917,7 @@ export class ManagedBrowserRuntime {
   }
 
   #publish(record: PageRecord): void {
+    if (this.#pages.get(record.key) !== record) return
     this.#onProjection?.(project(record))
   }
 
@@ -952,7 +973,7 @@ export class ManagedBrowserRuntime {
     await run
   }
 
-  #serializeEnsure<T>(key: string, identity: object, command: () => Promise<T>): Promise<T> {
+  #serializeEnsure<T>(key: string, identity: TabIdentity, command: () => Promise<T>): Promise<T> {
     const previous = this.#ensureCommands.get(key) ?? Promise.resolve()
     const result = previous.then(command, command)
     const settled = result.then(() => undefined, () => undefined)
@@ -967,7 +988,7 @@ export class ManagedBrowserRuntime {
     return result
   }
 
-  #assertEnsureCurrent(key: string, identity: object): void {
+  #assertEnsureCurrent(key: string, identity: TabIdentity): void {
     if (this.#disposed) throw new Error('Managed Browser is disposed')
     if (this.#tabIdentities.get(key) !== identity) throw new Error('Browser Tab was closed while opening')
   }

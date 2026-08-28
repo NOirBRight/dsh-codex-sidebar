@@ -107,7 +107,7 @@ describe('LocalHtmlGateway', () => {
     expect(local.project('session:tab', lease.navigationUrl)).toBeUndefined()
   })
 
-  it('does not serve a file opened through a parent directory swapped after canonicalization', async () => {
+  it('rejects a parent-directory symlink exchange observed after canonicalization', async () => {
     const box = await fixture()
     let swapped = false
     const local = gateway({
