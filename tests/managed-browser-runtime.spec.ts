@@ -28,6 +28,7 @@ class FakePage {
   frame = { url: () => this.currentUrl }
   exposedBindings: Array<{ name: string; callback: (source: unknown, payload: unknown) => void }> = []
   evaluations: Array<{ source: string; argument: unknown }> = []
+  evaluatedNodes = [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }]
   onEvaluate: (() => void | Promise<void>) | undefined
   onIsClosed: (() => void) | undefined
   onScreenshot: (() => void | Promise<void>) | undefined
@@ -65,7 +66,7 @@ class FakePage {
       if (this.cssViewportError !== undefined) throw this.cssViewportError
       return { width: this.domSize.width, height: this.domSize.height, deviceScaleFactor: this.domDeviceScaleFactor } as T
     }
-    return [{ role: 'button', name: 'Save', selector: '#save', rect: { x: 10, y: 20, w: 80, h: 30 } }] as T
+    return this.evaluatedNodes as T
   }
   async exposeBinding(name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
     this.exposedBindings.push({ name, callback })
@@ -306,6 +307,31 @@ describe('ManagedBrowserRuntime', () => {
     expect(box.runtime.localHtmlResources()).toEqual({ listening: true, leases: 0 })
     await box.runtime.dispose()
     expect(box.runtime.localHtmlResources()).toEqual({ listening: false, leases: 0 })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('redacts private local HTML routes from snapshot and outline accessible names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dcs-managed-local-html-names-'))
+    await writeFile(join(root, 'index.html'), '<!doctype html><title>Local</title>')
+    const target = pathToFileURL(join(root, 'index.html')).href
+    const box = harness()
+    const tab = { sessionId: 'local', tabId: 'accessible-name' }
+
+    await box.runtime.ensure(tab, target)
+    const page = box.pages[0]
+    if (page === undefined) throw new Error('missing fake Page')
+    const privateUrl = page.currentUrl
+    page.evaluatedNodes = [{ role: 'heading', name: `Current URL: ${privateUrl}`, selector: '#current-url', rect: { x: 0, y: 0, w: 200, h: 40 } }]
+
+    const published = JSON.stringify({
+      snapshot: await box.runtime.snapshot(tab),
+      outline: await box.runtime.outline(tab),
+    })
+    expect(published).toContain('local-html://gateway/index.html')
+    expect(published).not.toContain(new URL(privateUrl).origin)
+    expect(published).not.toContain('/.dcs-local-html/')
+
+    await box.runtime.dispose()
     await rm(root, { recursive: true, force: true })
   })
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
 import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
@@ -756,7 +756,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     const { revision, ...coordinates } = at
     const drag = dragRef.current
     if (annotate) {
-      if (drag?.pointerId === event.pointerId) setSelection(rectFrom(drag.point, at))
+      if (drag?.pointerId === event.pointerId) setSelection(browserEvidenceSelectionRect(drag.point, at) ?? null)
       else setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
       return
     }
@@ -784,10 +784,11 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     const { revision, ...coordinates } = at
     const drag = dragRef.current
     if (annotate && drag?.pointerId === event.pointerId) {
-      const rect = rectFrom(drag.point, at)
+      const rect = browserEvidenceSelectionRect(drag.point, at)
       dragRef.current = null
       setSelection(null)
       setHovered(browserAnnotationNodeAt(outlineNodes, at)?.rect ?? null)
+      if (rect === undefined) return
       const canvasBounds = event.currentTarget.getBoundingClientRect()
       const rootBounds = rootRef.current?.getBoundingClientRect() ?? canvasBounds
       const presented = layoutRef.current?.snapshot().presented
@@ -929,10 +930,6 @@ function managedProjection(value: unknown): value is ManagedProjection {
 
 function send(socket: WebSocket | null, value: object): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value))
-}
-
-function rectFrom(start: Point, end: Point): AnnotationRect {
-  return { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y) }
 }
 
 function modifiers(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): number {

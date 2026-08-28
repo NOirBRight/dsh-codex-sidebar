@@ -1174,7 +1174,7 @@ export class ManagedBrowserRuntime {
     return raw.slice(0, 200).map((node, index) => {
       const ref = '@d' + record.documentSeq + 'e' + (index + 1)
       record.refs.set(ref, { documentId: record.documentId, selector: node.selector })
-      return { ref, role: node.role, name: node.name, selector: node.selector, ...node.rect === undefined ? {} : { rect: node.rect } }
+      return { ref, role: node.role, name: this.#localHtml.redact(record.key, node.name), selector: node.selector, ...node.rect === undefined ? {} : { rect: node.rect } }
     })
   }
 
@@ -1185,7 +1185,7 @@ export class ManagedBrowserRuntime {
     return raw.slice(0, 800).map((node, index) => ({
       ref: '@d' + record.documentSeq + 'o' + (index + 1),
       role: node.role,
-      name: node.name,
+      name: this.#localHtml.redact(record.key, node.name),
       selector: node.selector,
       ...node.rect === undefined ? {} : { rect: node.rect },
     }))

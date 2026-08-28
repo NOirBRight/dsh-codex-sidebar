@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { browserSurfaceOccupants } from '../src/client/browser-occupancy.ts'
 import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
@@ -259,6 +259,17 @@ describe('managed Browser stream client', () => {
     const moved = browserPointerGestureMove(small.gesture, 40, 60)
     expect(browserPointerGestureEnd(moved.gesture, 3, 40, 60)).toEqual({ type: 'drag', x: 10, y: 20, toX: 40, toY: 60 })
     expect(browserPointerGestureEnd(moved.gesture, 4, 40, 60)).toBeUndefined()
+  })
+
+  it('cancels an evidence selection when the presented layout changes before release', () => {
+    expect(browserEvidenceSelectionRect(
+      { revision: 3, x: 40, y: 70 },
+      { revision: 3, x: 10, y: 20 },
+    )).toEqual({ x: 10, y: 20, w: 30, h: 50 })
+    expect(browserEvidenceSelectionRect(
+      { revision: 3, x: 40, y: 70 },
+      { revision: 4, x: 10, y: 20 },
+    )).toBeUndefined()
   })
 
   it('turns a touch drag into wheel deltas but keeps a small move as a tap', () => {

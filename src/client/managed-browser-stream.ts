@@ -412,6 +412,19 @@ export function decodeBrowserOutline(value: string): BrowserOutline | undefined 
 
 export type BrowserAnnotationRect = { x: number; y: number; w: number; h: number }
 
+export type BrowserEvidenceSelectionPoint = { revision: number; x: number; y: number }
+
+/** Return one evidence rectangle only when both pointer events used the same presented layout. */
+export function browserEvidenceSelectionRect(start: BrowserEvidenceSelectionPoint, end: BrowserEvidenceSelectionPoint): BrowserAnnotationRect | undefined {
+  if (start.revision !== end.revision) return undefined
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    w: Math.abs(end.x - start.x),
+    h: Math.abs(end.y - start.y),
+  }
+}
+
 
 
 
