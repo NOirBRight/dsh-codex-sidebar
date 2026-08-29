@@ -20,7 +20,6 @@ import { createPendingThrottle, installTranscriptDecorators, shouldRebindSession
 import { rowHunksFromSnapshot, sameRowHunks } from '../tool-open.ts'
 import type { Annotation } from '../session.ts'
 import { CLIENT_INJECT, occupyDetails } from '../details-occupancy.ts'
-import { installFcitxEmptyRootBridge } from './fcitx-empty-root.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -34,7 +33,6 @@ export const inject = [...CLIENT_INJECT]
 export function apply(ctx: ClientContext): void {
   ctx.locale.register(NS, { zh, en })
   ensureSidebarStyles()
-  ctx.effect(() => installFcitxEmptyRootBridge(ctx))
   const controller = new SidebarController(ctx)
   const face = (): SidebarFace => ({
     hooks: { sidebar: controller },
