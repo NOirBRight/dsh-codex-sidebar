@@ -1,6 +1,6 @@
 /** 主会话 tools that drive Host-managed Chromium Browser Tabs. */
 
-import { liveHref } from './browser.ts'
+import { managedBrowserHref } from './browser.ts'
 import { harnessSelfBlockReason } from './browser-guard.ts'
 import { callerMayDrive, type DriveCaller, type DriveResult, type DriveTab } from './browser-drive.ts'
 import type { ManagedBrowserActionResult, ManagedBrowserRuntime } from './managed-browser-runtime.ts'
@@ -28,7 +28,7 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
       const url = snapshot.browsers[tab.id]?.url || tab.target
       if (url.length === 0) return []
       const projection = runtime.projection({ sessionId: snapshot.sessionId, tabId: tab.id })
-      return [{ tabId: tab.id, url: liveHref(url) ?? url, title: projection?.title || tab.title, driveable: true, connected: projection?.status === 'ready' }]
+      return [{ tabId: tab.id, url: managedBrowserHref(url) ?? url, title: projection?.title || tab.title, driveable: true, connected: projection?.status === 'ready' }]
     })
   }
 
@@ -61,8 +61,8 @@ export function createManagedBrowserDriveService(runtime: ManagedBrowserRuntime)
     async open(caller, session, url) {
       const denied = guard(caller)
       if (denied !== undefined) return denied
-      const href = liveHref(url)
-      if (href === undefined) return { ok: false, code: 'navigation-failed', message: '需要 http 或 https 地址' }
+      const href = managedBrowserHref(url)
+      if (href === undefined) return { ok: false, code: 'navigation-failed', message: '需要 http、https 或绝对本地 HTML 地址' }
       const blocked = harnessSelfBlockReason(href)
       if (blocked !== undefined) return { ok: false, code: 'navigation-failed', message: blocked }
       session.dispatch({ type: 'open-url', url: href, reveal: false })

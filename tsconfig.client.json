@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node", "react", "react-dom"],
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "emitDeclarationOnly": true,
+    "paths": {
+      "@deepseek-ai/dsh-api-remotes/client": [".dsh-alpha1/packages/api/remotes/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-api-session-controller/client": [".dsh-alpha1/packages/api/session-controller/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-api-workspace-controller/client": [".dsh-alpha1/packages/api/workspace-controller/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-connection/client": [".dsh-alpha1/packages/client/connection/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-locale/client": [".dsh-alpha1/packages/client/locale/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-store": [".dsh-alpha1/packages/client/store/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-conversation/client": [".dsh-alpha1/packages/client/ui-conversation/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-layout/client": [".dsh-alpha1/packages/client/ui-layout/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-renderer/client": [".dsh-alpha1/packages/client/ui-renderer/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-session/client": [".dsh-alpha1/packages/client/ui-session/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": [".dsh-alpha1/packages/client/ui-slots/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-workspace/client": [".dsh-alpha1/packages/client/ui-workspace/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-session": [".dsh-alpha1/packages/core/session/lib/types/index.d.ts"]
+    }
+  },
+  "include": ["src/client/index.ts"],
+  "exclude": []
+}

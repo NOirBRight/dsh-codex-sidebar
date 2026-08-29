@@ -14,9 +14,11 @@ import { ReviewPane } from './ReviewPane.tsx'
 import { TerminalPane } from './TerminalPane.tsx'
 import { TerminalRail } from './TerminalRail.tsx'
 import type { BrowserCaptureReply, SidebarStore } from './controller.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import { SidebarController } from './controller.ts'
 import { AttachmentStrip } from './AttachmentChips.tsx'
 import { OccupantBoundary } from './OccupantBoundary.tsx'
+import { browserSurfaceOccupants } from './browser-occupancy.ts'
 
 export interface SidebarFace {
   hooks: { sidebar: ObservableSnapshot<SidebarStore> }
@@ -56,7 +58,7 @@ export function SidebarPanel({
             onIntent={(intent) => { void controller.dispatch(String(sessionId), intent) }}
             onPullTerminal={(tabId, since) => controller.pullTerminal(String(sessionId), tabId, since)}
             onBrowserTicket={(tabId) => controller.browserStreamTicket(String(sessionId), tabId)}
-            onBrowserCapture={(tabId) => controller.browserCapture(String(sessionId), tabId)}
+            onBrowserCapture={(tabId, expected) => controller.browserCapture(String(sessionId), tabId, expected)}
             onFilePreview={(path) => controller.readFilePreview(String(sessionId), path)}
           />
         </div>
@@ -99,10 +101,11 @@ function SidebarChrome({
   onIntent: (intent: Intent) => void
   onPullTerminal: (tabId: string, since: number) => Promise<{ seq: number; chunk: string } | undefined>
   onBrowserTicket: (tabId: string) => Promise<{ path: string; expiresAt: number } | undefined>
-  onBrowserCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
+  onBrowserCapture: (tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => Promise<BrowserCaptureReply | undefined>
   onFilePreview: (path: string) => Promise<string | undefined>
 }): ReactElement {
   const active = snapshot.tabs.find((tab) => tab.id === snapshot.active)
+  const browserOccupants = browserSurfaceOccupants(snapshot.tabs, snapshot.active)
   const fill = active?.kind === 'Files' || active?.kind === 'Review' || active?.kind === 'Terminal'
     || active?.kind === 'Browser'
   const [dragFrom, setDragFrom] = useState<number | null>(null)
@@ -292,17 +295,32 @@ function SidebarChrome({
         {!snapshot.showPalette && active?.kind === 'Review' && (
           <ReviewPane snapshot={snapshot} onIntent={onIntent} />
         )}
-        {!snapshot.showPalette && active?.kind === 'Browser' && (
-          <BrowserPane
-            snapshot={snapshot}
-            onIntent={onIntent}
-            requestTicket={onBrowserTicket}
-            requestCapture={onBrowserCapture}
-            sendLabel={t('noteSend')}
-            addLabel={t('noteAdd')}
-            deleteLabel={t('noteDelete')}
-          />
-        )}
+        {browserOccupants.map((occupant) => {
+          const browser = snapshot.browsers[occupant.tabId]
+          if (browser === undefined) return null
+          return (
+            <div
+              key={occupant.tabId}
+              className="dcs-browser-occupant"
+              hidden={!occupant.active}
+              aria-hidden={!occupant.active || undefined}
+              ref={(element) => { element?.toggleAttribute('inert', !occupant.active) }}
+            >
+              <BrowserPane
+                snapshot={snapshot}
+                browser={browser}
+                tabId={occupant.tabId}
+                active={occupant.active}
+                onIntent={onIntent}
+                requestTicket={onBrowserTicket}
+                requestCapture={onBrowserCapture}
+                sendLabel={t('noteSend')}
+                addLabel={t('noteAdd')}
+                deleteLabel={t('noteDelete')}
+              />
+            </div>
+          )
+        })}
         {!snapshot.showPalette && active?.kind === 'Terminal' && (
           <div className="dcs-term-wrap">
             <TerminalPane snapshot={snapshot} onIntent={onIntent} tabId={active.id} onPull={onPullTerminal} />
@@ -336,4 +354,3 @@ function basename(cwd: string | undefined): string {
   const parts = cwd.replace(/\/$/, '').split('/')
   return parts[parts.length - 1] ?? 'workspace'
 }
-

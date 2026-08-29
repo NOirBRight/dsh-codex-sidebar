@@ -1,7 +1,10 @@
-import { homedir } from 'node:os'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { homedir, tmpdir } from 'node:os'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { expandUserPath, readPreview } from '../src/workspace-inspector.ts'
+
+afterEach(() => { vi.unstubAllEnvs() })
 
 describe('expandUserPath', () => {
   it('expands ~/ to the host home so Files can read transcript paths', () => {
@@ -15,7 +18,11 @@ describe('expandUserPath', () => {
 
 describe('readPreview', () => {
   it('reads a real file addressed with ~/', async () => {
-    const text = await readPreview('/tmp', '~/Workstation/dsh-launchers/bin/dsh-lib.sh')
-    expect(text).toContain('apply_ime_env')
+    const home = await mkdtemp(join(tmpdir(), 'dcs-home-'))
+    const path = join(home, 'transcript.md')
+    await writeFile(path, 'alpha transcript\n', 'utf8')
+    vi.stubEnv('HOME', home)
+
+    await expect(readPreview('/tmp', '~/transcript.md')).resolves.toBe('alpha transcript\n')
   })
 })

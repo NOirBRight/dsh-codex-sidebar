@@ -5,11 +5,20 @@ export const DETAILS_PRIORITY = -100
 export const DEFAULT_DETAILS_PRIORITY = 0
 
 /** Every service read through ClientContext must be injected; otherwise its proxy throws at runtime. */
-export const CLIENT_INJECT = ['slots', 'locale', 'connection', 'layout', 'sessions', 'workspaces', 'remote'] as const
+export const CLIENT_INJECT = [
+  'slots',
+  'locale',
+  'connection',
+  'layout',
+  'sessions',
+  'workspaces',
+  'remote',
+  'remote.session',
+] as const
 
-export type DetailsSlots = {
-  inject: (key: string, callback: () => void) => unknown
-  register: (options: { name: string; locale: string; priority: number; inject: unknown }, component: unknown) => unknown
+type DetailsSlots = {
+  inject(key: typeof DETAILS_SLOT, callback: () => void): unknown
+  register(options: { name: typeof DETAILS_SLOT; locale: string; priority: number; inject: () => object }, component: unknown): unknown
 }
 
 export function shadowsDefaultDetails(priority: number): boolean {
@@ -30,13 +39,15 @@ export function applyDetailsTrack(
 }
 
 export function occupyDetails(
-  slots: DetailsSlots,
-  face: unknown,
+  slotsValue: unknown,
+  face: () => object,
   panel: unknown,
   locale: string,
 ): void {
+  const slots = slotsValue as DetailsSlots
+  const register = slots.register.bind(slots)
   slots.inject(DETAILS_SLOT, () => {
-    slots.register({
+    register({
       name: DETAILS_SLOT,
       locale,
       priority: DETAILS_PRIORITY,

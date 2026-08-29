@@ -3,6 +3,7 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .tmp/
+.dsh-alpha1
 lib/**
 !lib/index.js
 !lib/client.js

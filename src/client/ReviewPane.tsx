@@ -1,6 +1,6 @@
 /** Review 工具 pane: read-only unified diff + 批注 at the gutter. */
 
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from 'react'
 import type { ReviewMode, ReviewScopeStats } from '../review.ts'
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, Intent, SidebarSnapshot } from '../session.ts'
@@ -175,7 +175,7 @@ export function ReviewPane({
       if (headRef.current?.contains(event.target as Node)) return
       setMenu(null)
     }
-    const onKey = (event: KeyboardEvent) => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') setMenu(null)
     }
     document.addEventListener('pointerdown', onPointer)
@@ -413,7 +413,7 @@ function ReviewNote({
     onIntent({ type: 'review-set-note-draft', text })
   })
 
-  function onNoteKey(event: KeyboardEvent<HTMLInputElement>): void {
+  function onNoteKey(event: ReactKeyboardEvent<HTMLInputElement>): void {
     if (isImeKey(event.nativeEvent)) return
     event.stopPropagation()
     if (event.key === 'Escape') {

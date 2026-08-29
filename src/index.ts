@@ -1,9 +1,11 @@
 /** Host half: one SidebarSession per 主会话, reached over Connection RPC. */
 
+import type {} from '@deepseek-ai/dsh-session'
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
 import { createHostBrowser } from './host-browser.ts'
-import { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
+import { ManagedBrowserRuntime, type ManagedBrowserConfig } from './managed-browser-runtime.ts'
 import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
+import { installManagedBrowserSessionLifecycle } from './managed-browser-session-lifecycle.ts'
 import { ManagedBrowserStream, MANAGED_BROWSER_STREAM_PATH } from './managed-browser-stream.ts'
 import { createManagedBrowserDriveService } from './host-browser-tools.ts'
 import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-browser-tools.ts'
@@ -32,6 +34,10 @@ export { formatDelivery, formatEvidenceSend, formatHumanSend, formatSend } from 
 
 export const name = 'dsh-codex-sidebar'
 export const inject = ['connection']
+
+export interface Config {
+  managedBrowser?: ManagedBrowserConfig
+}
 
 type RpcHandle = {
   handle: (
@@ -62,6 +68,11 @@ type EffectContext = {
 }
 
 type HostContext = EffectContext & {
+  on: (
+    name: 'session/disposed',
+    listener: (session: { id: string }) => void,
+    options: { global: true },
+  ) => () => void
   inject: (deps: readonly string[], callback: (ctx: EffectContext & {
     connection?: { rpc: RpcHandle }
     tools?: ToolsHost
@@ -82,26 +93,62 @@ function agentCwd(agent: unknown): string | undefined {
   return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined
 }
 
-export function apply(ctx: HostContext): void {
+export function apply(ctx: HostContext, config: Config = {}): void {
   const filesBySession = new Map<string, FilesPort>()
   const annotationSend = new AnnotationSendStore()
   let agentLive = (_id: string): boolean => false
   let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
-  const managedBrowser = new ManagedBrowserRuntime()
-  const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
+  const managedBrowser = new ManagedBrowserRuntime(config.managedBrowser)
+  const managedStream = new ManagedBrowserStream({
+    runtime: managedBrowser,
+    ...(config.managedBrowser?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: config.managedBrowser.desktopJpegMaxRawBytes }),
+    ...(config.managedBrowser?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: config.managedBrowser.mobileJpegMaxRawBytes }),
+    ...(config.managedBrowser?.desktopJpegQuality === undefined ? {} : { desktopJpegQuality: config.managedBrowser.desktopJpegQuality }),
+    ...(config.managedBrowser?.desktopJpegFrameIntervalMs === undefined ? {} : { desktopJpegFrameIntervalMs: config.managedBrowser.desktopJpegFrameIntervalMs }),
+    ...(config.managedBrowser?.desktopJpegMaxScale === undefined ? {} : { desktopJpegMaxScale: config.managedBrowser.desktopJpegMaxScale }),
+    ...(config.managedBrowser?.desktopScreencastEveryNthFrame === undefined ? {} : { desktopScreencastEveryNthFrame: config.managedBrowser.desktopScreencastEveryNthFrame }),
+    ...(config.managedBrowser?.desktopJpegInteractionBurstFrames === undefined ? {} : { desktopJpegInteractionBurstFrames: config.managedBrowser.desktopJpegInteractionBurstFrames }),
+    ...(config.managedBrowser?.mobileJpegQuality === undefined ? {} : { mobileJpegQuality: config.managedBrowser.mobileJpegQuality }),
+    ...(config.managedBrowser?.mobileJpegFrameIntervalMs === undefined ? {} : { mobileJpegFrameIntervalMs: config.managedBrowser.mobileJpegFrameIntervalMs }),
+    ...(config.managedBrowser?.mobileJpegMaxScale === undefined ? {} : { mobileJpegMaxScale: config.managedBrowser.mobileJpegMaxScale }),
+    ...(config.managedBrowser?.mobileScreencastEveryNthFrame === undefined ? {} : { mobileScreencastEveryNthFrame: config.managedBrowser.mobileScreencastEveryNthFrame }),
+    ...(config.managedBrowser?.mobileJpegInteractionBurstFrames === undefined ? {} : { mobileJpegInteractionBurstFrames: config.managedBrowser.mobileJpegInteractionBurstFrames }),
+    ...(config.managedBrowser?.preferredMediaRoute === undefined ? {} : { preferredMediaRoute: config.managedBrowser.preferredMediaRoute }),
+    ...(config.managedBrowser?.stunUrls === undefined ? {} : { stunUrls: config.managedBrowser.stunUrls }),
+    ...(config.managedBrowser?.webrtcNegotiationTimeoutMs === undefined ? {} : { webrtcNegotiationTimeoutMs: config.managedBrowser.webrtcNegotiationTimeoutMs }),
+    ...(config.managedBrowser?.webrtcRetryCooldownMs === undefined ? {} : { webrtcRetryCooldownMs: config.managedBrowser.webrtcRetryCooldownMs }),
+    ...(config.managedBrowser?.maxMediaPeers === undefined ? {} : { maxMediaPeers: config.managedBrowser.maxMediaPeers }),
+    ...(config.managedBrowser?.maxEncoderPages === undefined ? {} : { maxEncoderPages: config.managedBrowser.maxEncoderPages }),
+    ...(config.managedBrowser?.directVideoFrameRate === undefined ? {} : { directVideoFrameRate: config.managedBrowser.directVideoFrameRate }),
+    ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
+    ...(config.managedBrowser?.directVideoCaptureQuality === undefined ? {} : { directVideoCaptureQuality: config.managedBrowser.directVideoCaptureQuality }),
+    ...(config.managedBrowser?.directVideoCaptureMaxScale === undefined ? {} : { directVideoCaptureMaxScale: config.managedBrowser.directVideoCaptureMaxScale }),
+    ...(config.managedBrowser?.directVideoCaptureMaxRawBytes === undefined ? {} : { directVideoCaptureMaxRawBytes: config.managedBrowser.directVideoCaptureMaxRawBytes }),
+    ...(config.managedBrowser?.mediaIdleTimeoutMs === undefined ? {} : { mediaIdleTimeoutMs: config.managedBrowser.mediaIdleTimeoutMs }),
+    ...(config.managedBrowser?.mediaHideGraceMs === undefined ? {} : { mediaHideGraceMs: config.managedBrowser.mediaHideGraceMs }),
+    ...(config.managedBrowser?.browserCleanupTimeoutMs === undefined ? {} : { shutdownTimeoutMs: config.managedBrowser.browserCleanupTimeoutMs }),
+  })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()
   const workspace = createWorkspaceInspector()
   ctx.effect(() => {
+    const releaseTargetInvalidation = managedBrowser.onTargetInvalidated((tab, identity) => {
+      managedStream.invalidateTarget(tab, identity)
+    })
     const timer = setInterval(() => { void managedBrowser.reap() }, 15_000)
     timer.unref()
     return () => {
       clearInterval(timer)
+      releaseTargetInvalidation()
       void persist.flush()
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }
   }, 'dsh-codex-sidebar: managed browser lifecycle')
+  ctx.effect(
+    () => installManagedBrowserSessionLifecycle(ctx, managedStream, managedBrowser, filesBySession),
+    'dsh-codex-sidebar: managed browser session lifecycle',
+  )
   const registry = createRegistry({
     persist,
     filesFor: (sessionId, io) => {
@@ -111,7 +158,11 @@ export function apply(ctx: HostContext): void {
     },
     browserFor: (sessionId, io) => createHostBrowser({
       isBusy: io.isBusy,
-      managed: { runtime: managedBrowser, sessionId },
+      managed: {
+        runtime: managedBrowser,
+        sessionId,
+        closeStream: (tabId) => { managedStream.closeTab({ sessionId, tabId }) },
+      },
     }),
     terminalFor: (_sessionId, io) => createHostTerminal(io.cwdOf),
     sideChatFor: (sessionId, io) => createHostSideChat({

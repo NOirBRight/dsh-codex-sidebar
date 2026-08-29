@@ -56,11 +56,14 @@ export type BrowserIntent = {
     on: boolean;
 } | {
     type: 'browser-click-content';
+    tabId?: string;
     mark: string;
     x: number;
     y: number;
     captureId: string;
     documentId: string;
+    layoutRevision: number;
+    mediaGeneration: number;
     selector?: string;
     rect?: AnnotationRect;
 } | {
@@ -70,9 +73,11 @@ export type BrowserIntent = {
     text: string;
 } | {
     type: 'browser-note-add';
+    tabId?: string;
     evidence?: BrowserEvidence;
 } | {
     type: 'browser-note-send';
+    tabId?: string;
     evidence?: BrowserEvidence;
 };
 export type BrowserPort = {
@@ -80,7 +85,6 @@ export type BrowserPort = {
     openExternal(url: string): void;
     isBusy(): boolean;
     manage?(tabId: string, url: string, action: 'open' | 'back' | 'forward' | 'refresh'): void;
-    resize?(tabId: string, width: number, height: number): void;
     close?(tabId: string): void;
     spawn?(command: string): void;
 };
@@ -104,6 +108,8 @@ export type BrowserState = {
     pendingRect: AnnotationRect | null;
     pendingCaptureId: string | null;
     pendingDocumentId: string | null;
+    pendingLayoutRevision: number | null;
+    pendingMediaGeneration: number | null;
     pendingEvidence: BrowserEvidence | null;
     notePos: {
         x: number;
@@ -143,6 +149,10 @@ export declare function reduceBrowser(state: BrowserState, intent: {
 } | undefined;
 export declare function normalizeUrl(raw: string): string;
 export declare function liveHref(url: string): string | undefined;
+/** Address that may be opened outside the Host-managed Browser. */
+export declare function externalBrowserHref(url: string): string | undefined;
+/** HTTP(S) or syntactically valid absolute local HTML address for managed Chromium. */
+export declare function managedBrowserHref(url: string): string | undefined;
 /** Chromium's failed-navigation page. Never treat this as the address the human asked for. */
 export declare function isChromiumErrorUrl(url: string): boolean;
 /** 主会话 path takeover: http(s), loopback, and `example.com` — never `README.md`. */

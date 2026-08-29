@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browserDeviceViewport, isChromiumErrorUrl, isTakeoverUrl, liveHref, type BrowserPort, type PageDocument } from '../src/browser.ts'
+import { browserDeviceViewport, externalBrowserHref, isChromiumErrorUrl, isTakeoverUrl, liveHref, managedBrowserHref, type BrowserDevice, type BrowserPort, type PageDocument } from '../src/browser.ts'
 import { createHostBrowser } from '../src/host-browser.ts'
 import { createSidebarSession, PALETTE } from '../src/session.ts'
 import type { FilesPort, Intent, PersistPort } from '../src/session.ts'
@@ -41,6 +41,8 @@ function browserEvidence(n: number) {
     id: 'e' + n,
     captureId: 'sess-a:t1:d1:c' + n,
     documentId: 'sess-a:t1:d1',
+    layoutRevision: n,
+    mediaGeneration: n,
     ref: '0123456789abcdefabcd/' + String(n).padStart(32, '0') + '.jpg',
     mediaType: 'image/jpeg' as const,
     width: 720,
@@ -107,6 +109,17 @@ function session(browser: BrowserPort, opts?: { busy?: () => boolean }) {
 }
 
 describe('Browser seam', () => {
+  it('projects an empty state for a newly opened Browser Tab', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'pick-tool', kind: 'Browser' })
+    const snap = box.snapshot()
+    const tabId = snap.tabs[0]?.id
+
+    expect(tabId).toBeDefined()
+    expect(snap.browser.status).toBe('empty')
+    expect(snap.browsers[tabId ?? '']?.status).toBe('empty')
+  })
+
   it('opens a Browser Tab for a URL, reuses that Tab for the same URL, and leaves paths to Files', () => {
     const box = session(fakeBrowser())
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
@@ -170,6 +183,44 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.history).toEqual([PAGE_URL])
     expect(box.snapshot().browsers[secondId ?? '']?.url).toBe(OTHER_URL)
     expect(box.snapshot().browsers[secondId ?? '']?.history).toEqual([OTHER_URL])
+  })
+
+  it('routes a delayed Browser surface capture to its originating Tab', () => {
+    const box = session(fakeBrowser())
+    box.dispatch({ type: 'open-url', url: PAGE_URL })
+    const firstId = box.snapshot().active as string
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({ type: 'open-url', url: OTHER_URL })
+    const secondId = box.snapshot().active as string
+
+    box.dispatch({
+      type: 'browser-click-content',
+      tabId: firstId,
+      mark: 'button.submit',
+      x: 40,
+      y: 80,
+      captureId: 'capture-first',
+      documentId: 'document-first',
+      layoutRevision: 4,
+      mediaGeneration: 7,
+    })
+
+    expect(box.snapshot().active).toBe(secondId)
+    expect(box.snapshot().browsers[firstId]).toMatchObject({
+      pendingMark: 'button.submit',
+      pendingCaptureId: 'capture-first',
+    })
+    expect(box.snapshot().browsers[secondId]?.pendingMark).toBeNull()
+
+    box.dispatch({ type: 'browser-note-add', tabId: firstId, evidence: {
+      ...browserEvidence(4),
+      captureId: 'capture-first',
+      documentId: 'document-first',
+      mediaGeneration: 7,
+    } })
+    expect(box.snapshot().browsers[firstId]?.pendingMark).toBeNull()
+    expect(box.snapshot().attachments.at(-1)).toMatchObject({ source: 'browser', url: PAGE_URL, from: 'button.submit' })
+    expect(box.snapshot().browsers[secondId]?.pendingMark).toBeNull()
   })
 
   it('reopens a managed Browser page when its Tab is selected again', () => {
@@ -254,10 +305,11 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'browser-set-annotate', on: true })
     expect(box.snapshot().browser.annotate).toBe(true)
     expect(box.snapshot().browser.pendingMark).toBeNull()
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80, captureId: 'c1', documentId: 'd1' })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 40, y: 80, captureId: 'c1', documentId: 'd1', layoutRevision: 4, mediaGeneration: 7 })
     expect(box.snapshot().browser.pendingMark).toBe('button.submit')
     expect(box.snapshot().browser.notePos).toEqual({ x: 40, y: 80 })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20, captureId: 'c2', documentId: 'd1' })
+    expect(box.snapshot().browser).toMatchObject({ pendingLayoutRevision: 4, pendingMediaGeneration: 7 })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 12, y: 20, captureId: 'c2', documentId: 'd1', layoutRevision: 5, mediaGeneration: 8 })
     expect(box.snapshot().browser.pendingMark).toBe('h1.signin')
     expect(box.snapshot().browser.notePos).toEqual({ x: 12, y: 20 })
     box.dispatch({ type: 'browser-dismiss-note' })
@@ -304,7 +356,7 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId, layoutRevision: 1, mediaGeneration: 1 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make this heading red' })
     expect(box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })).toEqual([])
     expect(box.snapshot().attachments).toEqual([
@@ -313,7 +365,7 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.pendingMark).toBeNull()
     expect(box.snapshot().browser.attachments).toEqual([])
 
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'and the button' })
     const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
     expect(sent).toEqual([{
@@ -339,13 +391,15 @@ describe('Browser seam', () => {
       y: 1,
       captureId: browserEvidence(1).captureId,
       documentId: browserEvidence(1).documentId,
+      layoutRevision: 1,
+      mediaGeneration: 1,
       selector: 'h1.signin',
       rect: { x: 10, y: 20, w: 100, h: 30 },
     })
     box.dispatch({ type: 'browser-set-note-draft', text: 'keep stacked' })
     box.dispatch({ type: 'browser-note-add', evidence: browserEvidence(1) })
 
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, selector: 'button.submit' })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2, selector: 'button.submit' })
     box.dispatch({ type: 'browser-set-note-draft', text: 'send this' })
     const sent = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })
     expect(sent).toHaveLength(1)
@@ -369,6 +423,8 @@ describe('Browser seam', () => {
       y: 1,
       captureId: browserEvidence(1).captureId,
       documentId: browserEvidence(1).documentId,
+      layoutRevision: 1,
+      mediaGeneration: 1,
       selector: 'h1.signin',
       rect: { x: 10, y: 20, w: 100, h: 30 },
     })
@@ -404,7 +460,7 @@ describe('Browser seam', () => {
     box.dispatch({ type: 'pick-tool', kind: 'Browser' })
     box.dispatch({ type: 'open-url', url: PAGE_URL })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'button.submit', x: 1, y: 1, captureId: browserEvidence(1).captureId, documentId: browserEvidence(1).documentId, layoutRevision: 1, mediaGeneration: 1 })
     const queued = box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(1) })
     expect(queued).toEqual([{
       type: 'queue',
@@ -412,7 +468,7 @@ describe('Browser seam', () => {
       attachments: [{ id: 'b1', text: '', from: 'button.submit', source: 'browser', url: PAGE_URL, evidence: browserEvidence(1) }],
     }])
     busy = false
-    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId })
+    box.dispatch({ type: 'browser-click-content', mark: 'h1.signin', x: 2, y: 2, captureId: browserEvidence(2).captureId, documentId: browserEvidence(2).documentId, layoutRevision: 2, mediaGeneration: 2 })
     box.dispatch({ type: 'browser-set-note-draft', text: 'make the heading larger' })
     expect(box.dispatch({ type: 'browser-note-send', evidence: browserEvidence(2) })[0]?.type).toBe('send')
   })
@@ -501,6 +557,28 @@ describe('Browser seam', () => {
     expect(liveHref('src/Login.tsx')).toBeUndefined()
   })
 
+  it('accepts absolute local HTML only as a managed Browser address', () => {
+    const html = 'file:///tmp/dsh-browser-v2-dynamic/index.html'
+    expect(managedBrowserHref(html)).toBe(html)
+    expect(externalBrowserHref(html)).toBeUndefined()
+    expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')).toBe('file:///tmp/dsh-browser-v2-dynamic/page.HTM#demo')
+    expect(managedBrowserHref('file:///tmp/dsh-browser-v2-dynamic/readme.txt')).toBeUndefined()
+    expect(managedBrowserHref('file://server/share/index.html')).toBeUndefined()
+    expect(managedBrowserHref('file://localhost/tmp/index.html')).toBeUndefined()
+    expect(managedBrowserHref('file:////server/share/index.html')).toBeUndefined()
+    expect(managedBrowserHref('data:text/html,hello')).toBeUndefined()
+  })
+
+  it('keeps local HTML inside the managed Browser when external-open is requested', () => {
+    const browser = fakeBrowser()
+    const box = session(browser)
+    const html = 'file:///tmp/dsh-browser-v2-dynamic/index.html'
+    box.dispatch({ type: 'open-url', url: html })
+    expect(box.snapshot().browser.status).toBe('loaded')
+    expect(box.dispatch({ type: 'browser-open-external' })).toEqual([])
+    expect(browser.opened).toEqual([])
+  })
+
   it('opens an http Tab without waiting on a host HTML probe', () => {
     const browser = createHostBrowser({
       isBusy: () => false,
@@ -524,29 +602,27 @@ describe('Browser seam', () => {
     expect(box.snapshot().browser.status).toBe('loaded')
   })
 
-  it('persists compact device presets and requests fixed managed viewports', () => {
-    const resized: Array<{ tabId: string; width: number; height: number }> = []
+  it('persists compact device presets without bypassing the v2 control connection', () => {
+    const resized: Array<{ tabId: string; mode: BrowserDevice; width: number; height: number }> = []
     const browser = {
       ...fakeBrowser(),
-      resize(tabId: string, width: number, height: number) { resized.push({ tabId, width, height }) },
+      resize(tabId: string, mode: BrowserDevice, width: number, height: number) { resized.push({ tabId, mode, width, height }) },
     }
     const box = session(browser)
     box.dispatch({ type: 'open-url', url: PAGE_URL })
-    const tabId = box.snapshot().active as string
     expect(box.snapshot().browser.device).toBe('fit')
     expect(browserDeviceViewport('phone')).toEqual({ width: 390, height: 844 })
 
     box.dispatch({ type: 'browser-set-device', device: 'phone' })
     expect(box.snapshot().browser.device).toBe('phone')
-    expect(resized.at(-1)).toEqual({ tabId, width: 390, height: 844 })
 
     box.dispatch({ type: 'browser-set-device', device: 'laptop' })
     expect(box.snapshot().browser.device).toBe('laptop')
-    expect(resized.at(-1)).toEqual({ tabId, width: 1280, height: 800 })
 
     box.dispatch({ type: 'browser-set-device', device: 'fit' })
     expect(box.snapshot().browser.device).toBe('fit')
     expect(browserDeviceViewport('fit')).toBeNull()
+    expect(resized).toEqual([])
   })
 
   it('keeps the last http URL when Chromium reports chrome-error://', () => {

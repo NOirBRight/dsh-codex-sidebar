@@ -1,5 +1,15 @@
 /** Split a logged user message into human text vs hidden evidence. */
 
+/** Invisible draft content used only to make an annotation-only Alpha composer submit-ready. */
+export const ANNOTATION_DRAFT_SENTINEL = '\u200b'
+
+/** Remove the trailing submit sentinel only from an annotation-only blank draft. */
+export function stripAnnotationDraftSentinel(draft: string): string {
+  if (!draft.endsWith(ANNOTATION_DRAFT_SENTINEL)) return draft
+  const withoutSentinel = draft.slice(0, -ANNOTATION_DRAFT_SENTINEL.length)
+  return withoutSentinel.trim().length === 0 ? withoutSentinel : draft
+}
+
 export type MessageImageRef = { attachmentId: string }
 
 export type UserTextPart = { kind: 'text'; text: string } | { kind: 'ref'; text: string }

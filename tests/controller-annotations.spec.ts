@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSidebarSession, type Annotation, type FilesPort } from '../src/session.ts'
 import { SidebarController } from '../src/client/controller.ts'
 import {
+  SIDEBAR_BROWSER_CAPTURE_ENDPOINT,
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
   SIDEBAR_DISPATCH_ENDPOINT,
   SIDEBAR_SNAPSHOT_ENDPOINT,
@@ -48,6 +49,81 @@ function stackedSnapshot() {
 }
 
 describe('annotation effect prompts', () => {
+  it('restages every changed field of a same-id Browser annotation without restaging identical content', async () => {
+    const original = stackedSnapshot()
+    const browserAnnotation: Annotation = {
+      id: 'same-id',
+      text: 'first note',
+      from: 'Save',
+      source: 'browser',
+      selector: '#save',
+      rect: { x: 1, y: 2, w: 30, h: 20 },
+      url: 'https://example.com',
+      evidence: {
+        id: 'evidence-1',
+        captureId: 'capture-1',
+        documentId: 'document-1',
+        layoutRevision: 4,
+        mediaGeneration: 7,
+        ref: '0123456789abcdefabcd/00000000000000000000000000000001.jpg',
+        mediaType: 'image/jpeg',
+        width: 720,
+        height: 860,
+      },
+    }
+    let snapshot = { ...original, attachments: [browserAnnotation] }
+    const staged: Annotation[][] = []
+    const session = { getSnapshot: () => ({ running: false }) }
+    const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+      if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+        staged.push((payload as { attachments: Annotation[] }).attachments)
+        return { ok: true, value: { staged: true } }
+      }
+      return { ok: true, value: { unstaged: true } }
+    })
+    const controller = new SidebarController(ctx as never)
+
+    await controller.refresh('sess-a')
+    const changes: Annotation[] = [
+      { ...browserAnnotation, text: 'edited note' },
+      { ...browserAnnotation, selector: '#confirm' },
+      { ...browserAnnotation, rect: { x: 4, y: 5, w: 60, h: 40 } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, ref: '0123456789abcdefabcd/00000000000000000000000000000002.jpg' } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, layoutRevision: 5 } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, mediaGeneration: 8 } },
+    ]
+    for (const annotation of changes) {
+      snapshot = { ...snapshot, attachments: [annotation] }
+      await controller.refresh('sess-a')
+    }
+    snapshot = { ...snapshot, attachments: [{ ...changes.at(-1)!, evidence: { ...changes.at(-1)!.evidence! } }] }
+    await controller.refresh('sess-a')
+
+    expect(staged).toHaveLength(1 + changes.length)
+    expect(staged[0]?.[0]?.evidence?.ref).toContain('00000000000000000000000000000001.jpg')
+    expect(staged.at(-1)?.[0]?.evidence?.mediaGeneration).toBe(8)
+  })
+
+  it('sends the currently presented layout identity with Browser capture requests', async () => {
+    const box = createSidebarSession({ sessionId: 'sess-a', files, persist: { load: () => undefined, save: () => undefined }, isBusy: () => false })
+    box.dispatch({ type: 'open-url', url: 'https://example.com' })
+    const payloads: unknown[] = []
+    const session = { getSnapshot: () => ({ running: false, messages: [] }) }
+    const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_BROWSER_CAPTURE_ENDPOINT) {
+        payloads.push(payload)
+        return { ok: true, value: { captureId: 'c1', documentId: 'd1', layoutRevision: 4, mediaGeneration: 7, url: 'https://example.com', title: 'Example', width: 720, height: 860, nodes: [] } }
+      }
+      return { ok: false, error: { message: 'unknown' } }
+    })
+    const controller = new SidebarController(ctx as never)
+    await controller.refresh('sess-a')
+    await expect(controller.browserCapture('sess-a', box.snapshot().active ?? '', { revision: 4, mediaGeneration: 7 })).resolves.toMatchObject({ layoutRevision: 4, mediaGeneration: 7 })
+    expect(payloads[0]).toMatchObject({ expectedRevision: 4, expectedMediaGeneration: 7 })
+  })
+
   it('does not merge leftover composer chips into a direct single-note send', async () => {
     const snapshot = stackedSnapshot()
     const current: Annotation = {
@@ -117,15 +193,19 @@ describe('annotation effect prompts', () => {
     const snapshot = stackedSnapshot()
     const cleared = { ...snapshot, attachments: [] }
     const staged: unknown[][] = []
-    let messages: Array<{ role: string }> = []
+    let revision = 1
+    let change: { kind: string; entries: unknown[] } = { kind: 'replace', entries: [] }
     const listeners = new Set<() => void>()
     const session = {
-      getSnapshot: () => ({ running: false, messages }),
+      getSnapshot: () => ({ running: false }),
+      prompt: async () => 'accepted',
+    }
+    const eventSource = {
+      getSnapshot: () => ({ entries: [], revision, hasMore: false, change }),
       subscribe: (listener: () => void) => {
         listeners.add(listener)
         return () => { listeners.delete(listener) }
       },
-      prompt: async () => 'accepted',
     }
     const ctx = {
       get: () => ({
@@ -151,7 +231,7 @@ describe('annotation effect prompts', () => {
             byId: { 'sess-a': { id: 'sess-a', cwd: '/tmp/work' } },
           }),
         },
-        binding: () => ({ session }),
+        binding: () => ({ session, eventSource }),
       },
       workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
     }
@@ -160,16 +240,110 @@ describe('annotation effect prompts', () => {
     await controller.refresh('sess-a')
     expect(staged.at(-1)).toEqual(snapshot.attachments)
 
-    messages = [{ role: 'user' }]
+    change = {
+      kind: 'append',
+      entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'plugin' } } } }],
+    }
+    revision += 1
+    for (const listener of listeners) listener()
+    expect(controller.snap('sess-a')?.attachments).toEqual(snapshot.attachments)
+
+    change = {
+      kind: 'append',
+      entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'user' } } } }],
+    }
+    revision += 1
     for (const listener of listeners) listener()
     await vi.waitFor(() => {
       expect(controller.snap('sess-a')?.attachments).toEqual([])
     })
   })
 
-  it('commits Browser evidence and sends text followed by one image', async () => {
+  it('rebinds an Alpha event source by identity and releases subscriptions on dispose', async () => {
+    const snapshot = stackedSnapshot()
+    const cleared = { ...snapshot, attachments: [] }
+    const makeEventSource = () => {
+      let revision = 1
+      let change: { kind: string; entries: unknown[] } = { kind: 'replace', entries: [] }
+      const listeners = new Set<() => void>()
+      return {
+        source: {
+          getSnapshot: () => ({ entries: [], revision, hasMore: false, change }),
+          subscribe: (listener: () => void) => {
+            listeners.add(listener)
+            return () => { listeners.delete(listener) }
+          },
+        },
+        listeners,
+        emitDirectUserMessage() {
+          change = {
+            kind: 'append',
+            entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'user' } } } }],
+          }
+          revision += 1
+          for (const listener of listeners) listener()
+        },
+      }
+    }
+    const first = makeEventSource()
+    const second = makeEventSource()
+    let eventSource = first.source
+    let dispatches = 0
+    const session = { getSnapshot: () => ({ running: false }), prompt: async () => 'accepted' }
+    const ctx = {
+      get: () => ({
+        rpc: {
+          call: async (_channel: string, endpoint: string) => {
+            if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+            if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
+            if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
+            if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+              dispatches += 1
+              return { ok: true, value: { snapshot: cleared, effects: [] } }
+            }
+            return { ok: false, error: { message: 'unknown' } }
+          },
+        },
+      }),
+      layout: {},
+      sessions: {
+        list: {
+          getSnapshot: () => ({
+            current: 'sess-a',
+            ids: ['sess-a'],
+            byId: { 'sess-a': { id: 'sess-a', cwd: '/tmp/work' } },
+          }),
+        },
+        binding: () => ({ session, eventSource }),
+      },
+      workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
+    }
+
+    const controller = new SidebarController(ctx as never)
+    await controller.refresh('sess-a')
+    expect(first.listeners).toHaveLength(1)
+
+    eventSource = second.source
+    await controller.refresh('sess-a')
+    expect(first.listeners).toHaveLength(0)
+    expect(second.listeners).toHaveLength(1)
+
+    first.emitDirectUserMessage()
+    expect(dispatches).toBe(0)
+    expect(controller.snap('sess-a')?.attachments).toEqual(snapshot.attachments)
+
+    second.emitDirectUserMessage()
+    await vi.waitFor(() => { expect(dispatches).toBe(1) })
+    expect(controller.snap('sess-a')?.attachments).toEqual([])
+
+    controller.dispose()
+    expect(second.listeners).toHaveLength(0)
+  })
+
+  it('does not expose Browser chips to the Alpha composer until Host evidence staging completes', async () => {
     const evidence = {
       id: 'e1', captureId: 'capture-1', documentId: 'doc-1',
+      layoutRevision: 4, mediaGeneration: 7,
       ref: '0123456789abcdefabcd/00000000000000000000000000000001.jpg',
       mediaType: 'image/jpeg' as const, width: 720, height: 860,
     }
@@ -182,16 +356,76 @@ describe('annotation effect prompts', () => {
     })
     box.dispatch({ type: 'open-url', url: 'https://example.com' })
     box.dispatch({ type: 'browser-set-annotate', on: true })
-    box.dispatch({ type: 'browser-click-content', mark: 'Save', x: 10, y: 20, captureId: 'capture-1', documentId: 'doc-1', rect: { x: 1, y: 2, w: 30, h: 20 } })
+    box.dispatch({
+      type: 'browser-click-content', mark: 'Save', x: 10, y: 20,
+      captureId: 'capture-1', documentId: 'doc-1', layoutRevision: 4, mediaGeneration: 7,
+      rect: { x: 1, y: 2, w: 30, h: 20 },
+    })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'fix this' })
+    let releaseStage: (() => void) | undefined
+    const stageGate = new Promise<void>((resolve) => { releaseStage = resolve })
+    let stageRequested = false
+    const session = { getSnapshot: () => ({ running: false }), prompt: async () => 'accepted' }
+    const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) return { ok: true, value: evidence }
+      if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+        stageRequested = true
+        await stageGate
+        return { ok: true, value: { staged: true } }
+      }
+      if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
+      if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+        const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+        const effects = box.dispatch(intent)
+        return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      }
+      return { ok: false, error: { message: 'unknown' } }
+    })
+    const controller = new SidebarController(ctx as never)
+    await controller.refresh('sess-a')
+
+    const adding = controller.dispatch('sess-a', { type: 'browser-note-add' })
+    await vi.waitFor(() => { expect(stageRequested).toBe(true) })
+    expect(controller.snap('sess-a')?.attachments).toEqual([])
+
+    releaseStage?.()
+    await adding
+    expect(controller.snap('sess-a')?.attachments).toEqual([
+      expect.objectContaining({ text: 'fix this', evidence }),
+    ])
+  })
+
+  it('commits Browser evidence and sends text followed by one image', async () => {
+    const evidence = {
+      id: 'e1', captureId: 'capture-1', documentId: 'doc-1',
+      layoutRevision: 4, mediaGeneration: 7,
+      ref: '0123456789abcdefabcd/00000000000000000000000000000001.jpg',
+      mediaType: 'image/jpeg' as const, width: 720, height: 860,
+    }
+    const box = createSidebarSession({
+      sessionId: 'sess-a', files, persist: { load: () => undefined, save: () => undefined }, isBusy: () => false,
+      browser: {
+        load: (url) => ({ url, title: 'Example', elements: [] }),
+        openExternal() {}, isBusy: () => false,
+      },
+    })
+    box.dispatch({ type: 'open-url', url: 'https://example.com' })
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({ type: 'browser-click-content', mark: 'Save', x: 10, y: 20, captureId: 'capture-1', documentId: 'doc-1', layoutRevision: 4, mediaGeneration: 7, rect: { x: 1, y: 2, w: 30, h: 20 } })
     box.dispatch({ type: 'browser-set-note-draft', text: 'fix this' })
     const prompted: Array<Array<Record<string, unknown>>> = []
+    let commitPayload: unknown
     const session = {
       getSnapshot: () => ({ running: false, messages: [] }),
       prompt: async (content: Array<Record<string, unknown>>) => { prompted.push(content); return 'accepted' },
     }
     const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
       if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
-      if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) return { ok: true, value: evidence }
+      if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) {
+        commitPayload = payload
+        return { ok: true, value: evidence }
+      }
       if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
       if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
         const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
@@ -205,6 +439,7 @@ describe('annotation effect prompts', () => {
     await controller.dispatch('sess-a', { type: 'browser-note-send' })
     expect(prompted).toHaveLength(1)
     expect(prompted[0]).toEqual([{ type: 'text', text: 'fix this' }])
+    expect(commitPayload).toMatchObject({ captureId: 'capture-1', expectedRevision: 4, expectedMediaGeneration: 7 })
   })
 
   it('recovers the Host snapshot after a transient RPC failure without opening this client', async () => {
@@ -217,6 +452,7 @@ describe('annotation effect prompts', () => {
       }
       let calls = 0
       const ctx = controllerContext(session, async (_channel: string, endpoint: string) => {
+        if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
         if (endpoint !== SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: false }
         calls += 1
         if (calls === 1) return { ok: false }

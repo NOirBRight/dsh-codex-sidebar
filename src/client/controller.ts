@@ -1,6 +1,7 @@
 /** Live SidebarSession store + host RPC + 主会话 prompt / path takeover. */
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { ClientContext } from './shim.js'
 import {
@@ -24,6 +25,7 @@ import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCa
 import { hunkForOpen, viewForTool } from '../tool-open.ts'
 import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
 import { pinHostDetailsTrack } from './host-frame.ts'
@@ -37,6 +39,8 @@ const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
 export type BrowserCaptureReply = {
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   url: string
   title: string
   width: number
@@ -49,7 +53,8 @@ export class SidebarController {
   #listeners = new Set<() => void>()
   #effectPrompt = new Set<string>()
   #stagedKey = new Map<string, string>()
-  #userWatch = new Set<string>()
+  #userWatch = new Map<string, { source: unknown; dispose: () => void }>()
+  #disposed = false
   #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
@@ -80,14 +85,26 @@ export class SidebarController {
     return () => { this.#listeners.delete(listener) }
   }
 
+  /** Release session event subscriptions owned by this controller. */
+  dispose(): void {
+    if (this.#disposed) return
+    this.#disposed = true
+    const watches = [...this.#userWatch.values()]
+    this.#userWatch.clear()
+    for (const watch of watches) watch.dispose()
+    this.#listeners.clear()
+  }
+
   snap(sessionId: string): SidebarSnapshot | undefined {
     return this.#store.bySession[sessionId]
   }
 
-  async browserCapture(sessionId: string, tabId: string): Promise<BrowserCaptureReply | undefined> {
+  async browserCapture(sessionId: string, tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserCaptureReply | undefined> {
     const gate = this.#gate(sessionId)
     if (gate === undefined) return undefined
-    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, { ...gate, tabId })
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      ...gate, tabId, expectedRevision: expected.revision, expectedMediaGeneration: expected.mediaGeneration,
+    })
     if (!result.ok || !captureReply(result.value)) return undefined
     return result.value
   }
@@ -119,7 +136,7 @@ export class SidebarController {
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const epoch = this.#refreshEpoch.get(sessionId) ?? 0
-      if (this.snap(sessionId) === undefined && signal?.aborted !== true) {
+      if (this.snap(sessionId) === undefined && !aborted(signal)) {
         const lightGate = this.#gate(sessionId)
         if (lightGate !== undefined) {
           try {
@@ -131,11 +148,11 @@ export class SidebarController {
             if (light.ok && isRecord(light.value) && isRecord(light.value.snapshot)) {
               if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
               const snapshot = light.value.snapshot as unknown as SidebarSnapshot
+              await this.#syncStaged(snapshot)
               this.#hostCollapsed.set(sessionId, snapshot.collapsed)
               const applied = this.#put(snapshot)
               this.#syncLayout(applied)
               this.#watchUserTurns(sessionId)
-              void this.#syncStaged(applied)
             }
           } catch {
             // Paint chrome from the full snapshot if the light request fails.
@@ -143,10 +160,10 @@ export class SidebarController {
         }
       }
       for (const delay of REFRESH_RETRY_MS) {
-        if (signal?.aborted === true) return undefined
+        if (aborted(signal)) return undefined
         if (delay > 0) {
           await new Promise<void>((resolve) => { setTimeout(resolve, delay) })
-          if (signal?.aborted === true) return undefined
+          if (aborted(signal)) return undefined
         }
         const gate = this.#gate(sessionId)
         if (gate === undefined) return undefined
@@ -155,11 +172,11 @@ export class SidebarController {
           if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
           if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
+          await this.#syncStaged(snapshot)
           this.#hostCollapsed.set(sessionId, snapshot.collapsed)
           const applied = this.#put(snapshot)
           this.#syncLayout(applied)
           this.#watchUserTurns(sessionId)
-          void this.#syncStaged(applied)
           return applied
         } catch {
           // The web host can restart while this mounted client reconnects.
@@ -206,6 +223,8 @@ export class SidebarController {
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
       if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
+      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
+      if (!sending) await this.#syncStaged(reply.snapshot)
       if (toggle) this.#pendingCollapsed.delete(sessionId)
       else if (intentRevealsSidebar(intent)) this.#writeChrome(sessionId, false)
       else this.#writeChrome(sessionId, reply.snapshot.collapsed)
@@ -222,8 +241,6 @@ export class SidebarController {
           throw error
         }
       }
-      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
-      if (!sending) void this.#syncStaged(applied)
       return applied
     }
     return this.#enqueue(sessionId, work)
@@ -244,21 +261,27 @@ export class SidebarController {
   ): Promise<Intent | undefined> {
     if (intent.type !== 'browser-note-add' && intent.type !== 'browser-note-send') return intent
     const snapshot = this.snap(sessionId)
-    const tabId = snapshot?.active
-    const browser = tabId === null || tabId === undefined ? undefined : snapshot?.browsers[tabId]
+    const candidateTabId = intent.tabId ?? snapshot?.active
+    if (typeof candidateTabId !== 'string') return undefined
+    const tabId = candidateTabId
+    const browser = snapshot?.browsers[tabId]
     if (browser === undefined) return undefined
     let evidence = browser.pendingEvidence
     if (evidence === null) {
-      if (browser.pendingCaptureId === null) return undefined
+      if (browser.pendingCaptureId === null || browser.pendingLayoutRevision === null || browser.pendingMediaGeneration === null) return undefined
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
         ...gate,
         captureId: browser.pendingCaptureId,
+        expectedRevision: browser.pendingLayoutRevision,
+        expectedMediaGeneration: browser.pendingMediaGeneration,
       })
       if (!result.ok || !browserEvidence(result.value)) return undefined
       evidence = result.value
     }
     if (browser.pendingDocumentId !== null && evidence.documentId !== browser.pendingDocumentId) return undefined
-    return { ...intent, evidence }
+    if (browser.pendingLayoutRevision !== null && evidence.layoutRevision !== browser.pendingLayoutRevision) return undefined
+    if (browser.pendingMediaGeneration !== null && evidence.mediaGeneration !== browser.pendingMediaGeneration) return undefined
+    return { ...intent, tabId, evidence }
   }
 
   #enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
@@ -281,10 +304,11 @@ export class SidebarController {
     this.#installUrlClicks()
     this.#installLayoutReveal()
     if (this.#pathTakeover) return
-    const workspaces = this.#ctx.workspaces
-    if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
+    const workspaces = this.#ctx.workspaces as ClientContext['workspaces'] & {
+      openPath?: (path: string) => void | Promise<void>
+    }
     this.#pathTakeover = true
-    const original = workspaces.openPath.bind(workspaces)
+    const original = typeof workspaces.openPath === 'function' ? workspaces.openPath.bind(workspaces) : undefined
     let lastTool: string | undefined
     let lastHunkId: string | undefined
     let lastRowHunk: ToolRowHunk | undefined
@@ -304,6 +328,7 @@ export class SidebarController {
     const patched = async (path: string): Promise<void> => {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
       if (sessionId === undefined) {
+        if (original === undefined) throw new Error('no active Session for sidebar path takeover')
         await original(path)
         return
       }
@@ -326,32 +351,32 @@ export class SidebarController {
         ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
       })
     }
-    try {
-      workspaces.openPath = patched
-    } catch {
+    if (original !== undefined) {
       try {
-        Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
+        workspaces.openPath = patched
       } catch {
-        // Fall through to Remote session.openWorkspacePath patch below.
+        try {
+          Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
+        } catch {
+          // Fall through to Remote session.openWorkspacePath patch below.
+        }
       }
     }
     this.#patchRemoteOpenPath(patched)
   }
 
   #patchRemoteOpenPath(openInSidebar: (path: string) => Promise<void>): void {
-    const remote = (this.#ctx as ClientContext & {
-      remote?: { session?: { openWorkspacePath?: (req: { path: string }) => Promise<{ ok: boolean }> } }
-    }).remote?.session
+    const remote: ClientRemote['session'] | undefined = (this.#ctx as ClientContext & { remote?: ClientRemote }).remote?.session
     if (remote === undefined || typeof remote.openWorkspacePath !== 'function') return
     const original = remote.openWorkspacePath.bind(remote)
-    const wrapped = async (req: { path: string }): Promise<{ ok: boolean }> => {
+    const wrapped: typeof remote.openWorkspacePath = async (req, signal) => {
       const path = req.path
-      if (typeof path !== 'string' || path.length === 0) return original(req)
+      if (typeof path !== 'string' || path.length === 0) return original(req, signal)
       try {
         await openInSidebar(path)
-        return { ok: true }
+        return { ok: true, value: { opened: true } }
       } catch {
-        return original(req)
+        return original(req, signal)
       }
     }
     try {
@@ -434,7 +459,7 @@ export class SidebarController {
 
   #turnWritesFor(sessionId: string, sessionState: unknown): ReturnType<typeof turnWritesFromSession> {
     const cached = this.#turnWritesCache.get(sessionId)
-    const turnWrites = cached?.source === sessionState
+    const turnWrites = cached !== undefined && cached.source === sessionState
       ? cached.turnWrites
       : turnWritesFromSession(sessionState)
     if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
@@ -591,7 +616,7 @@ export class SidebarController {
   }
 
   async #syncStaged(snapshot: SidebarSnapshot): Promise<void> {
-    const key = snapshot.attachments.map((item) => item.id).join(',')
+    const key = stagedAttachmentsKey(snapshot.attachments)
     if (this.#stagedKey.get(snapshot.sessionId) === key) return
     this.#stagedKey.set(snapshot.sessionId, key)
     try {
@@ -600,34 +625,126 @@ export class SidebarController {
         return
       }
       await this.#stageAnnotations(snapshot.sessionId, snapshot.attachments)
-    } catch {
+    } catch (error) {
       this.#stagedKey.delete(snapshot.sessionId)
+      if (snapshot.attachments.length > 0) throw error
     }
   }
 
   #watchUserTurns(sessionId: string): void {
-    if (this.#userWatch.has(sessionId)) return
     const binding = this.#ctx.sessions.binding(sessionId as never)
+    const eventSource = (binding as { eventSource?: unknown } | undefined)?.eventSource
+    if (isEventSource(eventSource)) {
+      let revision = eventSource.getSnapshot().revision
+      this.#replaceUserWatch(sessionId, eventSource, (notify) => eventSource.subscribe(notify), () => {
+        const window = eventSource.getSnapshot()
+        if (window.revision === revision) return
+        revision = window.revision
+        if (!changeAddsDirectUserMessage(window.change)) return
+        if ((this.snap(sessionId)?.attachments.length ?? 0) > 0) {
+          void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
+        }
+      })
+      return
+    }
     const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
-    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') return
-    this.#userWatch.add(sessionId)
-    let last = userTurnCount(session.getSnapshot())
-    session.subscribe(() => {
+    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') {
+      this.#clearUserWatch(sessionId)
+      return
+    }
+    const getSnapshot = session.getSnapshot.bind(session)
+    let last = userTurnCount(getSnapshot())
+    this.#replaceUserWatch(sessionId, session, (notify) => session.subscribe!(notify), () => {
       if (this.#effectPrompt.has(sessionId)) {
-        last = userTurnCount(session.getSnapshot())
+        last = userTurnCount(getSnapshot())
         return
       }
-      const next = userTurnCount(session.getSnapshot())
+      const next = userTurnCount(getSnapshot())
       if (next > last && (this.snap(sessionId)?.attachments.length ?? 0) > 0) {
         void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
       }
       last = next
     })
   }
+
+  #replaceUserWatch(
+    sessionId: string,
+    source: unknown,
+    subscribe: (listener: () => void) => () => void,
+    listener: () => void,
+  ): void {
+    const previous = this.#userWatch.get(sessionId)
+    if (previous?.source === source) return
+    this.#clearUserWatch(sessionId)
+    if (this.#disposed) return
+    const watch = { source, dispose: () => {} }
+    this.#userWatch.set(sessionId, watch)
+    try {
+      const dispose = subscribe(() => {
+        if (this.#userWatch.get(sessionId) === watch) listener()
+      })
+      watch.dispose = dispose
+      if (this.#userWatch.get(sessionId) !== watch) dispose()
+    } catch (error) {
+      if (this.#userWatch.get(sessionId) === watch) this.#userWatch.delete(sessionId)
+      throw error
+    }
+  }
+
+  #clearUserWatch(sessionId: string): void {
+    const watch = this.#userWatch.get(sessionId)
+    if (watch === undefined) return
+    this.#userWatch.delete(sessionId)
+    watch.dispose()
+  }
+}
+
+type SessionEventWindowLike = {
+  revision: number
+  change: unknown
+}
+
+function isEventSource(value: unknown): value is {
+  getSnapshot: () => SessionEventWindowLike
+  subscribe: (listener: () => void) => () => void
+} {
+  return isRecord(value)
+    && typeof value.getSnapshot === 'function'
+    && typeof value.subscribe === 'function'
+    && isRecord(value.getSnapshot())
+    && typeof value.getSnapshot().revision === 'number'
+}
+
+function changeAddsDirectUserMessage(change: unknown): boolean {
+  if (!isRecord(change) || change.kind !== 'append' || !Array.isArray(change.entries)) return false
+  return change.entries.some((entry) => {
+    if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) return false
+    const event = entry.event
+    return event.type === 'user/message'
+      && isRecord(event.data)
+      && isRecord(event.data.source)
+      && event.data.source.kind === 'user'
+  })
 }
 
 function intentNeedsRoster(intent: Intent): boolean {
   return intent.type === 'side-list' || intent.type === 'side-inspect' || intent.type === 'side-deliver'
+}
+
+function stagedAttachmentsKey(attachments: readonly Annotation[]): string {
+  return stableJson(attachments)
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(orderJsonProperties(value)) ?? ''
+}
+
+function orderJsonProperties(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderJsonProperties)
+  if (!isRecord(value)) return value
+  const ordered: Record<string, unknown> = {}
+  for (const key of Object.keys(value).sort()) ordered[key] = orderJsonProperties(value[key])
+  return ordered
 }
 
 function intentRevealsSidebar(intent: Intent): boolean {
@@ -665,6 +782,8 @@ function captureReply(value: unknown): value is BrowserCaptureReply {
   return isRecord(value)
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.url === 'string'
     && typeof value.title === 'string'
     && typeof value.width === 'number'
@@ -677,10 +796,16 @@ function browserEvidence(value: unknown): value is BrowserEvidence {
     && typeof value.id === 'string'
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.ref === 'string'
     && value.mediaType === 'image/jpeg'
     && typeof value.width === 'number'
     && typeof value.height === 'number'
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 
@@ -700,8 +825,12 @@ function relativize(path: string, cwd: string): string {
 }
 
 function archivedIds(ctx: ClientContext): ReadonlySet<string> {
-  const snap = ctx.workspaces.list.getSnapshot() as { archivedSessionIds?: string[] }
+  const snap = ctx.workspaces.list.getSnapshot() as { archivedSessionIds?: readonly string[] }
   return new Set(snap.archivedSessionIds ?? [])
+}
+
+function aborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
 }
 
 function rosterFromList(list: { ids: string[]; byId: Record<string, {

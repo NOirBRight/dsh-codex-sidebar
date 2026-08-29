@@ -84,6 +84,25 @@ describe('annotation send enrichment', () => {
     ])
   })
 
+  it('removes the Alpha composer sentinel from an annotation-only user message', () => {
+    const enriched = enrichUserMessage(
+      { id: 'm2', role: 'user', content: [{ type: 'text', text: '\u200b' }], source: { kind: 'user' } },
+      {
+        sessionId: 'sess-a',
+        attachments: [fileMark],
+        marks: [{ id: 't1', from: 'Login.tsx:1', source: 'files' }],
+        images: [],
+        evidenceText: '批注 1 · Login.tsx:1',
+        expiresAt: 9e12,
+      },
+    )
+    expect(enriched.content).toEqual([
+      { type: 'text', text: '' },
+      { type: 'text', text: '批注 1 · Login.tsx:1' },
+    ])
+    expect((enriched.source as { annotations?: unknown[] }).annotations).toHaveLength(1)
+  })
+
   it('keeps a bound sidecar past TTL so a queued 主会话 turn still gets evidence', () => {
     let now = 1_000
     const store = new AnnotationSendStore({ now: () => now, ttlMs: 30_000 })
