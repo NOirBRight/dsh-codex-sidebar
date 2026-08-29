@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
+import { ManagedBrowserLayoutClient, browserElementContentSize, browserObservedContentSize } from '../src/client/managed-browser-layout.ts'
 
 const OPTIONS = {
   mode: 'laptop' as const,
@@ -66,6 +66,71 @@ describe('managed Browser authoritative client layout', () => {
       { x: 320, y: 350 },
       { x: 0, y: 150, width: 640, height: 400 },
     )).toEqual({ revision: 7, x: 640, y: 400 })
+  })
+
+  it('reads fit geometry from the details content box instead of transformed presentation bounds', () => {
+    const element = {
+      clientWidth: 660,
+      clientHeight: 720,
+      getBoundingClientRect: () => ({ width: 390, height: 844 }),
+    }
+    expect(browserElementContentSize(element, {
+      paddingLeft: '10px', paddingRight: '10px', paddingTop: '8px', paddingBottom: '12px',
+    })).toEqual({ width: 640, height: 700 })
+
+    const observation = {
+      contentBoxSize: [{ inlineSize: 720, blockSize: 860 }],
+      contentRect: { width: 390, height: 844 },
+      target: { getBoundingClientRect: () => ({ width: 1280, height: 800 }) },
+    }
+    expect(browserObservedContentSize(observation)).toEqual({ width: 720, height: 860 })
+  })
+
+  it('proposes one settled fit commit for one real details-width change and ignores media churn', () => {
+    const client = new ManagedBrowserLayoutClient({ ...OPTIONS, mode: 'fit' })
+    client.observeContainer({ width: 640, height: 700 }, 0)
+    expect(client.pollProposal(100)).toEqual({
+      proposalSequence: 1,
+      mode: 'fit',
+      viewport: { width: 640, height: 700 },
+    })
+    expect(client.acceptCommit({
+      revision: 1,
+      mode: 'fit',
+      viewport: { width: 640, height: 700 },
+      mediaGeneration: 1,
+    })).toBe(true)
+
+    for (const encodedSize of [
+      { width: 390, height: 844 },
+      { width: 1280, height: 800 },
+      { width: 960, height: 1050 },
+    ]) {
+      expect(client.acceptFrame({
+        revision: 1,
+        mediaGeneration: 1,
+        viewport: { width: 640, height: 700 },
+        encodedSize,
+      }).accepted).toBe(true)
+      expect(client.pollProposal(10_000)).toBeUndefined()
+    }
+
+    client.observeContainer({ width: 840, height: 700 }, 1_000)
+    client.observeContainer({ width: 842, height: 700 }, 1_040)
+    expect(client.pollProposal(1_099)).toBeUndefined()
+    expect(client.pollProposal(1_100)).toEqual({
+      proposalSequence: 2,
+      mode: 'fit',
+      viewport: { width: 842, height: 700 },
+    })
+    expect(client.acceptCommit({
+      revision: 2,
+      mode: 'fit',
+      viewport: { width: 842, height: 700 },
+      mediaGeneration: 2,
+    })).toBe(true)
+    client.observeContainer({ width: 842, height: 700 }, 1_200)
+    expect(client.pollProposal(10_000)).toBeUndefined()
   })
 
   it('proposes an exact fixed preset once and ignores later container measurements', () => {

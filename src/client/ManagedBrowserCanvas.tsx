@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type WheelEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react'
 import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
-import { ManagedBrowserLayoutClient } from './managed-browser-layout.ts'
+import { ManagedBrowserLayoutClient, browserElementContentSize, browserObservedContentSize } from './managed-browser-layout.ts'
 import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
 import { ManagedBrowserWebRtcReceiver } from '../managed-browser-webrtc-client.ts'
@@ -25,6 +25,7 @@ type ManagedBrowserCanvasProps = {
   annotate: boolean
   selectedRect: AnnotationRect | null
   selectedSelector: string | null
+  fitContainerRef: RefObject<HTMLElement>
   requestTicket: (tabId: string) => Promise<StreamTicket | undefined>
   onPick: (rect: AnnotationRect, anchor: Point, layout: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => void | Promise<void>
   onState: (projection: ManagedProjection) => void
@@ -37,7 +38,7 @@ type TouchGesture = BrowserTouchGesture & { pointerId: number }
 type PointerGesture = BrowserPointerGesture & { pointerId: number }
 type RevisionedInput = BrowserInput & { revision: number }
 
-export function ManagedBrowserCanvas({ tabId, active, device, annotate, selectedRect, selectedSelector, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
+export function ManagedBrowserCanvas({ tabId, active, device, annotate, selectedRect, selectedSelector, fitContainerRef, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -178,12 +179,12 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     }, Math.max(0, dueAt - performance.now()))
   }
 
-  const observeContainer = (): void => {
-    const root = rootRef.current
-    if (root === null) return
-    const bounds = root.getBoundingClientRect()
-    if (bounds.width <= 0 || bounds.height <= 0) return
-    layoutRef.current?.observeContainer({ width: bounds.width, height: bounds.height }, performance.now())
+  const observeContainer = (observed?: Size): void => {
+    const container = fitContainerRef.current
+    if (container === null) return
+    const size = observed ?? browserElementContentSize(container, getComputedStyle(container))
+    if (size === undefined) return
+    layoutRef.current?.observeContainer(size, performance.now())
     updateSurface()
     publishMediaRoute(mediaRouteRef.current)
     armLayoutTimer()
@@ -236,10 +237,13 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   }, [active, tabId])
 
   useEffect(() => {
-    const root = rootRef.current
-    if (root === null) return
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => { observeContainer() })
-    observer?.observe(root)
+    const container = fitContainerRef.current
+    if (container === null) return
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver((entries) => {
+      const entry = entries.find((candidate) => candidate.target === container)
+      observeContainer(entry === undefined ? undefined : browserObservedContentSize(entry))
+    })
+    observer?.observe(container)
     observeContainer()
     return () => { observer?.disconnect() }
   }, [tabId])

@@ -174,6 +174,7 @@ export function BrowserPane({ snapshot, browser, tabId, active, onIntent, reques
             annotate={browser.annotate}
             selectedRect={browser.pendingRect}
             selectedSelector={browser.pendingSelector}
+            fitContainerRef={pageRef}
             requestTicket={requestTicket}
             onPick={pick}
             onState={(projection) => {

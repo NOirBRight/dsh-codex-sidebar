@@ -42,6 +42,30 @@ export type ManagedBrowserLayoutSnapshot = {
 }
 
 type SurfaceBounds = { x: number; y: number; width: number; height: number }
+type ContentBox = { inlineSize: number; blockSize: number }
+type ContentRect = { width: number; height: number }
+type ContentPadding = { paddingLeft: string; paddingRight: string; paddingTop: string; paddingBottom: string }
+
+/** Read one element's untransformed content dimensions for an initial fit proposal. */
+export function browserElementContentSize(
+  element: Pick<HTMLElement, 'clientWidth' | 'clientHeight'>,
+  style?: ContentPadding,
+): ManagedBrowserSize | undefined {
+  const horizontalPadding = style === undefined ? 0 : cssPixels(style.paddingLeft) + cssPixels(style.paddingRight)
+  const verticalPadding = style === undefined ? 0 : cssPixels(style.paddingTop) + cssPixels(style.paddingBottom)
+  return normalizedContentSize(element.clientWidth - horizontalPadding, element.clientHeight - verticalPadding)
+}
+
+/** Read the content box delivered by ResizeObserver without consulting presentation geometry. */
+export function browserObservedContentSize(entry: {
+  contentBoxSize?: readonly ContentBox[] | ContentBox
+  contentRect?: ContentRect
+}): ManagedBrowserSize | undefined {
+  const contentBox = Array.isArray(entry.contentBoxSize) ? entry.contentBoxSize[0] : entry.contentBoxSize as ContentBox | undefined
+  return contentBox === undefined
+    ? normalizedContentSize(entry.contentRect?.width, entry.contentRect?.height)
+    : normalizedContentSize(contentBox.inlineSize, contentBox.blockSize)
+}
 
 /** Client-side projection of Host-authoritative Browser layout and presentation. */
 export class ManagedBrowserLayoutClient {
@@ -217,6 +241,17 @@ function validCommit(commit: ManagedBrowserLayoutCommit): boolean {
     && Number.isSafeInteger(commit.mediaGeneration) && commit.mediaGeneration > 0
     && validMode(commit.mode)
     && validSize(commit.viewport)
+}
+
+function normalizedContentSize(width: number | undefined, height: number | undefined): ManagedBrowserSize | undefined {
+  return width !== undefined && height !== undefined && Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+    ? { width, height }
+    : undefined
+}
+
+function cssPixels(value: string): number {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 function validMode(mode: ManagedBrowserLayoutMode): boolean {
