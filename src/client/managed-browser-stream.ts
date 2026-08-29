@@ -1,10 +1,158 @@
-export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean): boolean {
-  return pageVisible && intersecting
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MAX_RTC_CANDIDATES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+
+export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean, surfaceActive = true): boolean {
+  return pageVisible && intersecting && surfaceActive
+}
+
+/** Buffers bounded Host ICE candidates only for the current owner and media generation. */
+export class BrowserRtcCandidateBuffer {
+  #identity: BrowserMediaIdentity | undefined
+  #candidates: Array<BrowserRtcCandidate | null> = []
+
+  /** Select the authoritative signaling identity and discard candidates from an older generation. */
+  setIdentity(identity: BrowserMediaIdentity): void {
+    if (this.#identity !== undefined && sameMediaIdentity(this.#identity, identity)) return
+    this.#identity = { ...identity }
+    this.#candidates = []
+  }
+
+  /** Add one early candidate when it belongs to the selected identity and capacity remains. */
+  add(identity: BrowserMediaIdentity, candidate: BrowserRtcCandidate | null): boolean {
+    if (this.#identity === undefined || !sameMediaIdentity(this.#identity, identity)
+      || this.#candidates.length >= MANAGED_BROWSER_MAX_RTC_CANDIDATES) return false
+    this.#candidates.push(candidate)
+    return true
+  }
+
+  /** Remove all queued candidates for an exact offer in their original arrival order. */
+  drain(identity: BrowserMediaIdentity): Array<BrowserRtcCandidate | null> {
+    if (this.#identity === undefined || !sameMediaIdentity(this.#identity, identity)) return []
+    return this.#candidates.splice(0)
+  }
+
+  /** Discard the selected identity and every queued candidate. */
+  clear(): void {
+    this.#identity = undefined
+    this.#candidates = []
+  }
+}
+
+function sameMediaIdentity(left: BrowserMediaIdentity, right: BrowserMediaIdentity): boolean {
+  return left.ownerId === right.ownerId
+    && left.revision === right.revision
+    && left.mediaGeneration === right.mediaGeneration
+}
+
+/** Delays disconnecting an already-active Browser stream while its surface is hidden. */
+export class BrowserVisibilityGrace {
+  #active: boolean
+  #surfaceVisible: boolean
+  #graceMs = MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS
+  #hiddenAt: number | undefined
+  #timer: ReturnType<typeof setTimeout> | undefined
+  #disposed = false
+  #onActiveChange: (active: boolean) => void
+  #now: () => number
+
+  /**
+   * @param initiallyVisible Whether the stream is active when visibility tracking starts.
+   * @param onActiveChange Publishes connection eligibility after grace transitions.
+   * @param now Monotonic-enough clock used to preserve the original hidden deadline.
+   */
+  constructor(
+    initiallyVisible: boolean,
+    onActiveChange: (active: boolean) => void,
+    now: () => number = () => performance.now(),
+  ) {
+    this.#active = initiallyVisible
+    this.#surfaceVisible = initiallyVisible
+    this.#onActiveChange = onActiveChange
+    this.#now = now
+  }
+
+  /** Update the Host-authoritative hidden-surface grace duration. */
+  setGraceMs(graceMs: number): void {
+    if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new Error('managed Browser mediaHideGraceMs must be a non-negative integer')
+    this.#graceMs = graceMs
+    if (!this.#surfaceVisible && this.#active) this.#arm()
+  }
+
+  /** Report whether both the document and Browser surface are visible. */
+  setVisible(visible: boolean): void {
+    if (this.#disposed) return
+    this.#surfaceVisible = visible
+    if (visible) {
+      this.#hiddenAt = undefined
+      this.#clearTimer()
+      if (!this.#active) {
+        this.#active = true
+        this.#onActiveChange(true)
+      }
+      return
+    }
+    if (!this.#active) return
+    this.#hiddenAt ??= this.#now()
+    this.#arm()
+  }
+
+  /** Stop pending visibility work without changing connection state. */
+  dispose(): void {
+    this.#disposed = true
+    this.#clearTimer()
+  }
+
+  #arm(): void {
+    this.#clearTimer()
+    const remaining = Math.max(0, (this.#hiddenAt ?? this.#now()) + this.#graceMs - this.#now())
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined
+      if (this.#disposed || this.#surfaceVisible || !this.#active) return
+      this.#active = false
+      this.#onActiveChange(false)
+    }, remaining)
+  }
+
+  #clearTimer(): void {
+    if (this.#timer !== undefined) clearTimeout(this.#timer)
+    this.#timer = undefined
+  }
 }
 
 /** Touch taps must not focus the local hidden IME; it steals the remote click on Android. */
 export function browserPointerShouldFocusIme(pointerType: string): boolean {
   return pointerType !== 'touch'
+}
+
+/** A completed touch tap may focus the hidden IME after its remote click is sent. */
+export function browserTouchShouldFocusIme(moved: boolean): boolean {
+  return !moved
+}
+
+export type BrowserPointerGesture = {
+  revision: number
+  startX: number
+  startY: number
+  lastX: number
+  lastY: number
+  moved: boolean
+}
+
+/** Buffer one desktop pointer gesture so Host dispatches press/release under one layout lease. */
+export function browserPointerGestureMove(gesture: BrowserPointerGesture, x: number, y: number): { gesture: BrowserPointerGesture; moved: boolean } {
+  const moved = gesture.moved || Math.hypot(x - gesture.startX, y - gesture.startY) >= 6
+  return { moved, gesture: { ...gesture, lastX: x, lastY: y, moved } }
+}
+
+/** Produce one atomic Host input for a completed buffered pointer gesture. */
+export function browserPointerGestureEnd(gesture: BrowserPointerGesture, revision: number, x: number, y: number):
+  | { type: 'tap'; x: number; y: number }
+  | { type: 'drag'; x: number; y: number; toX: number; toY: number }
+  | undefined {
+  if (gesture.revision !== revision) return undefined
+  const moved = gesture.moved || Math.hypot(x - gesture.startX, y - gesture.startY) >= 6
+  return moved
+    ? { type: 'drag', x: gesture.startX, y: gesture.startY, toX: x, toY: y }
+    : { type: 'tap', x, y }
 }
 
 export type BrowserStreamSize = { width: number; height: number }
@@ -44,28 +192,162 @@ export function browserStreamFitSurface(container: BrowserStreamSize, content: B
   }
 }
 
-export const BROWSER_STREAM_HEADER_BYTES = 17
+export const BROWSER_STREAM_HEADER_BYTES = BROWSER_STREAM_V2_HEADER_BYTES
+export type DecodedBrowserFrame = BrowserStreamFrameV2
+export type BrowserStreamFrameEncoding = 'binary-v2' | 'json-base64-v2'
+export type BrowserFrameIdentity = Pick<BrowserStreamFrameV2, 'sequence' | 'revision' | 'mediaGeneration'>
+export type BrowserMediaRetryState = { identity: BrowserMediaIdentity; nextRetryAt: number }
+export type BrowserMediaPresentationRoute = 'direct-video' | 'low-bandwidth-fallback' | 'reconnecting' | 'unavailable'
+export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
 
-export type DecodedBrowserFrame = {
-  version: number
-  sequence: number
-  sentAt: number
-  width: number
-  height: number
-  jpeg: Uint8Array
+/** Assemble an exact client decline after direct video cannot present its first frame. */
+export function browserMediaDeclineMessage(identity: BrowserMediaIdentity): Extract<BrowserClientMessage, { type: 'media-decline' }> {
+  return { type: 'media-decline', ...identity, reason: 'presentation-failed' }
+}
+
+/** Decline only a local failure that still belongs to the current Host media identity. */
+export function browserMediaDeclineForFailure(
+  failed: BrowserMediaIdentity,
+  current: BrowserMediaIdentity | undefined,
+  reason: BrowserMediaFailureReason | undefined,
+): Extract<BrowserClientMessage, { type: 'media-decline' }> | undefined {
+  if (current === undefined || reason === undefined || reason === 'host-fallback' || !sameMediaIdentity(failed, current)) return undefined
+  return browserMediaDeclineMessage(failed)
+}
+
+/** Report immediate surface visibility for the exact committed media identity. */
+export function browserSurfaceVisibilityMessage(
+  ready: Pick<BrowserReadyMessage, 'ownerId'> | null,
+  layout: Pick<BrowserMediaIdentity, 'revision' | 'mediaGeneration'> | undefined,
+  visible: boolean,
+): Extract<BrowserClientMessage, { type: 'surface-visibility' }> | undefined {
+  if (ready === null || layout === undefined) return undefined
+  return { type: 'surface-visibility', ownerId: ready.ownerId, ...layout, visible }
+}
+
+/** Project one Host route update without claiming direct video before a decoded frame is presented. */
+export function browserMediaRouteFromHost(
+  message: BrowserMediaRouteMessage,
+  current: BrowserMediaPresentationRoute,
+): BrowserMediaPresentationRoute {
+  if (message.route === 'unavailable') return 'unavailable'
+  if (message.status === 'reconnecting') return 'reconnecting'
+  if (message.route === 'jpeg-fallback') return 'low-bandwidth-fallback'
+  return current === 'direct-video' ? current : 'reconnecting'
+}
+
+/** Keep negotiation non-direct until the DOM presenter atomically commits the ready generation. */
+export function browserMediaRouteFromReceiver(
+  route: 'connecting' | 'webrtc-direct' | 'jpeg-fallback',
+): BrowserMediaPresentationRoute {
+  return route === 'jpeg-fallback' ? 'low-bandwidth-fallback' : 'reconnecting'
+}
+
+/** Rate-limit a receiver-less retry while allowing a new layout/media identity immediately. */
+export function browserMediaRetryRequest(
+  state: BrowserMediaRetryState | undefined,
+  identity: BrowserMediaIdentity,
+  trigger: 'explicit' | 'network-change' | 'tab-reactivate',
+  cooldownMs: number,
+  now: number,
+): { state: BrowserMediaRetryState; message?: Extract<BrowserClientMessage, { type: 'media-retry' }> } {
+  const same = state !== undefined && state.identity.ownerId === identity.ownerId
+    && state.identity.revision === identity.revision && state.identity.mediaGeneration === identity.mediaGeneration
+  if (same && now < state.nextRetryAt) return { state }
+  const next = { identity: { ...identity }, nextRetryAt: now + cooldownMs }
+  return { state: next, message: { type: 'media-retry', ...identity, trigger } }
+}
+
+/** Declare the encodings and flow control understood by the Canvas client. */
+export function browserStreamHello(webrtcVideo = false): {
+  type: 'hello'
+  version: 2
+  frameEncodings: BrowserStreamFrameEncoding[]
+  flowControl: ['frame-ack-v2']
+  media: { webrtcVideo: boolean }
+} {
+  return {
+    type: 'hello',
+    version: 2,
+    frameEncodings: ['binary-v2', 'json-base64-v2'],
+    flowControl: ['frame-ack-v2'],
+    media: { webrtcVideo },
+  }
+}
+
+export function browserStreamReady(value: string): BrowserReadyMessage | undefined {
+  const message = decodeBrowserHostMessage(value)
+  return message?.type === 'ready' ? message : undefined
+}
+
+export function decodeBrowserLayoutCommit(value: string): BrowserLayoutCommitMessage | undefined {
+  try {
+    const message = JSON.parse(value) as BrowserLayoutCommitMessage
+    const layout = message.layout
+    if (message.type !== 'layout-commit' || !positiveInteger(layout?.revision) || !positiveInteger(layout?.mediaGeneration)
+      || !validSize(layout?.viewport) || !['fit', 'phone', 'tablet', 'laptop'].includes(layout?.mode)) return undefined
+    return message
+  } catch {
+    return undefined
+  }
+}
+
+export function decodeBrowserMediaRoute(value: string): BrowserMediaRouteMessage | undefined {
+  try {
+    const message = JSON.parse(value) as BrowserMediaRouteMessage
+    if (message.type !== 'media-route' || !['jpeg-fallback', 'webrtc-direct', 'unavailable'].includes(message.route)
+      || !['active', 'degraded', 'reconnecting'].includes(message.status)
+      || (message.reason !== undefined && typeof message.reason !== 'string')) return undefined
+    return message
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Decode and paint one frame only while its originating connection remains current.
+ * @param identity Host frame and layout identity to acknowledge.
+ * @param decode Deferred frame decoder.
+ * @param isConnectionCurrent Whether the originating socket generation is still active.
+ * @param isFrameCurrent Whether the frame still belongs to the committed layout.
+ * @param acceptFrame Atomically publishes the layout after a successful paint.
+ * @param paint Synchronous Canvas paint operation.
+ * @param dispose Decoded-frame resource disposer.
+ * @param acknowledge ACK sender bound to the originating socket.
+ * @returns A promise that settles after decode, optional paint, disposal, and optional ACK.
+ */
+export async function paintBrowserFrameForConnection<T>(
+  identity: BrowserFrameIdentity,
+  decode: () => Promise<T>,
+  isConnectionCurrent: () => boolean,
+  isFrameCurrent: () => boolean,
+  acceptFrame: () => boolean,
+  paint: (decoded: T) => void,
+  dispose: (decoded: T) => void,
+  acknowledge: (identity: BrowserFrameIdentity) => void,
+): Promise<void> {
+  let disposeDecoded: (() => void) | undefined
+  try {
+    const decoded = await decode()
+    disposeDecoded = () => { dispose(decoded) }
+    if (!isConnectionCurrent() || !isFrameCurrent()) return
+    paint(decoded)
+    acceptFrame()
+  } finally {
+    disposeDecoded?.()
+    if (isConnectionCurrent() && isFrameCurrent()) acknowledge(identity)
+  }
 }
 
 export function decodeBrowserFrame(value: ArrayBuffer): DecodedBrowserFrame {
-  if (value.byteLength < BROWSER_STREAM_HEADER_BYTES) throw new Error('Browser frame header is truncated')
+  return decodeBrowserStreamFrameV2(value)
+}
+
+export function browserBinaryFrameIdentity(value: ArrayBuffer): BrowserFrameIdentity | undefined {
+  if (value.byteLength < 21 || new DataView(value).getUint8(0) !== MANAGED_BROWSER_PROTOCOL_VERSION) return undefined
   const view = new DataView(value)
-  return {
-    version: view.getUint8(0),
-    sequence: view.getUint32(1),
-    sentAt: view.getFloat64(5),
-    width: view.getUint16(13),
-    height: view.getUint16(15),
-    jpeg: new Uint8Array(value, BROWSER_STREAM_HEADER_BYTES),
-  }
+  const identity = { sequence: view.getUint32(1), revision: view.getUint32(13), mediaGeneration: view.getUint32(17) }
+  return positiveInteger(identity.sequence) && positiveInteger(identity.revision) && positiveInteger(identity.mediaGeneration) ? identity : undefined
 }
 
 function looksLikeJsonText(value: string): boolean {
@@ -88,7 +370,7 @@ export function browserStreamFrameBuffer(data: unknown): ArrayBuffer | undefined
   }
   if (typeof data !== 'string' || looksLikeJsonText(data) || data.length < BROWSER_STREAM_HEADER_BYTES) return undefined
   const buffer = latin1Buffer(data)
-  return new Uint8Array(buffer)[0] === 1 ? buffer : undefined
+  return new Uint8Array(buffer)[0] === MANAGED_BROWSER_PROTOCOL_VERSION ? buffer : undefined
 }
 
 export function browserStreamTextMessage(data: unknown): string | undefined {
@@ -129,6 +411,19 @@ export function decodeBrowserOutline(value: string): BrowserOutline | undefined 
 
 
 export type BrowserAnnotationRect = { x: number; y: number; w: number; h: number }
+
+export type BrowserEvidenceSelectionPoint = { revision: number; x: number; y: number }
+
+/** Return one evidence rectangle only when both pointer events used the same presented layout. */
+export function browserEvidenceSelectionRect(start: BrowserEvidenceSelectionPoint, end: BrowserEvidenceSelectionPoint): BrowserAnnotationRect | undefined {
+  if (start.revision !== end.revision) return undefined
+  return {
+    x: Math.min(start.x, end.x),
+    y: Math.min(start.y, end.y),
+    w: Math.abs(end.x - start.x),
+    h: Math.abs(end.y - start.y),
+  }
+}
 
 
 
@@ -192,37 +487,19 @@ function browserOutlineNode(value: unknown): value is BrowserOutlineNode {
 }
 
 export function decodeBrowserJpegJson(value: string): DecodedBrowserFrame | undefined {
+  return decodeBrowserStreamJsonFrameV2(value)
+}
+
+export function browserJsonFrameIdentity(value: string): BrowserFrameIdentity | undefined {
   try {
-    const message = JSON.parse(value) as {
-      type?: unknown
-      version?: unknown
-      sequence?: unknown
-      sentAt?: unknown
-      width?: unknown
-      height?: unknown
-      jpeg?: unknown
-    }
-    if (message.type !== 'frame' || message.version !== 1 || typeof message.jpeg !== 'string') return undefined
-    if (typeof message.sequence !== 'number' || typeof message.sentAt !== 'number') return undefined
-    if (typeof message.width !== 'number' || typeof message.height !== 'number') return undefined
-    return {
-      version: 1,
-      sequence: message.sequence,
-      sentAt: message.sentAt,
-      width: message.width,
-      height: message.height,
-      jpeg: decodeBase64Bytes(message.jpeg),
-    }
+    const message = JSON.parse(value) as { type?: unknown; version?: unknown; sequence?: unknown; revision?: unknown; mediaGeneration?: unknown }
+    return message.type === 'frame' && message.version === 2 && positiveInteger(message.sequence)
+      && positiveInteger(message.revision) && positiveInteger(message.mediaGeneration)
+      ? { sequence: message.sequence, revision: message.revision, mediaGeneration: message.mediaGeneration }
+      : undefined
   } catch {
     return undefined
   }
-}
-
-function decodeBase64Bytes(value: string): Uint8Array {
-  const bin = atob(value)
-  const bytes = new Uint8Array(bin.length)
-  for (let index = 0; index < bin.length; index += 1) bytes[index] = bin.charCodeAt(index)
-  return bytes
 }
 
 export function browserStreamSignalsReady(value: unknown): boolean {
@@ -230,12 +507,24 @@ export function browserStreamSignalsReady(value: unknown): boolean {
   if (typeof value !== 'string') return false
   try {
     const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
-    if (message.type === 'ready' || message.type === 'frame') return true
+    if (message.type === 'ready') return browserStreamReady(value) !== undefined
+    if (message.type === 'frame') return message.version === 2
     if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false
     return (message.projection as { status?: unknown }).status === 'ready'
   } catch {
     return false
   }
+}
+
+function validSize(value: unknown): value is BrowserStreamSize {
+  if (typeof value !== 'object' || value === null) return false
+  const size = value as { width?: unknown; height?: unknown }
+  return typeof size.width === 'number' && Number.isFinite(size.width) && size.width > 0
+    && typeof size.height === 'number' && Number.isFinite(size.height) && size.height > 0
+}
+
+function positiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 export function browserWebSocketUrl(path: string, locationLike: Pick<Location, 'protocol' | 'host'> = window.location): string {

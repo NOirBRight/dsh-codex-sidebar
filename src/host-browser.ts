@@ -1,6 +1,6 @@
 /** BrowserPort: synchronous chrome projection plus async managed-Page commands. */
 
-import { liveHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
+import { managedBrowserHref, type BrowserPort, type PageDocument, type PageElement } from './browser.ts'
 import type { ManagedBrowserRuntime } from './managed-browser-runtime.ts'
 
 /** Optional HTML snapshot for tests. Production load never waits on the network. */
@@ -12,12 +12,12 @@ export function createHostBrowser(opts: {
   isBusy: () => boolean
   probe?: (url: string) => PageProbe
   openExternal?: (url: string) => void
-  managed?: { runtime: ManagedBrowserRuntime; sessionId: string }
+  managed?: { runtime: ManagedBrowserRuntime; sessionId: string; closeStream?: (tabId: string) => void }
 }): BrowserPort {
   return {
     load(url) {
       if (opts.probe !== undefined) return loadFromProbe(url, opts.probe(url))
-      if (liveHref(url) === undefined) return undefined
+      if (managedBrowserHref(url) === undefined) return undefined
       return liveSnapshot(url)
     },
     openExternal(url) {
@@ -36,11 +36,8 @@ export function createHostBrowser(opts: {
               : opts.managed?.runtime.ensure(tab, url)
         void command?.catch(() => undefined)
       },
-      resize(tabId, width, height) {
-        const command = opts.managed?.runtime.resize({ sessionId: opts.managed.sessionId, tabId }, width, height)
-        void command?.catch(() => undefined)
-      },
       close(tabId) {
+        opts.managed?.closeStream?.(tabId)
         void opts.managed?.runtime.close({ sessionId: opts.managed.sessionId, tabId })
       },
     },
@@ -49,7 +46,7 @@ export function createHostBrowser(opts: {
 
 function loadFromProbe(url: string, result: PageProbe): PageDocument | undefined {
   if (result.kind === 'html') return pageSnapshot(url, result.html)
-  if (liveHref(url) === undefined) return undefined
+  if (managedBrowserHref(url) === undefined) return undefined
   return liveSnapshot(url)
 }
 

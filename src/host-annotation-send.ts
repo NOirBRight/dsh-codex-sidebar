@@ -230,6 +230,8 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     typeof rec.id !== 'string'
     || typeof rec.captureId !== 'string'
     || typeof rec.documentId !== 'string'
+    || !Number.isSafeInteger(rec.layoutRevision) || (rec.layoutRevision as number) <= 0
+    || !Number.isSafeInteger(rec.mediaGeneration) || (rec.mediaGeneration as number) <= 0
     || typeof rec.ref !== 'string'
     || rec.mediaType !== 'image/jpeg'
     || typeof rec.width !== 'number'
@@ -239,6 +241,8 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     id: rec.id,
     captureId: rec.captureId,
     documentId: rec.documentId,
+    layoutRevision: rec.layoutRevision as number,
+    mediaGeneration: rec.mediaGeneration as number,
     ref: rec.ref,
     mediaType: 'image/jpeg',
     width: rec.width,

@@ -15,6 +15,7 @@ export declare function createHostBrowser(opts: {
     managed?: {
         runtime: ManagedBrowserRuntime;
         sessionId: string;
+        closeStream?: (tabId: string) => void;
     };
 }): BrowserPort;
 export declare function liveSnapshot(url: string): PageDocument;

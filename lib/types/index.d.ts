@@ -1,4 +1,5 @@
 /** Host half: one SidebarSession per 主会话, reached over Connection RPC. */
+import { type ManagedBrowserConfig } from './managed-browser-runtime.ts';
 export { createSidebarSession, PALETTE } from './session.ts';
 export type { Annotation, AnnotationSource, Effect, FilesPort, Intent, PersistPort, SidebarSession, SidebarSnapshot, ToolKind, } from './session.ts';
 export { createRegistry } from './registry.ts';
@@ -6,6 +7,9 @@ export { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_RPC_CHAN
 export { formatDelivery, formatEvidenceSend, formatHumanSend, formatSend } from './send-text.ts';
 export declare const name = "dsh-codex-sidebar";
 export declare const inject: string[];
+export interface Config {
+    managedBrowser?: ManagedBrowserConfig;
+}
 type RpcHandle = {
     handle: (channel: string, handler: (endpoint: string, payload: unknown) => Promise<unknown>, options: {
         authority: string;
@@ -42,6 +46,11 @@ type EffectContext = {
     effect: (callback: () => void | (() => void), label?: string) => void;
 };
 type HostContext = EffectContext & {
+    on: (name: 'session/disposed', listener: (session: {
+        id: string;
+    }) => void, options: {
+        global: true;
+    }) => () => void;
     inject: (deps: readonly string[], callback: (ctx: EffectContext & {
         connection?: {
             rpc: RpcHandle;
@@ -68,5 +77,5 @@ type HostContext = EffectContext & {
         };
     }) => void) => void;
 };
-export declare function apply(ctx: HostContext): void;
+export declare function apply(ctx: HostContext, config?: Config): void;
 //# sourceMappingURL=index.d.ts.map

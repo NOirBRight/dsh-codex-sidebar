@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { pathToFileURL } from 'node:url'
 import { createManagedBrowserDriveService } from '../src/host-browser-tools.ts'
 import type { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 import { createSidebarSession } from '../src/session.ts'
@@ -65,6 +66,16 @@ describe('managed Browser tools', () => {
     })
     expect(box.ensure).not.toHaveBeenCalled()
     expect(box.session.snapshot().tabs).toEqual([])
+  })
+
+  it('opens a local HTML file through the managed runtime without treating it as external', async () => {
+    const box = fixture()
+    const url = pathToFileURL('/tmp/dsh-browser-v2-dynamic/index.html').href
+    await expect(box.service.open({}, box.session, url)).resolves.toMatchObject({
+      ok: true,
+      tab: { url, driveable: true, connected: true },
+    })
+    expect(box.ensure).toHaveBeenCalledWith(expect.any(Object), url)
   })
 
   it('maps document-scoped stale refs and keeps the main-session guard', async () => {

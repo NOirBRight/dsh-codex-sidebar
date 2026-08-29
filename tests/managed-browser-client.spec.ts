@@ -1,8 +1,227 @@
-import { describe, expect, it } from 'vitest'
-import { browserAnnotationHighlightRects, browserAnnotationNodeAt, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserTouchGestureMove, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserOutline, decodeBrowserTrackedRect, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
-import { encodeBrowserStreamFrame, encodeBrowserStreamJsonFrame } from '../src/managed-browser-stream.ts'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
+import { browserSurfaceOccupants } from '../src/client/browser-occupancy.ts'
+import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
 describe('managed Browser stream client', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('offers both frame carriers and frame ACK flow control in hello', () => {
+    expect(browserStreamHello(true)).toEqual({
+      type: 'hello',
+      version: 2,
+      frameEncodings: ['binary-v2', 'json-base64-v2'],
+      flowControl: ['frame-ack-v2'],
+      media: { webrtcVideo: true },
+    })
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toEqual({
+      type: 'ready',
+      version: 2,
+      frameEncoding: 'binary-v2',
+      flowControl: 'frame-ack-v2',
+      ownerId: 'owner-1',
+      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 },
+      fallback: { maxRawBytes: 1024 },
+      layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
+    })
+    expect(browserStreamReady(JSON.stringify({ type: 'ready', version: 1 }))).toBeUndefined()
+  })
+
+  it('retains Browser surface occupants while another tool Tab is active', () => {
+    const tabs = [
+      { id: 'browser-1', kind: 'Browser' as const },
+      { id: 'files-1', kind: 'Files' as const },
+      { id: 'browser-2', kind: 'Browser' as const },
+    ]
+    expect(browserSurfaceOccupants(tabs, 'files-1')).toEqual([
+      { tabId: 'browser-1', active: false },
+      { tabId: 'browser-2', active: false },
+    ])
+    expect(browserSurfaceOccupants(tabs, 'browser-2')).toEqual([
+      { tabId: 'browser-1', active: false },
+      { tabId: 'browser-2', active: true },
+    ])
+  })
+
+  it('assembles exact media decline and cooldown-limited fallback retry messages', () => {
+    const identity = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    expect(browserMediaDeclineMessage(identity)).toEqual({
+      type: 'media-decline', ...identity, reason: 'presentation-failed',
+    })
+
+    const first = browserMediaRetryRequest(undefined, identity, 'explicit', 1_000, 5_000)
+    expect(first.message).toEqual({ type: 'media-retry', ...identity, trigger: 'explicit' })
+    expect(browserMediaRetryRequest(first.state, identity, 'explicit', 1_000, 5_999).message).toBeUndefined()
+    expect(browserMediaRetryRequest(first.state, identity, 'explicit', 1_000, 6_000).message).toEqual({
+      type: 'media-retry', ...identity, trigger: 'explicit',
+    })
+    expect(browserMediaRetryRequest(first.state, { ...identity, mediaGeneration: 10 }, 'explicit', 1_000, 5_001).message).toEqual({
+      type: 'media-retry', ...identity, mediaGeneration: 10, trigger: 'explicit',
+    })
+  })
+
+  it('declines every current local presentation failure but never a stale or Host-selected fallback', () => {
+    const current = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    for (const reason of ['negotiation-timeout', 'negotiation-error', 'peer-failed', 'presentation-failed'] as const) {
+      expect(browserMediaDeclineForFailure(current, current, reason)).toEqual({
+        type: 'media-decline', ...current, reason: 'presentation-failed',
+      })
+    }
+    expect(browserMediaDeclineForFailure({ ...current, ownerId: 'stale-owner' }, current, 'negotiation-timeout')).toBeUndefined()
+    expect(browserMediaDeclineForFailure({ ...current, revision: 3 }, current, 'negotiation-error')).toBeUndefined()
+    expect(browserMediaDeclineForFailure({ ...current, mediaGeneration: 8 }, current, 'peer-failed')).toBeUndefined()
+    expect(browserMediaDeclineForFailure(current, undefined, 'presentation-failed')).toBeUndefined()
+    expect(browserMediaDeclineForFailure(current, current, 'host-fallback')).toBeUndefined()
+  })
+
+  it('reports immediate surface visibility only for an exact committed media identity', () => {
+    const ready = { ownerId: 'owner-1' }
+    const layout = { revision: 3, mediaGeneration: 2 }
+    expect(browserSurfaceVisibilityMessage(ready, layout, false)).toEqual({
+      type: 'surface-visibility', ownerId: 'owner-1', revision: 3, mediaGeneration: 2, visible: false,
+    })
+    expect(browserSurfaceVisibilityMessage(null, layout, false)).toBeUndefined()
+    expect(browserSurfaceVisibilityMessage(ready, undefined, true)).toBeUndefined()
+  })
+
+  it('projects every Host and receiver route into one user-visible media state', () => {
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'webrtc-direct', status: 'active' }, 'reconnecting')).toBe('reconnecting')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'webrtc-direct', status: 'active' }, 'direct-video')).toBe('direct-video')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'reconnecting' }, 'low-bandwidth-fallback')).toBe('reconnecting')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'degraded', reason: 'peer-failed' }, 'direct-video')).toBe('low-bandwidth-fallback')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'jpeg-fallback', status: 'active' }, 'reconnecting')).toBe('low-bandwidth-fallback')
+    expect(browserMediaRouteFromHost({ type: 'media-route', route: 'unavailable', status: 'degraded' }, 'direct-video')).toBe('unavailable')
+    expect(browserMediaRouteFromReceiver('connecting')).toBe('reconnecting')
+    expect(browserMediaRouteFromReceiver('webrtc-direct')).toBe('reconnecting')
+    expect(browserMediaRouteFromReceiver('jpeg-fallback')).toBe('low-bandwidth-fallback')
+  })
+
+  it('bounds early Host candidates by the exact owner and drains them in arrival order', () => {
+    const current = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
+    const next = { ...current, revision: 5, mediaGeneration: 10 }
+    const candidates = new BrowserRtcCandidateBuffer()
+    candidates.setIdentity(current)
+
+    expect(candidates.add({ ...current, ownerId: 'stale-owner' }, { candidate: 'stale-owner' })).toBe(false)
+    expect(candidates.add({ ...current, revision: 3 }, { candidate: 'stale-layout' })).toBe(false)
+    for (let index = 0; index < 64; index += 1) {
+      expect(candidates.add(current, { candidate: 'candidate:' + index })).toBe(true)
+    }
+    expect(candidates.add(current, { candidate: 'overflow' })).toBe(false)
+
+    candidates.setIdentity(next)
+    expect(candidates.drain(current)).toEqual([])
+    expect(candidates.add(next, { candidate: 'next:1' })).toBe(true)
+    expect(candidates.add(next, null)).toBe(true)
+    expect(candidates.drain(next)).toEqual([{ candidate: 'next:1' }, null])
+    expect(candidates.drain(next)).toEqual([])
+
+    expect(candidates.add(next, { candidate: 'closed' })).toBe(true)
+    candidates.clear()
+    expect(candidates.drain(next)).toEqual([])
+    expect(candidates.add(next, { candidate: 'after-close' })).toBe(false)
+  })
+
+  it('keeps laptop geometry authoritative while delayed and mismatched JPEG metadata alternates', () => {
+    const layout = new ManagedBrowserLayoutClient({
+      mode: 'laptop', settleMs: 120, hysteresisPx: 8,
+      viewportLimits: { min: { width: 320, height: 240 }, max: { width: 1920, height: 1440 } },
+    })
+    layout.observeContainer({ width: 640, height: 600 }, 0)
+    expect(layout.selectMode('laptop', 0)).toEqual({ proposalSequence: 1, mode: 'laptop', viewport: { width: 1280, height: 800 } })
+    const commit = decodeBrowserLayoutCommit(JSON.stringify({ type: 'layout-commit', layout: { revision: 4, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 9 } }))
+    expect(commit).toBeDefined()
+    expect(layout.acceptCommit(commit!.layout)).toBe(true)
+
+    expect(layout.acceptFrame({ revision: 3, mediaGeneration: 8, viewport: { width: 640, height: 600 }, encodedSize: { width: 960, height: 900 }, deviceSize: { width: 1280, height: 800 } })).toEqual({ accepted: false, switched: false })
+    expect(layout.acceptFrame({ revision: 4, mediaGeneration: 9, viewport: { width: 1280, height: 800 }, encodedSize: { width: 1920, height: 1200 }, deviceSize: { width: 960, height: 900 } })).toEqual({ accepted: true, switched: true })
+    expect(layout.surfaceSize()).toEqual({ width: 640, height: 400 })
+    expect(layout.mapPoint({ x: 320, y: 200 }, { x: 0, y: 0, width: 640, height: 400 })).toEqual({ revision: 4, x: 640, y: 400 })
+  })
+
+  it('ACKs only after Canvas paint settles and also ACKs a decode failure', async () => {
+    const events: string[] = []
+    const identity = { sequence: 7, revision: 4, mediaGeneration: 9 }
+    let finish: ((value: string) => void) | undefined
+    const painting = paintBrowserFrameForConnection(
+      identity,
+      () => new Promise<string>((resolve) => { finish = resolve }),
+      () => true,
+      () => true,
+      () => true,
+      (value) => { events.push('paint:' + value) },
+      (value) => { events.push('dispose:' + value) },
+      (frame) => { events.push('ack:' + frame.sequence + ':' + frame.revision + ':' + frame.mediaGeneration) },
+    )
+    expect(events).toEqual([])
+    finish?.('bitmap')
+    await painting
+    expect(events).toEqual(['paint:bitmap', 'dispose:bitmap', 'ack:7:4:9'])
+
+    await expect(paintBrowserFrameForConnection(
+      { ...identity, sequence: 8 },
+      async () => { throw new Error('bad jpeg') },
+      () => true,
+      () => true,
+      () => true,
+      () => { throw new Error('must not paint') },
+      () => { throw new Error('must not dispose') },
+      (frame) => { events.push('ack:' + frame.sequence) },
+    )).rejects.toThrow('bad jpeg')
+    expect(events.at(-1)).toBe('ack:8')
+
+    let accepted = false
+    await expect(paintBrowserFrameForConnection(
+      { ...identity, sequence: 9 },
+      async () => 'bitmap',
+      () => true,
+      () => true,
+      () => { accepted = true; return true },
+      () => { throw new Error('paint failed') },
+      () => {},
+      (frame) => { events.push('ack:' + frame.sequence) },
+    )).rejects.toThrow('paint failed')
+    expect(accepted).toBe(false)
+    expect(events.at(-1)).toBe('ack:9')
+    const truncated = new ArrayBuffer(21)
+    const view = new DataView(truncated)
+    view.setUint8(0, 2); view.setUint32(1, 9); view.setUint32(13, 4); view.setUint32(17, 5)
+    expect(browserBinaryFrameIdentity(truncated)).toEqual({ sequence: 9, revision: 4, mediaGeneration: 5 })
+    expect(browserJsonFrameIdentity('{"type":"frame","version":2,"sequence":10,"revision":4,"mediaGeneration":5,"jpeg":"bad"}')).toEqual({ sequence: 10, revision: 4, mediaGeneration: 5 })
+  })
+
+  it('drops a delayed decode after reconnect without painting or ACKing the new socket', async () => {
+    const oldAcks: number[] = []
+    const newAcks: number[] = []
+    const paints: string[] = []
+    const disposals: string[] = []
+    let activeConnection = 'old'
+    let finishDecode: ((value: string) => void) | undefined
+    const work = paintBrowserFrameForConnection(
+      { sequence: 11, revision: 4, mediaGeneration: 9 },
+      () => new Promise<string>((resolve) => { finishDecode = resolve }),
+      () => activeConnection === 'old',
+      () => true,
+      () => true,
+      (value) => { paints.push(value) },
+      (value) => { disposals.push(value) },
+      (identity) => {
+        if (activeConnection === 'old') oldAcks.push(identity.sequence)
+        else newAcks.push(identity.sequence)
+      },
+    )
+
+    activeConnection = 'new'
+    finishDecode?.('old bitmap')
+    await work
+
+    expect(paints).toEqual([])
+    expect(disposals).toEqual(['old bitmap'])
+    expect(oldAcks).toEqual([])
+    expect(newAcks).toEqual([])
+  })
+
   it('letterboxes a desktop JPEG into a phone sidebar without stretching', () => {
     const surface = browserStreamFitSurface({ width: 390, height: 600 }, { width: 720, height: 860 })
     expect(surface.width / surface.height).toBeCloseTo(720 / 860, 2)
@@ -10,9 +229,47 @@ describe('managed Browser stream client', () => {
     expect(surface.height).toBeLessThanOrEqual(600)
   })
 
-  it('does not focus the hidden IME for touch taps', () => {
+  it('opens the hidden IME only after a completed touch tap', () => {
     expect(browserPointerShouldFocusIme('touch')).toBe(false)
     expect(browserPointerShouldFocusIme('mouse')).toBe(true)
+    expect(browserTouchShouldFocusIme(false)).toBe(true)
+    expect(browserTouchShouldFocusIme(true)).toBe(false)
+  })
+
+  it('pauses fit proposals while the Mobile IME is visible and restarts settling after blur', () => {
+    const layout = new ManagedBrowserLayoutClient({
+      mode: 'fit',
+      settleMs: 100,
+      hysteresisPx: 8,
+      viewportLimits: { min: { width: 320, height: 240 }, max: { width: 1920, height: 1440 } },
+    })
+    layout.observeContainer({ width: 390, height: 600 }, 0)
+    layout.setImeVisible(browserTouchShouldFocusIme(false), 10)
+    expect(layout.proposalDueAt()).toBeUndefined()
+    expect(layout.pollProposal(1_000)).toBeUndefined()
+    layout.setImeVisible(false, 1_000)
+    expect(layout.pollProposal(1_099)).toBeUndefined()
+    expect(layout.pollProposal(1_100)).toMatchObject({ mode: 'fit', viewport: { width: 390, height: 600 } })
+  })
+
+  it('buffers a desktop press and release into one atomic tap or drag input', () => {
+    const start = { revision: 3, startX: 10, startY: 20, lastX: 10, lastY: 20, moved: false }
+    const small = browserPointerGestureMove(start, 12, 22)
+    expect(browserPointerGestureEnd(small.gesture, 3, 12, 22)).toEqual({ type: 'tap', x: 12, y: 22 })
+    const moved = browserPointerGestureMove(small.gesture, 40, 60)
+    expect(browserPointerGestureEnd(moved.gesture, 3, 40, 60)).toEqual({ type: 'drag', x: 10, y: 20, toX: 40, toY: 60 })
+    expect(browserPointerGestureEnd(moved.gesture, 4, 40, 60)).toBeUndefined()
+  })
+
+  it('cancels an evidence selection when the presented layout changes before release', () => {
+    expect(browserEvidenceSelectionRect(
+      { revision: 3, x: 40, y: 70 },
+      { revision: 3, x: 10, y: 20 },
+    )).toEqual({ x: 10, y: 20, w: 30, h: 50 })
+    expect(browserEvidenceSelectionRect(
+      { revision: 3, x: 40, y: 70 },
+      { revision: 4, x: 10, y: 20 },
+    )).toBeUndefined()
   })
 
   it('turns a touch drag into wheel deltas but keeps a small move as a tap', () => {
@@ -28,23 +285,63 @@ describe('managed Browser stream client', () => {
     expect(browserStreamShouldRun(true, true)).toBe(true)
     expect(browserStreamShouldRun(false, true)).toBe(false)
     expect(browserStreamShouldRun(true, false)).toBe(false)
+    expect(browserStreamShouldRun(true, true, false)).toBe(false)
+  })
+
+  it('keeps the socket through a short tool Tab switch, closes at grace expiry, and cancels teardown on recovery', () => {
+    vi.useFakeTimers()
+    const transitions: boolean[] = []
+    const visibility = new BrowserVisibilityGrace(true, (active) => { transitions.push(active) })
+    visibility.setGraceMs(15_000)
+
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(14_999)
+    expect(transitions).toEqual([])
+    visibility.setVisible(true)
+    vi.advanceTimersByTime(15_000)
+    expect(transitions).toEqual([])
+
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(15_000)
+    expect(transitions).toEqual([false])
+    visibility.setVisible(true)
+    expect(transitions).toEqual([false, true])
+    visibility.dispose()
+  })
+
+  it('applies a changed Host grace to the original hidden deadline', () => {
+    vi.useFakeTimers()
+    const transitions: boolean[] = []
+    const visibility = new BrowserVisibilityGrace(true, (active) => { transitions.push(active) })
+    visibility.setVisible(false)
+    vi.advanceTimersByTime(500)
+    visibility.setGraceMs(1_000)
+    vi.advanceTimersByTime(499)
+    expect(transitions).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(transitions).toEqual([false])
+    visibility.dispose()
   })
   it('decodes the host binary frame and derives same-origin ws URLs', () => {
-    const encoded = encodeBrowserStreamFrame({
-      version: 1,
+    const encoded = encodeBrowserStreamFrameV2({
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 1280, height: 800 },
+      encodedSize: { width: 1920, height: 1200 },
       jpeg: new Uint8Array([1, 2, 3]),
     })
     const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer
     expect(decodeBrowserFrame(buffer)).toEqual({
-      version: 1,
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 1280, height: 800 },
+      encodedSize: { width: 1920, height: 1200 },
       jpeg: new Uint8Array([1, 2, 3]),
     })
     expect(browserWebSocketUrl('/cast', { protocol: 'http:', host: '127.0.0.1:3082' } as Location)).toBe('ws://127.0.0.1:3082/cast')
@@ -54,41 +351,49 @@ describe('managed Browser stream client', () => {
 
 
   it('removes the Connecting overlay when a frame or ready projection arrives', () => {
-    expect(browserStreamSignalsReady(new ArrayBuffer(17))).toBe(true)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(true)
+    expect(browserStreamSignalsReady(new ArrayBuffer(29))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready', version: 2, frameEncoding: 'binary-v2', flowControl: 'frame-ack-v2', ownerId: 'owner-1', media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 }, fallback: { maxRawBytes: 1024 }, layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 } }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'ready' }))).toBe(false)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'ready' } }))).toBe(true)
     expect(browserStreamSignalsReady(JSON.stringify({ type: 'state', projection: { status: 'loading' } }))).toBe(false)
     expect(browserStreamSignalsReady('not json')).toBe(false)
-    expect(browserStreamSignalsReady(JSON.stringify({ type: 'frame', version: 1, jpeg: 'abc' }))).toBe(true)
+    expect(browserStreamSignalsReady(JSON.stringify({ type: 'frame', version: 2, jpeg: 'abc' }))).toBe(true)
   })
 
   it('decodes JSON JPEG frames that DSH Mobile delivers as strings', () => {
-    const encoded = encodeBrowserStreamJsonFrame({
-      version: 1,
+    const frame: BrowserStreamFrameV2 = {
+      version: 2,
       sequence: 9,
       sentAt: 12,
-      width: 720,
-      height: 860,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 720, height: 860 },
+      encodedSize: { width: 1080, height: 1290 },
       jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
-    })
+    }
+    const encoded = encodeBrowserStreamJsonFrameV2(frame)
     expect(browserStreamTextMessage(encoded)).toBe(encoded)
     expect(decodeBrowserJpegJson(encoded)).toEqual({
-      version: 1,
+      version: 2,
       sequence: 9,
       sentAt: 12,
-      width: 720,
-      height: 860,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 720, height: 860 },
+      encodedSize: { width: 1080, height: 1290 },
       jpeg: new Uint8Array([0xff, 0xd8, 9, 8, 0xff, 0xd9]),
     })
   })
 
   it('recovers JPEG frames that an APP WebView delivers as binary strings', () => {
-    const encoded = encodeBrowserStreamFrame({
-      version: 1,
+    const encoded = encodeBrowserStreamFrameV2({
+      version: 2,
       sequence: 3,
       sentAt: 42,
-      width: 640,
-      height: 480,
+      revision: 4,
+      mediaGeneration: 9,
+      viewport: { width: 640, height: 480 },
+      encodedSize: { width: 960, height: 720 },
       jpeg: new Uint8Array([0xff, 0xd8, 1, 2, 0xff, 0xd9]),
     })
     const binaryString = Array.from(encoded, (byte) => String.fromCharCode(byte)).join('')
@@ -153,13 +458,13 @@ describe('managed Browser stream client', () => {
       () => {},
     )
     queue.push({ type: 'move', x: 1, y: 1 })
-    queue.push({ type: 'move', x: 3, y: 4, pressed: true })
+    queue.push({ type: 'move', x: 3, y: 4 })
     queue.push({ type: 'wheel', x: 3, y: 4, deltaX: 2, deltaY: 10 })
     queue.push({ type: 'wheel', x: 3, y: 5, deltaX: -1, deltaY: 5 })
     expect(sent).toEqual([])
     frame?.()
     expect(sent).toEqual([
-      { type: 'move', x: 3, y: 4, pressed: true },
+      { type: 'move', x: 3, y: 4 },
       { type: 'wheel', x: 3, y: 5, deltaX: 1, deltaY: 15 },
     ])
   })
