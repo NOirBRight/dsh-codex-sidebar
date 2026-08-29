@@ -7,11 +7,14 @@ export const ALPHA1_REVISION = 'cd5ef8148158c3a752a658978873241fdf8e2bbc'
 const OFFICIAL_REPOSITORY = 'deepseek-ai/deepseek-harness'
 const REQUIRED_TYPES = [
   'packages/api/remotes/lib/types/client/index.d.ts',
+  'packages/api/session-controller/lib/types/client/index.d.ts',
+  'packages/api/workspace-controller/lib/types/client/index.d.ts',
   'packages/client/connection/lib/types/client/index.d.ts',
   'packages/client/locale/lib/types/client/index.d.ts',
   'packages/client/store/lib/types/index.d.ts',
   'packages/client/ui-conversation/lib/types/client/index.d.ts',
   'packages/client/ui-layout/lib/types/client/index.d.ts',
+  'packages/client/ui-renderer/lib/types/client/index.d.ts',
   'packages/client/ui-session/lib/types/client/index.d.ts',
   'packages/client/ui-slots/lib/types/index.d.ts',
   'packages/client/ui-workspace/lib/types/client/index.d.ts',

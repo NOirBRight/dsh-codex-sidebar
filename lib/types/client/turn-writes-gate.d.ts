@@ -15,9 +15,7 @@ export type TurnWritesIntent = {
     type: string;
     kind?: string;
     id?: string;
-    mark?: string | {
-        source?: string;
-    };
+    mark?: unknown;
 };
 export declare function needsTurnWrites(snapshot: TurnWritesSnapshot | undefined, intent?: TurnWritesIntent): boolean;
 //# sourceMappingURL=turn-writes-gate.d.ts.map

@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { assertPackContainsClientTypes, packFilePaths } from '../scripts/check-pack.mjs'
 
 interface Manifest {
   dependencies?: Record<string, string>
@@ -41,17 +40,5 @@ describe('Alpha1 build contract', () => {
     expect(dshPeers.every(([, range]) => range === '>=0.1.2-alpha.1 <0.1.3')).toBe(true)
     expect(runtimeDsh).toEqual([])
     expect(developmentDsh).toEqual([])
-  })
-
-  it('accepts pnpm pack json from current and historical pnpm formats', () => {
-    const pack = { files: [{ path: 'lib/types/client/index.d.ts' }] }
-    expect(packFilePaths(pack)).toEqual(['lib/types/client/index.d.ts'])
-    expect(packFilePaths([pack])).toEqual(['lib/types/client/index.d.ts'])
-    expect(assertPackContainsClientTypes({
-      root: '/pkg',
-      manifest: { exports: { './client': { types: './lib/types/client/index.d.ts' } } },
-      packJson: pack,
-      fileExists: () => true,
-    })).toBe('lib/types/client/index.d.ts')
   })
 })

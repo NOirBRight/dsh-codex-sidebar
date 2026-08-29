@@ -26,12 +26,12 @@ export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): Br
 }
 
 function rtcCandidate(candidate: RTCIceCandidateInit | null): BrowserRtcCandidate | null {
-  if (candidate === null || typeof candidate.candidate !== 'string') return null
+  if (candidate === null) return null
   return {
-    candidate: candidate.candidate,
-    ...candidate.sdpMid === undefined ? {} : { sdpMid: candidate.sdpMid },
-    ...candidate.sdpMLineIndex === undefined ? {} : { sdpMLineIndex: candidate.sdpMLineIndex },
-    ...candidate.usernameFragment === undefined ? {} : { usernameFragment: candidate.usernameFragment },
+    candidate: candidate.candidate ?? '',
+    ...(candidate.sdpMid === undefined ? {} : { sdpMid: candidate.sdpMid }),
+    ...(candidate.sdpMLineIndex === undefined ? {} : { sdpMLineIndex: candidate.sdpMLineIndex }),
+    ...(candidate.usernameFragment === undefined ? {} : { usernameFragment: candidate.usernameFragment }),
   }
 }
 

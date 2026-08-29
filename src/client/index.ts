@@ -1,8 +1,11 @@
 /** Browser half: 3-column squeeze; 侧栏 occupies the details track. */
 
 import type { ClientContext } from './shim.js'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -82,7 +85,7 @@ export function apply(ctx: ClientContext): void {
       paintChips: (root) => { decorateChips(chipPorts, root) },
       paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
-        const open = (ctx.workspaces as typeof ctx.workspaces & { openPath?: (path: string) => void })?.openPath
+        const open = (ctx.workspaces as typeof ctx.workspaces & { openPath?: (path: string) => void | Promise<void> }).openPath
         if (typeof open === 'function') {
           void open(path)
           return

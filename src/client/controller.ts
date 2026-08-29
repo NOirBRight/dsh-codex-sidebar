@@ -1,6 +1,7 @@
 /** Live SidebarSession store + host RPC + 主会话 prompt / path takeover. */
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { ClientContext } from './shim.js'
 import {
@@ -34,18 +35,6 @@ export type SidebarStore = {
 }
 
 const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
-
-type LegacyWorkspaces = {
-  openPath?: (path: string) => void | Promise<void>
-}
-
-type RemoteOpenWorkspacePathResult =
-  | { readonly ok: true; readonly value: { readonly opened: true } }
-  | { readonly ok: false; readonly error: unknown }
-
-type RemoteSessionWithOpenPath = {
-  openWorkspacePath?: (req: { path: string }, signal?: AbortSignal) => Promise<RemoteOpenWorkspacePathResult>
-}
 
 export type BrowserCaptureReply = {
   captureId: string
@@ -136,7 +125,7 @@ export class SidebarController {
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const epoch = this.#refreshEpoch.get(sessionId) ?? 0
-      if (this.snap(sessionId) === undefined && !isAborted(signal)) {
+      if (this.snap(sessionId) === undefined && signal?.aborted !== true) {
         const lightGate = this.#gate(sessionId)
         if (lightGate !== undefined) {
           try {
@@ -160,10 +149,10 @@ export class SidebarController {
         }
       }
       for (const delay of REFRESH_RETRY_MS) {
-        if (isAborted(signal)) return undefined
+        if (aborted(signal)) return undefined
         if (delay > 0) {
           await new Promise<void>((resolve) => { setTimeout(resolve, delay) })
-          if (isAborted(signal)) return undefined
+          if (aborted(signal)) return undefined
         }
         const gate = this.#gate(sessionId)
         if (gate === undefined) return undefined
@@ -261,8 +250,9 @@ export class SidebarController {
   ): Promise<Intent | undefined> {
     if (intent.type !== 'browser-note-add' && intent.type !== 'browser-note-send') return intent
     const snapshot = this.snap(sessionId)
-    const tabId = intent.tabId ?? snapshot?.active
-    if (tabId === null || tabId === undefined) return undefined
+    const candidateTabId = intent.tabId ?? snapshot?.active
+    if (typeof candidateTabId !== 'string') return undefined
+    const tabId = candidateTabId
     const browser = snapshot?.browsers[tabId]
     if (browser === undefined) return undefined
     let evidence = browser.pendingEvidence
@@ -303,10 +293,11 @@ export class SidebarController {
     this.#installUrlClicks()
     this.#installLayoutReveal()
     if (this.#pathTakeover) return
-    const workspaces = this.#ctx.workspaces as unknown as LegacyWorkspaces | undefined
-    if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
+    const workspaces = this.#ctx.workspaces as ClientContext['workspaces'] & {
+      openPath?: (path: string) => void | Promise<void>
+    }
     this.#pathTakeover = true
-    const original = workspaces.openPath.bind(workspaces)
+    const original = typeof workspaces.openPath === 'function' ? workspaces.openPath.bind(workspaces) : undefined
     let lastTool: string | undefined
     let lastHunkId: string | undefined
     let lastRowHunk: ToolRowHunk | undefined
@@ -326,6 +317,7 @@ export class SidebarController {
     const patched = async (path: string): Promise<void> => {
       const sessionId = this.#ctx.sessions.list.getSnapshot().current
       if (sessionId === undefined) {
+        if (original === undefined) throw new Error('no active Session for sidebar path takeover')
         await original(path)
         return
       }
@@ -348,30 +340,32 @@ export class SidebarController {
         ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
       })
     }
-    try {
-      workspaces.openPath = patched
-    } catch {
+    if (original !== undefined) {
       try {
-        Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
+        workspaces.openPath = patched
       } catch {
-        // Fall through to Remote session.openWorkspacePath patch below.
+        try {
+          Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
+        } catch {
+          // Fall through to Remote session.openWorkspacePath patch below.
+        }
       }
     }
     this.#patchRemoteOpenPath(patched)
   }
 
   #patchRemoteOpenPath(openInSidebar: (path: string) => Promise<void>): void {
-    const remote = (this.#ctx as { remote?: { session?: RemoteSessionWithOpenPath } }).remote?.session
+    const remote: ClientRemote['session'] | undefined = (this.#ctx as ClientContext & { remote?: ClientRemote }).remote?.session
     if (remote === undefined || typeof remote.openWorkspacePath !== 'function') return
     const original = remote.openWorkspacePath.bind(remote)
-    const wrapped = async (req: { path: string }): Promise<RemoteOpenWorkspacePathResult> => {
+    const wrapped: typeof remote.openWorkspacePath = async (req, signal) => {
       const path = req.path
-      if (typeof path !== 'string' || path.length === 0) return original(req)
+      if (typeof path !== 'string' || path.length === 0) return original(req, signal)
       try {
         await openInSidebar(path)
         return { ok: true, value: { opened: true } }
       } catch {
-        return original(req)
+        return original(req, signal)
       }
     }
     try {
@@ -454,8 +448,9 @@ export class SidebarController {
 
   #turnWritesFor(sessionId: string, sessionState: unknown): ReturnType<typeof turnWritesFromSession> {
     const cached = this.#turnWritesCache.get(sessionId)
-    if (cached !== undefined && cached.source === sessionState) return cached.turnWrites
-    const turnWrites = turnWritesFromSession(sessionState)
+    const turnWrites = cached !== undefined && cached.source === sessionState
+      ? cached.turnWrites
+      : turnWritesFromSession(sessionState)
     if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
     return turnWrites
   }
@@ -772,11 +767,11 @@ function relativize(path: string, cwd: string): string {
 }
 
 function archivedIds(ctx: ClientContext): ReadonlySet<string> {
-  const snap = ctx.workspaces.list.getSnapshot() as { readonly archivedSessionIds?: readonly string[] }
+  const snap = ctx.workspaces.list.getSnapshot() as { archivedSessionIds?: readonly string[] }
   return new Set(snap.archivedSessionIds ?? [])
 }
 
-function isAborted(signal: AbortSignal | undefined): boolean {
+function aborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
 }
 

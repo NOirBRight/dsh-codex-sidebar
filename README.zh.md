@@ -110,10 +110,11 @@ DSH session 被释放时，插件会立即关闭该 session 的 Browser 控制�
 
 ## 本地安装
 
+客户端类型检查固定使用官方 `dsh-v0.1.2-alpha.1` 声明。先在该精确 tag 的干净 checkout 中执行官方 `pnpm install --frozen-lockfile && pnpm run build`，再让 `DSH_ALPHA1_CHECKOUT` 指向它；这个 checkout 只作为开发期类型 fixture 读取，不会进入发布包。
+
 ```sh
 pnpm install
-pnpm run check
-pnpm run build
+DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run check
 dsh plugin --profile web add "$(pwd)"
 dsh web
 ```

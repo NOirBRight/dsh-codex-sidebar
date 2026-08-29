@@ -42,6 +42,7 @@ export function decorate(ports: AnnotationChipPorts, root: ParentNode = document
       painted.delete(row)
       continue
     }
+    if (sessionId === undefined) continue
     const signature = marksSignature(sessionId, marks)
     const host = existing instanceof HTMLElement ? existing : document.createElement('div')
     host.className = MARK

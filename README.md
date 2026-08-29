@@ -108,10 +108,11 @@ Local HTML is active content. Its scripts can read resources served from the sel
 
 ## Local install
 
+Client typechecking is pinned to the official `dsh-v0.1.2-alpha.1` declarations. Point `DSH_ALPHA1_CHECKOUT` at a clean checkout of that exact tag after running the official `pnpm install --frozen-lockfile && pnpm run build` there; the checkout is read only as a development type fixture and is never packaged.
+
 ```sh
 pnpm install
-pnpm run check
-pnpm run build
+DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run check
 dsh plugin --profile web add "$(pwd)"
 dsh web
 ```
