@@ -332,8 +332,34 @@ export class SidebarController {
       try {
         Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
       } catch {
-        // URL clicks still take over http(s) links; file rows keep the Host opener.
+        // Fall through to Remote session.openWorkspacePath patch below.
       }
+    }
+    this.#patchRemoteOpenPath(patched)
+  }
+
+  #patchRemoteOpenPath(openInSidebar: (path: string) => Promise<void>): void {
+    const remote = (this.#ctx as ClientContext & {
+      remote?: { session?: { openWorkspacePath?: (req: { path: string }) => Promise<{ ok: boolean }> } }
+    }).remote?.session
+    if (remote === undefined || typeof remote.openWorkspacePath !== 'function') return
+    const original = remote.openWorkspacePath.bind(remote)
+    const wrapped = async (req: { path: string }): Promise<{ ok: boolean }> => {
+      const path = req.path
+      if (typeof path !== 'string' || path.length === 0) return original(req)
+      try {
+        await openInSidebar(path)
+        return { ok: true }
+      } catch {
+        return original(req)
+      }
+    }
+    try {
+      remote.openWorkspacePath = wrapped
+    } catch {
+      try {
+        Object.defineProperty(remote, 'openWorkspacePath', { value: wrapped, writable: true, configurable: true })
+      } catch { /* official OS opener remains */ }
     }
   }
 
