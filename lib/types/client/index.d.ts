@@ -7,6 +7,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     }
 }
 export declare const name = "dsh-codex-sidebar-client";
-export declare const inject: ("slots" | "locale" | "connection" | "layout" | "sessions" | "workspaces" | "remote")[];
+export declare const inject: ("slots" | "locale" | "connection" | "layout" | "sessions" | "workspaces" | "remote" | "remote.session")[];
 export declare function apply(ctx: ClientContext): void;
 //# sourceMappingURL=index.d.ts.map
