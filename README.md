@@ -29,20 +29,22 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 
 ## Installation
 
-DeepSeek Harness 0.1.0-rc.6 or later. Install from GitHub:
+DeepSeek Harness 0.1.2-alpha.1 (the 0.1.2 release lane) is required. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.24
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.0
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.3.24
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.0
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
+
+Version 0.5.0 moves the Client integration to the official 0.1.2 modules (`ui-session`, Client store, and API Remotes) after `dsh-client-runtime` was removed. It also rejoins the bounded Browser transport from 0.3.23 with the revisioned Browser v2 implementation; the 0.4.x Alpha adaptation line did not contain that parallel Browser work.
 
 Since 0.3.0, Review/Files workspace projection is asynchronous and demand-driven: a collapsed sidebar does not scan git, Review rows use summaries, and file details load only when opened. Sidebar state is isolated under `DSH_HOME`, with on-demand fallback migration from `~/.dsh-codex-sidebar/sessions`. Very large or binary file details are bounded summaries rather than unbounded LCS diffs, so the host remains responsive.
 
@@ -108,7 +110,7 @@ Local HTML is active content. Its scripts can read resources served from the sel
 
 ```sh
 pnpm install
-pnpm test
+pnpm run check
 pnpm run build
 dsh plugin --profile web add "$(pwd)"
 dsh web
