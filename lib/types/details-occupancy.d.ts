@@ -3,7 +3,7 @@ export declare const DETAILS_SLOT = "details";
 export declare const DETAILS_PRIORITY = -100;
 export declare const DEFAULT_DETAILS_PRIORITY = 0;
 /** Every service read through ClientContext must be injected; otherwise its proxy throws at runtime. */
-export declare const CLIENT_INJECT: readonly ["slots", "locale", "connection", "layout", "sessions", "workspaces", "remote"];
+export declare const CLIENT_INJECT: readonly ["slots", "locale", "connection", "layout", "sessions", "workspaces", "remote", "conversation"];
 export type DetailsSlots = {
     inject: (key: string, callback: () => void) => unknown;
     register: (options: {
