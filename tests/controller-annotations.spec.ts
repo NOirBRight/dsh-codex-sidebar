@@ -203,6 +203,87 @@ describe('annotation effect prompts', () => {
     })
   })
 
+  it('rebinds an Alpha event source by identity and releases subscriptions on dispose', async () => {
+    const snapshot = stackedSnapshot()
+    const cleared = { ...snapshot, attachments: [] }
+    const makeEventSource = () => {
+      let revision = 1
+      let change: { kind: string; entries: unknown[] } = { kind: 'replace', entries: [] }
+      const listeners = new Set<() => void>()
+      return {
+        source: {
+          getSnapshot: () => ({ entries: [], revision, hasMore: false, change }),
+          subscribe: (listener: () => void) => {
+            listeners.add(listener)
+            return () => { listeners.delete(listener) }
+          },
+        },
+        listeners,
+        emitDirectUserMessage() {
+          change = {
+            kind: 'append',
+            entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'user' } } } }],
+          }
+          revision += 1
+          for (const listener of listeners) listener()
+        },
+      }
+    }
+    const first = makeEventSource()
+    const second = makeEventSource()
+    let eventSource = first.source
+    let dispatches = 0
+    const session = { getSnapshot: () => ({ running: false }), prompt: async () => 'accepted' }
+    const ctx = {
+      get: () => ({
+        rpc: {
+          call: async (_channel: string, endpoint: string) => {
+            if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+            if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
+            if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
+            if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+              dispatches += 1
+              return { ok: true, value: { snapshot: cleared, effects: [] } }
+            }
+            return { ok: false, error: { message: 'unknown' } }
+          },
+        },
+      }),
+      layout: {},
+      sessions: {
+        list: {
+          getSnapshot: () => ({
+            current: 'sess-a',
+            ids: ['sess-a'],
+            byId: { 'sess-a': { id: 'sess-a', cwd: '/tmp/work' } },
+          }),
+        },
+        binding: () => ({ session, eventSource }),
+      },
+      workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
+    }
+
+    const controller = new SidebarController(ctx as never)
+    await controller.refresh('sess-a')
+    expect(first.listeners).toHaveLength(1)
+
+    eventSource = second.source
+    await controller.refresh('sess-a')
+    expect(first.listeners).toHaveLength(0)
+    expect(second.listeners).toHaveLength(1)
+
+    first.emitDirectUserMessage()
+    expect(dispatches).toBe(0)
+    expect(controller.snap('sess-a')?.attachments).toEqual(snapshot.attachments)
+
+    second.emitDirectUserMessage()
+    await vi.waitFor(() => { expect(dispatches).toBe(1) })
+    expect(controller.snap('sess-a')?.attachments).toEqual([])
+
+    controller.dispose()
+    expect(second.listeners).toHaveLength(0)
+  })
+
   it('does not expose Browser chips to the Alpha composer until Host evidence staging completes', async () => {
     const evidence = {
       id: 'e1', captureId: 'capture-1', documentId: 'doc-1',

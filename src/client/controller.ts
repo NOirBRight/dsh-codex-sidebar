@@ -53,7 +53,8 @@ export class SidebarController {
   #listeners = new Set<() => void>()
   #effectPrompt = new Set<string>()
   #stagedKey = new Map<string, string>()
-  #userWatch = new Set<string>()
+  #userWatch = new Map<string, { source: unknown; dispose: () => void }>()
+  #disposed = false
   #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
@@ -82,6 +83,16 @@ export class SidebarController {
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener)
     return () => { this.#listeners.delete(listener) }
+  }
+
+  /** Release session event subscriptions owned by this controller. */
+  dispose(): void {
+    if (this.#disposed) return
+    this.#disposed = true
+    const watches = [...this.#userWatch.values()]
+    this.#userWatch.clear()
+    for (const watch of watches) watch.dispose()
+    this.#listeners.clear()
   }
 
   snap(sessionId: string): SidebarSnapshot | undefined {
@@ -621,13 +632,11 @@ export class SidebarController {
   }
 
   #watchUserTurns(sessionId: string): void {
-    if (this.#userWatch.has(sessionId)) return
     const binding = this.#ctx.sessions.binding(sessionId as never)
     const eventSource = (binding as { eventSource?: unknown } | undefined)?.eventSource
     if (isEventSource(eventSource)) {
-      this.#userWatch.add(sessionId)
       let revision = eventSource.getSnapshot().revision
-      eventSource.subscribe(() => {
+      this.#replaceUserWatch(sessionId, eventSource, (notify) => eventSource.subscribe(notify), () => {
         const window = eventSource.getSnapshot()
         if (window.revision === revision) return
         revision = window.revision
@@ -639,11 +648,13 @@ export class SidebarController {
       return
     }
     const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
-    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') return
+    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') {
+      this.#clearUserWatch(sessionId)
+      return
+    }
     const getSnapshot = session.getSnapshot.bind(session)
-    this.#userWatch.add(sessionId)
     let last = userTurnCount(getSnapshot())
-    session.subscribe(() => {
+    this.#replaceUserWatch(sessionId, session, (notify) => session.subscribe!(notify), () => {
       if (this.#effectPrompt.has(sessionId)) {
         last = userTurnCount(getSnapshot())
         return
@@ -654,6 +665,37 @@ export class SidebarController {
       }
       last = next
     })
+  }
+
+  #replaceUserWatch(
+    sessionId: string,
+    source: unknown,
+    subscribe: (listener: () => void) => () => void,
+    listener: () => void,
+  ): void {
+    const previous = this.#userWatch.get(sessionId)
+    if (previous?.source === source) return
+    this.#clearUserWatch(sessionId)
+    if (this.#disposed) return
+    const watch = { source, dispose: () => {} }
+    this.#userWatch.set(sessionId, watch)
+    try {
+      const dispose = subscribe(() => {
+        if (this.#userWatch.get(sessionId) === watch) listener()
+      })
+      watch.dispose = dispose
+      if (this.#userWatch.get(sessionId) !== watch) dispose()
+    } catch (error) {
+      if (this.#userWatch.get(sessionId) === watch) this.#userWatch.delete(sessionId)
+      throw error
+    }
+  }
+
+  #clearUserWatch(sessionId: string): void {
+    const watch = this.#userWatch.get(sessionId)
+    if (watch === undefined) return
+    this.#userWatch.delete(sessionId)
+    watch.dispose()
   }
 }
 

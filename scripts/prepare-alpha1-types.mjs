@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 

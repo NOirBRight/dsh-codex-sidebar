@@ -37,6 +37,7 @@ export function apply(ctx: ClientContext): void {
   ctx.locale.register(NS, { zh, en })
   ensureSidebarStyles()
   const controller = new SidebarController(ctx)
+  ctx.effect(() => () => { controller.dispose() }, 'dsh-codex-sidebar: controller lifecycle')
   const face = (): SidebarFace => ({
     hooks: { sidebar: controller },
     controller,
