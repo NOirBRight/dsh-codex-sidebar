@@ -1,3 +1,3 @@
-// Alpha.1 type shim: the client Runtime package was removed upstream.
-export type ClientContext = import('@deepseek-ai/cordis').Context & Record<string, any>
-export type ObservableSnapshot<T> = import('@deepseek-ai/dsh-client-store').ObservableSnapshot<T>
+/** Official types only. `dsh-client-runtime` was removed in DSH 0.1.2-alpha.1. */
+export type { Context as ClientContext } from '@deepseek-ai/cordis'
+export type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'

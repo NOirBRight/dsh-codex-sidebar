@@ -1,7 +1,7 @@
 {
   "name": "dsh-codex-sidebar",
   "version": "0.4.0",
-  "description": "Codex-app-style \u4fa7\u680f for a DeepSeek Harness \u4e3b\u4f1a\u8bdd",
+  "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
