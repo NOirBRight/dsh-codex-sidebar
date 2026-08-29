@@ -4,10 +4,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 
 export const FCITX_EMPTY_ROOT_SEED = '​'
+export const X11_LAUNCHER_FLAG = 'dsh-launcher-x11'
 
 /** Only the X11 launcher opt-in gets the workaround; ordinary browsers stay native. */
-export function isX11Launcher(location: Pick<Location, 'search'>): boolean {
-  return new URLSearchParams(location.search).get('dsh-launcher') === 'x11'
+export function isX11Launcher(location: Pick<Location, 'search'>, storage?: Pick<Storage, 'getItem'>): boolean {
+  if (new URLSearchParams(location.search).get('dsh-launcher') === 'x11') return true
+  try { return storage?.getItem(X11_LAUNCHER_FLAG) === '1' } catch { return false }
 }
 
 /** Remove the private empty-root seed after composition settles. */
@@ -22,7 +24,7 @@ export function stripFcitxSeed(draft: string): string {
  * letter under Ozone/X11.
  */
 export function installFcitxEmptyRootBridge(ctx: ClientContext): () => void {
-  if (typeof document === 'undefined' || !isX11Launcher(location)) return () => {}
+  if (typeof document === 'undefined' || !isX11Launcher(location, sessionStorage)) return () => {}
   const seeded = new WeakMap<HTMLElement, { input: { state: { getSnapshot(): { draft: string } }; setDraft(text: string): void } }>()
   const inputForCurrent = () => {
     const current = ctx.sessions.list.getSnapshot().current
