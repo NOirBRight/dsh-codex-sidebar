@@ -49,6 +49,62 @@ function stackedSnapshot() {
 }
 
 describe('annotation effect prompts', () => {
+  it('restages every changed field of a same-id Browser annotation without restaging identical content', async () => {
+    const original = stackedSnapshot()
+    const browserAnnotation: Annotation = {
+      id: 'same-id',
+      text: 'first note',
+      from: 'Save',
+      source: 'browser',
+      selector: '#save',
+      rect: { x: 1, y: 2, w: 30, h: 20 },
+      url: 'https://example.com',
+      evidence: {
+        id: 'evidence-1',
+        captureId: 'capture-1',
+        documentId: 'document-1',
+        layoutRevision: 4,
+        mediaGeneration: 7,
+        ref: '0123456789abcdefabcd/00000000000000000000000000000001.jpg',
+        mediaType: 'image/jpeg',
+        width: 720,
+        height: 860,
+      },
+    }
+    let snapshot = { ...original, attachments: [browserAnnotation] }
+    const staged: Annotation[][] = []
+    const session = { getSnapshot: () => ({ running: false }) }
+    const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot } }
+      if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+        staged.push((payload as { attachments: Annotation[] }).attachments)
+        return { ok: true, value: { staged: true } }
+      }
+      return { ok: true, value: { unstaged: true } }
+    })
+    const controller = new SidebarController(ctx as never)
+
+    await controller.refresh('sess-a')
+    const changes: Annotation[] = [
+      { ...browserAnnotation, text: 'edited note' },
+      { ...browserAnnotation, selector: '#confirm' },
+      { ...browserAnnotation, rect: { x: 4, y: 5, w: 60, h: 40 } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, ref: '0123456789abcdefabcd/00000000000000000000000000000002.jpg' } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, layoutRevision: 5 } },
+      { ...browserAnnotation, evidence: { ...browserAnnotation.evidence!, mediaGeneration: 8 } },
+    ]
+    for (const annotation of changes) {
+      snapshot = { ...snapshot, attachments: [annotation] }
+      await controller.refresh('sess-a')
+    }
+    snapshot = { ...snapshot, attachments: [{ ...changes.at(-1)!, evidence: { ...changes.at(-1)!.evidence! } }] }
+    await controller.refresh('sess-a')
+
+    expect(staged).toHaveLength(1 + changes.length)
+    expect(staged[0]?.[0]?.evidence?.ref).toContain('00000000000000000000000000000001.jpg')
+    expect(staged.at(-1)?.[0]?.evidence?.mediaGeneration).toBe(8)
+  })
+
   it('sends the currently presented layout identity with Browser capture requests', async () => {
     const box = createSidebarSession({ sessionId: 'sess-a', files, persist: { load: () => undefined, save: () => undefined }, isBusy: () => false })
     box.dispatch({ type: 'open-url', url: 'https://example.com' })

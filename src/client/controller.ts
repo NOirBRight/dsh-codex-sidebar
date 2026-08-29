@@ -616,7 +616,7 @@ export class SidebarController {
   }
 
   async #syncStaged(snapshot: SidebarSnapshot): Promise<void> {
-    const key = snapshot.attachments.map((item) => item.id).join(',')
+    const key = stagedAttachmentsKey(snapshot.attachments)
     if (this.#stagedKey.get(snapshot.sessionId) === key) return
     this.#stagedKey.set(snapshot.sessionId, key)
     try {
@@ -729,6 +729,22 @@ function changeAddsDirectUserMessage(change: unknown): boolean {
 
 function intentNeedsRoster(intent: Intent): boolean {
   return intent.type === 'side-list' || intent.type === 'side-inspect' || intent.type === 'side-deliver'
+}
+
+function stagedAttachmentsKey(attachments: readonly Annotation[]): string {
+  return stableJson(attachments)
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(orderJsonProperties(value)) ?? ''
+}
+
+function orderJsonProperties(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderJsonProperties)
+  if (!isRecord(value)) return value
+  const ordered: Record<string, unknown> = {}
+  for (const key of Object.keys(value).sort()) ordered[key] = orderJsonProperties(value[key])
+  return ordered
 }
 
 function intentRevealsSidebar(intent: Intent): boolean {
