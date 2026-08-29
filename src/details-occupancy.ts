@@ -11,6 +11,7 @@ export const CLIENT_INJECT = [
   'connection',
   'layout',
   'sessions',
+  'uiConversation',
   'workspaces',
   'remote',
   'remote.session',

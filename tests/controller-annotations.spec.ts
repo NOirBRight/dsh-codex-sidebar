@@ -758,9 +758,30 @@ describe('annotation effect prompts', () => {
             : {
                 getSnapshot: () => {
                   otherSessionReads += 1
-                  return { running: false, messages: [{ role: 'assistant', content: 'large history' }] }
+                  return { running: false }
                 },
               },
+          chatSnapshot: sessionId === 'sess-a' ? undefined : {
+            order: ['assistant-1'],
+            nodes: {
+              get: (key: string) => key === 'assistant-1' ? {
+                key,
+                kind: 'assistant-step',
+                visibility: 'visible',
+                location: { kind: 'step', turn: { turn: 1 }, step: { step: 1 } },
+                data: {
+                  status: 'settled',
+                  finalNode: { kind: 'assistant', seq: 1, time: 1, turn: 1, step: 1, blocks: [{ kind: 'text', text: 'large history' }] },
+                },
+              } : undefined,
+              values: () => [],
+            },
+          },
+        }),
+      },
+      uiConversation: {
+        binding: (binding: { chatSnapshot?: unknown }) => ({
+          target: () => ({ getSnapshot: () => binding.chatSnapshot, subscribe: () => () => {} }),
         }),
       },
     } as never)
@@ -777,7 +798,7 @@ describe('annotation effect prompts', () => {
     expect(dispatchPayloads.every(payload => JSON.stringify((payload as { roster?: unknown }).roster) === '[]')).toBe(true)
 
     await controller.dispatch('sess-a', { type: 'side-inspect', tabId: 'side-1', sessionId: 'sess-b' })
-    expect(otherSessionReads).toBe(1)
+    expect(otherSessionReads).toBe(0)
     expect((dispatchPayloads[2]?.logs as Record<string, unknown[]>)['sess-b']).toHaveLength(1)
     expect((dispatchPayloads[2] as { roster: unknown[] }).roster).toHaveLength(2)
   })

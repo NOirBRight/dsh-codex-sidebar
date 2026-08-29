@@ -29,7 +29,7 @@
 
 ## 安装
 
-需要 DeepSeek Harness 0.1.2-alpha.1（0.1.2 发布线）：
+仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
 dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.0
@@ -44,7 +44,7 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
 
-0.5.0 在 `dsh-client-runtime` 移除后改接 0.1.2 的官方 `ui-session`、Client store 与 API Remotes，同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入 Alpha 适配线；此前的 0.4.x Alpha 适配分支并不包含这条平行 Browser 开发线。
+0.5.0 在 `dsh-client-runtime` 移除后改接精确 0.1.2-alpha.1 的官方 `ui-session`、`ui-conversation`、`ui-chat`、Client store 与 API Remotes。Transcript 消费方统一通过插件 Adapter 读取 canonical Chat nodes，当前 `legacy` 兼容切片只作为 Adapter 内部 fallback。同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入 Alpha 适配线；此前的 0.4.x Alpha 适配分支并不包含这条平行 Browser 开发线。
 
 0.3.0 起，Review/Files 工作区投影按需异步执行：收起侧栏不会扫描 git；Review 文件列表使用摘要，展开文件时才读取详情。侧栏状态默认按 `DSH_HOME` 隔离保存，并从旧的 `~/.dsh-codex-sidebar/sessions` 按需迁移。超大或二进制文件的详情会显示受限摘要，不会为了生成全量 LCS diff 阻塞宿主。
 

@@ -18,11 +18,12 @@ import {
   isRecord,
 } from '../contract.ts'
 import { formatDelivery } from '../send-text.ts'
-import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
+import type { ReviewChange } from '../review.ts'
+import { createConversationProjection, type ConversationProjection } from './conversation-projection.ts'
 import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
-import { hunkForOpen, viewForTool } from '../tool-open.ts'
+import { viewForTool } from '../tool-open.ts'
 import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserLayout } from '../managed-browser-protocol.ts'
@@ -55,7 +56,7 @@ export class SidebarController {
   #stagedKey = new Map<string, string>()
   #userWatch = new Map<string, { source: unknown; dispose: () => void }>()
   #disposed = false
-  #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
+  #conversationProjections = new Map<string, { binding: unknown; projection: ConversationProjection }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
   #layout: ILayout
@@ -93,6 +94,7 @@ export class SidebarController {
     this.#userWatch.clear()
     for (const watch of watches) watch.dispose()
     this.#listeners.clear()
+    this.#conversationProjections.clear()
   }
 
   snap(sessionId: string): SidebarSnapshot | undefined {
@@ -254,7 +256,7 @@ export class SidebarController {
       sessionId: string
       cwd: string
       busy: boolean
-      turnWrites: ReturnType<typeof turnWritesFromSession>
+      turnWrites: ReviewChange[]
       roster: RosterEntry[]
       logs: Record<string, LogEvent[]>
     },
@@ -338,9 +340,8 @@ export class SidebarController {
       }
       const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
       const view = viewForTool(lastTool)
-      const binding = this.#ctx.sessions.binding(sessionId as never)
       const hunk = lastRowHunk
-        ?? (binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool, lastHunkId))
+        ?? this.#conversationFor(String(sessionId))?.hunkForOpen(path, lastTool, lastHunkId)
       lastTool = undefined
       lastHunkId = undefined
       lastRowHunk = undefined
@@ -439,7 +440,7 @@ export class SidebarController {
     sessionId: string
     cwd: string
     busy: boolean
-    turnWrites: ReturnType<typeof turnWritesFromSession>
+    turnWrites: ReviewChange[]
     roster: RosterEntry[]
     logs: Record<string, LogEvent[]>
   } | undefined {
@@ -449,21 +450,34 @@ export class SidebarController {
     const sessionState = binding?.session.getSnapshot()
     const busy = sessionState?.running === true
     const roster = opts.includeRoster === true ? rosterFromList(list, archivedIds(this.#ctx)) : []
-    const logs = opts.includeLogs === true ? logsFromList(this.#ctx, list.ids as string[]) : {}
+    const logs = opts.includeLogs === true ? this.#logsFromList(list.ids as string[]) : {}
     const snapshot = this.snap(sessionId)
     const turnWrites = needsTurnWrites(snapshot, opts.intent)
-      ? this.#turnWritesFor(sessionId, sessionState)
+      ? [...(this.#conversationFor(sessionId)?.turnWrites() ?? [])]
       : []
     return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
   }
 
-  #turnWritesFor(sessionId: string, sessionState: unknown): ReturnType<typeof turnWritesFromSession> {
-    const cached = this.#turnWritesCache.get(sessionId)
-    const turnWrites = cached !== undefined && cached.source === sessionState
-      ? cached.turnWrites
-      : turnWritesFromSession(sessionState)
-    if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
-    return turnWrites
+  #conversationFor(sessionId: string): ConversationProjection | undefined {
+    const binding = this.#ctx.sessions.binding(sessionId as never)
+    if (binding === undefined) {
+      this.#conversationProjections.delete(sessionId)
+      return undefined
+    }
+    const cached = this.#conversationProjections.get(sessionId)
+    if (cached?.binding === binding) return cached.projection
+    const projection = createConversationProjection(this.#ctx, binding)
+    this.#conversationProjections.set(sessionId, { binding, projection })
+    return projection
+  }
+
+  #logsFromList(ids: string[]): Record<string, LogEvent[]> {
+    const logs: Record<string, LogEvent[]> = {}
+    for (const id of ids) {
+      const projection = this.#conversationFor(id)
+      if (projection !== undefined) logs[id] = [...projection.logEvents()]
+    }
+    return logs
   }
 
   #put(snapshot: SidebarSnapshot): SidebarSnapshot {
@@ -647,24 +661,7 @@ export class SidebarController {
       })
       return
     }
-    const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
-    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') {
-      this.#clearUserWatch(sessionId)
-      return
-    }
-    const getSnapshot = session.getSnapshot.bind(session)
-    let last = userTurnCount(getSnapshot())
-    this.#replaceUserWatch(sessionId, session, (notify) => session.subscribe!(notify), () => {
-      if (this.#effectPrompt.has(sessionId)) {
-        last = userTurnCount(getSnapshot())
-        return
-      }
-      const next = userTurnCount(getSnapshot())
-      if (next > last && (this.snap(sessionId)?.attachments.length ?? 0) > 0) {
-        void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
-      }
-      last = next
-    })
+    this.#clearUserWatch(sessionId)
   }
 
   #replaceUserWatch(
@@ -757,27 +754,6 @@ function intentRevealsSidebar(intent: Intent): boolean {
     || intent.type === 'edit-attachment'
 }
 
-function userTurnCount(snapshot: unknown): number {
-  if (!isRecord(snapshot)) return 0
-  if (Array.isArray(snapshot.messages)) {
-    return snapshot.messages.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
-  }
-  const chat = isRecord(snapshot.chat) ? snapshot.chat : snapshot
-  const legacy = isRecord(chat.legacy) ? chat.legacy : chat
-  const nodes = isRecord(legacy) ? legacy.nodes : undefined
-  if (nodes instanceof Map) {
-    let count = 0
-    for (const node of nodes.values()) {
-      if (isRecord(node) && (node.role === 'user' || node.kind === 'user')) count += 1
-    }
-    return count
-  }
-  if (Array.isArray(nodes)) {
-    return nodes.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
-  }
-  return 0
-}
-
 function captureReply(value: unknown): value is BrowserCaptureReply {
   return isRecord(value)
     && typeof value.captureId === 'string'
@@ -855,14 +831,4 @@ function rosterFromList(list: { ids: string[]; byId: Record<string, {
       busy: row?.running === true,
     }
   })
-}
-
-function logsFromList(ctx: ClientContext, ids: string[]): Record<string, LogEvent[]> {
-  const logs: Record<string, LogEvent[]> = {}
-  for (const id of ids) {
-    const binding = ctx.sessions.binding(id as never)
-    if (binding === undefined) continue
-    logs[id] = logEventsFromSession(binding.session.getSnapshot())
-  }
-  return logs
 }

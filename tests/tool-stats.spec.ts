@@ -149,6 +149,8 @@ describe('tool row hunk bridge', () => {
     decorate(rows, root as never)
     expect(hunkForToolRow(first as never)).toEqual({ before: 'old\n', after: '' })
     expect(hunkForToolRow(second as never)).toEqual({ before: 'keep\n', after: 'keep\nplus\n' })
+    expect(first.querySelector('.dcs-tool-stat')?.textContent).toBe('+0−1')
+    expect(second.querySelector('.dcs-tool-stat')?.textContent).toBe('+1−0')
 
     const changed = {
       nodes: [

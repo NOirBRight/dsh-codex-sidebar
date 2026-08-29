@@ -60,6 +60,7 @@ describe('details occupancy', () => {
   it('injects both the workspaces service and its boot provider', () => {
     expect(CLIENT_INJECT).toEqual(inject)
     expect(CLIENT_INJECT).toContain('workspaces')
+    expect(CLIENT_INJECT).toContain('uiConversation')
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
       dsh: { client: { inject: string[] } }
     }

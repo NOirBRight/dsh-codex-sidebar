@@ -17,7 +17,7 @@ function json<T>(path: string): T {
 describe('Alpha1 build contract', () => {
   it('typechecks the client face and emits its public declaration', () => {
     const manifest = json<Manifest>('../package.json')
-    const client = json<{ include?: string[]; compilerOptions?: { emitDeclarationOnly?: boolean; outDir?: string } }>(
+    const client = json<{ include?: string[]; compilerOptions?: { emitDeclarationOnly?: boolean; outDir?: string; paths?: Record<string, string[]> } }>(
       '../tsconfig.client.json',
     )
 
@@ -26,6 +26,12 @@ describe('Alpha1 build contract', () => {
     expect(client.include).toContain('src/client/index.ts')
     expect(client.compilerOptions).toMatchObject({ emitDeclarationOnly: true, outDir: 'lib/types' })
     expect(manifest.exports?.['./client']).toMatchObject({ types: './lib/types/client/index.d.ts' })
+    expect(client.compilerOptions?.paths?.['@deepseek-ai/dsh-client-ui-chat/client']).toEqual([
+      '.dsh-alpha1/packages/client/ui-chat/lib/types/client/index.d.ts',
+    ])
+    expect(readFileSync(new URL('../scripts/prepare-alpha1-types.mjs', import.meta.url), 'utf8')).toContain(
+      'packages/client/ui-chat/lib/types/client/index.d.ts',
+    )
   })
 
   it('uses only the real Alpha1 peer lane and keeps DSH packages out of runtime dependencies', () => {
@@ -38,7 +44,10 @@ describe('Alpha1 build contract', () => {
       .filter((name) => name.startsWith('@deepseek-ai/dsh-'))
 
     expect(dshPeers.length).toBeGreaterThan(0)
-    expect(dshPeers.every(([, range]) => range === '>=0.1.2-alpha.1 <0.1.3')).toBe(true)
+    expect(dshPeers.every(([, range]) => range === '0.1.2-alpha.1')).toBe(true)
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-client-ui-chat']).toBe('0.1.2-alpha.1')
+    const clientInject = (manifest as Manifest & { dsh?: { client?: { inject?: string[] } } }).dsh?.client?.inject ?? []
+    expect(clientInject).toContain('@deepseek-ai/dsh-client-ui-chat')
     expect(runtimeDsh).toEqual([])
     expect(developmentDsh).toEqual([])
   })

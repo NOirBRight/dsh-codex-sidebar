@@ -15,6 +15,7 @@
       "@deepseek-ai/dsh-client-locale/client": [".dsh-alpha1/packages/client/locale/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-store": [".dsh-alpha1/packages/client/store/lib/types/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-conversation/client": [".dsh-alpha1/packages/client/ui-conversation/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-chat/client": [".dsh-alpha1/packages/client/ui-chat/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-layout/client": [".dsh-alpha1/packages/client/ui-layout/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-renderer/client": [".dsh-alpha1/packages/client/ui-renderer/lib/types/client/index.d.ts"],
       "@deepseek-ai/dsh-client-ui-session/client": [".dsh-alpha1/packages/client/ui-session/lib/types/client/index.d.ts"],
