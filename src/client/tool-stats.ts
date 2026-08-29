@@ -52,8 +52,8 @@ export function decorate(stats: readonly RowStat[], root: ParentNode = document)
 }
 
 function placeStat(badge: HTMLElement, pathBtn: HTMLElement | undefined, row: HTMLElement): void {
-  if (pathBtn !== undefined) {
-    if (badge.parentElement !== pathBtn) pathBtn.append(badge)
+  if (pathBtn !== undefined && pathBtn.parentElement !== null) {
+    if (badge.previousElementSibling !== pathBtn) pathBtn.after(badge)
     return
   }
   if (badge.parentElement !== row) row.append(badge)

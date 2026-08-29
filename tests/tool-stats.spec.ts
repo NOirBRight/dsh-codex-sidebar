@@ -49,6 +49,21 @@ class FakeElement {
     return this.attrs.get(name) ?? null
   }
 
+  get previousElementSibling(): FakeElement | null {
+    if (this.parentElement === null) return null
+    const index = this.parentElement.children.indexOf(this)
+    return index > 0 ? this.parentElement.children[index - 1] ?? null : null
+  }
+
+  after(node: FakeElement): void {
+    const parent = this.parentElement
+    if (parent === null) return
+    node.parentElement?.removeChild(node)
+    node.parentElement = parent
+    const index = parent.children.indexOf(this)
+    parent.children.splice(index + 1, 0, node)
+  }
+
   append(...nodes: FakeElement[]): void {
     for (const node of nodes) {
       node.parentElement?.removeChild(node)

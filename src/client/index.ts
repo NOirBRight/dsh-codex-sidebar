@@ -83,7 +83,12 @@ export function apply(ctx: ClientContext): void {
       paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
         const open = ctx.workspaces?.openPath
-        if (open !== undefined) void open(path)
+        if (typeof open === 'function') {
+          void open(path)
+          return
+        }
+        const current = ctx.sessions.list.getSnapshot().current
+        if (current !== undefined) void controller.dispatch(String(current), { type: 'open-path', path })
       },
     })
     const throttle = createPendingThrottle(() => {

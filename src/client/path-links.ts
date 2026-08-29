@@ -68,9 +68,17 @@ export function pathFromClick(event: Event): string | undefined {
   const target = event.target
   if (!(target instanceof Element)) return undefined
   const code = target.closest('code.' + MARK)
-  if (!(code instanceof HTMLElement)) return undefined
-  const path = code.dataset.dcsPath
-  return path === undefined || path.length === 0 ? undefined : path
+  if (code instanceof HTMLElement) {
+    const path = code.dataset.dcsPath
+    return path === undefined || path.length === 0 ? undefined : path
+  }
+  const row = target.closest('[data-tool]')
+  if (!(row instanceof HTMLElement)) return undefined
+  const btn = target.closest('button')
+  if (!(btn instanceof HTMLElement) || btn.closest('[data-tool]') !== row) return undefined
+  const mark = btn.querySelector('.dcs-tool-stat')
+  const raw = (btn.textContent ?? '').replace(mark?.textContent ?? '', '').trim()
+  return transcriptPath(raw.split('\n')[0] ?? '')
 }
 
 function clearMark(node: HTMLElement): void {

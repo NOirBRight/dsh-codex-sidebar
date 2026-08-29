@@ -65,6 +65,10 @@ class FakeElement {
     return null
   }
 
+  querySelector(selector: string): FakeElement | null {
+    return this.querySelectorAll(selector)[0] ?? null
+  }
+
   querySelectorAll(selector: string): FakeElement[] {
     const found: FakeElement[] = []
     const visit = (node: FakeElement): void => {
@@ -191,5 +195,18 @@ describe('path link decorate and click', () => {
     expect(live.dataset.dcsPath).toBeUndefined()
     expect(live.className).not.toContain('dcs-path-link')
     expect(pathFromClick({ target: live } as unknown as Event)).toBeUndefined()
+  })
+
+  it('opens official file-mutation path buttons in the sidebar'
+    + '', () => {
+    stubDom()
+    const row = new FakeHTMLElement('DIV')
+    row.setAttribute('data-tool', 'edit')
+    const btn = new FakeHTMLElement('BUTTON')
+    btn.textContent = '~/Workstation/dsh-mobile-pairing/src/tunnel-server.ts'
+    row.append(btn)
+    expect(pathFromClick({ target: btn } as unknown as Event)).toBe(
+      '~/Workstation/dsh-mobile-pairing/src/tunnel-server.ts',
+    )
   })
 })
