@@ -7,6 +7,7 @@ import {
   type AnnotationMarkView,
 } from './annotation.ts'
 import { formatEvidenceSend } from './send-text.ts'
+import { stripAnnotationDraftSentinel } from './annotation-message.ts'
 import type { Annotation, BrowserEvidence } from './session.ts'
 
 export type ImageAttachmentRef = {
@@ -145,7 +146,12 @@ export function enrichUserMessage(message: EnrichableMessage, batch: StagedAnnot
     : { kind: 'user', annotations: batch.marks }
   return {
     ...message,
-    content: [...message.content, ...evidence],
+    content: [
+      ...message.content.map((block) => block.type === 'text'
+        ? { ...block, text: stripAnnotationDraftSentinel(block.text) }
+        : block),
+      ...evidence,
+    ],
     source,
   }
 }

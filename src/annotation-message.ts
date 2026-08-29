@@ -1,5 +1,13 @@
 /** Split a logged user message into human text vs hidden evidence. */
 
+/** Invisible draft content used only to make an annotation-only Alpha composer submit-ready. */
+export const ANNOTATION_DRAFT_SENTINEL = '\u200b'
+
+/** Remove the plugin-owned submit sentinel before text reaches transcript or model views. */
+export function stripAnnotationDraftSentinel(draft: string): string {
+  return draft.replaceAll(ANNOTATION_DRAFT_SENTINEL, '')
+}
+
 export type MessageImageRef = { attachmentId: string }
 
 export type UserTextPart = { kind: 'text'; text: string } | { kind: 'ref'; text: string }

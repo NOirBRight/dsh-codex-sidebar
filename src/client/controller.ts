@@ -136,11 +136,11 @@ export class SidebarController {
             if (light.ok && isRecord(light.value) && isRecord(light.value.snapshot)) {
               if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
               const snapshot = light.value.snapshot as unknown as SidebarSnapshot
+              await this.#syncStaged(snapshot)
               this.#hostCollapsed.set(sessionId, snapshot.collapsed)
               const applied = this.#put(snapshot)
               this.#syncLayout(applied)
               this.#watchUserTurns(sessionId)
-              void this.#syncStaged(applied)
             }
           } catch {
             // Paint chrome from the full snapshot if the light request fails.
@@ -160,11 +160,11 @@ export class SidebarController {
           if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
           if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
+          await this.#syncStaged(snapshot)
           this.#hostCollapsed.set(sessionId, snapshot.collapsed)
           const applied = this.#put(snapshot)
           this.#syncLayout(applied)
           this.#watchUserTurns(sessionId)
-          void this.#syncStaged(applied)
           return applied
         } catch {
           // The web host can restart while this mounted client reconnects.
@@ -211,6 +211,8 @@ export class SidebarController {
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
       if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
+      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
+      if (!sending) await this.#syncStaged(reply.snapshot)
       if (toggle) this.#pendingCollapsed.delete(sessionId)
       else if (intentRevealsSidebar(intent)) this.#writeChrome(sessionId, false)
       else this.#writeChrome(sessionId, reply.snapshot.collapsed)
@@ -227,8 +229,6 @@ export class SidebarController {
           throw error
         }
       }
-      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
-      if (!sending) void this.#syncStaged(applied)
       return applied
     }
     return this.#enqueue(sessionId, work)
@@ -609,14 +609,30 @@ export class SidebarController {
         return
       }
       await this.#stageAnnotations(snapshot.sessionId, snapshot.attachments)
-    } catch {
+    } catch (error) {
       this.#stagedKey.delete(snapshot.sessionId)
+      if (snapshot.attachments.length > 0) throw error
     }
   }
 
   #watchUserTurns(sessionId: string): void {
     if (this.#userWatch.has(sessionId)) return
     const binding = this.#ctx.sessions.binding(sessionId as never)
+    const eventSource = (binding as { eventSource?: unknown } | undefined)?.eventSource
+    if (isEventSource(eventSource)) {
+      this.#userWatch.add(sessionId)
+      let revision = eventSource.getSnapshot().revision
+      eventSource.subscribe(() => {
+        const window = eventSource.getSnapshot()
+        if (window.revision === revision) return
+        revision = window.revision
+        if (!changeAddsDirectUserMessage(window.change)) return
+        if ((this.snap(sessionId)?.attachments.length ?? 0) > 0) {
+          void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
+        }
+      })
+      return
+    }
     const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
     if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') return
     this.#userWatch.add(sessionId)
@@ -633,6 +649,34 @@ export class SidebarController {
       last = next
     })
   }
+}
+
+type SessionEventWindowLike = {
+  revision: number
+  change: unknown
+}
+
+function isEventSource(value: unknown): value is {
+  getSnapshot: () => SessionEventWindowLike
+  subscribe: (listener: () => void) => () => void
+} {
+  return isRecord(value)
+    && typeof value.getSnapshot === 'function'
+    && typeof value.subscribe === 'function'
+    && isRecord(value.getSnapshot())
+    && typeof value.getSnapshot().revision === 'number'
+}
+
+function changeAddsDirectUserMessage(change: unknown): boolean {
+  if (!isRecord(change) || change.kind !== 'append' || !Array.isArray(change.entries)) return false
+  return change.entries.some((entry) => {
+    if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) return false
+    const event = entry.event
+    return event.type === 'user/message'
+      && isRecord(event.data)
+      && isRecord(event.data.source)
+      && event.data.source.kind === 'user'
+  })
 }
 
 function intentNeedsRoster(intent: Intent): boolean {

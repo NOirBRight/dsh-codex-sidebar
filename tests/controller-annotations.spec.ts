@@ -137,15 +137,19 @@ describe('annotation effect prompts', () => {
     const snapshot = stackedSnapshot()
     const cleared = { ...snapshot, attachments: [] }
     const staged: unknown[][] = []
-    let messages: Array<{ role: string }> = []
+    let revision = 1
+    let change: { kind: string; entries: unknown[] } = { kind: 'replace', entries: [] }
     const listeners = new Set<() => void>()
     const session = {
-      getSnapshot: () => ({ running: false, messages }),
+      getSnapshot: () => ({ running: false }),
+      prompt: async () => 'accepted',
+    }
+    const eventSource = {
+      getSnapshot: () => ({ entries: [], revision, hasMore: false, change }),
       subscribe: (listener: () => void) => {
         listeners.add(listener)
         return () => { listeners.delete(listener) }
       },
-      prompt: async () => 'accepted',
     }
     const ctx = {
       get: () => ({
@@ -171,7 +175,7 @@ describe('annotation effect prompts', () => {
             byId: { 'sess-a': { id: 'sess-a', cwd: '/tmp/work' } },
           }),
         },
-        binding: () => ({ session }),
+        binding: () => ({ session, eventSource }),
       },
       workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
     }
@@ -180,11 +184,79 @@ describe('annotation effect prompts', () => {
     await controller.refresh('sess-a')
     expect(staged.at(-1)).toEqual(snapshot.attachments)
 
-    messages = [{ role: 'user' }]
+    change = {
+      kind: 'append',
+      entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'plugin' } } } }],
+    }
+    revision += 1
+    for (const listener of listeners) listener()
+    expect(controller.snap('sess-a')?.attachments).toEqual(snapshot.attachments)
+
+    change = {
+      kind: 'append',
+      entries: [{ type: 'event', event: { type: 'user/message', data: { source: { kind: 'user' } } } }],
+    }
+    revision += 1
     for (const listener of listeners) listener()
     await vi.waitFor(() => {
       expect(controller.snap('sess-a')?.attachments).toEqual([])
     })
+  })
+
+  it('does not expose Browser chips to the Alpha composer until Host evidence staging completes', async () => {
+    const evidence = {
+      id: 'e1', captureId: 'capture-1', documentId: 'doc-1',
+      layoutRevision: 4, mediaGeneration: 7,
+      ref: '0123456789abcdefabcd/00000000000000000000000000000001.jpg',
+      mediaType: 'image/jpeg' as const, width: 720, height: 860,
+    }
+    const box = createSidebarSession({
+      sessionId: 'sess-a', files, persist: { load: () => undefined, save: () => undefined }, isBusy: () => false,
+      browser: {
+        load: (url) => ({ url, title: 'Example', elements: [] }),
+        openExternal() {}, isBusy: () => false,
+      },
+    })
+    box.dispatch({ type: 'open-url', url: 'https://example.com' })
+    box.dispatch({ type: 'browser-set-annotate', on: true })
+    box.dispatch({
+      type: 'browser-click-content', mark: 'Save', x: 10, y: 20,
+      captureId: 'capture-1', documentId: 'doc-1', layoutRevision: 4, mediaGeneration: 7,
+      rect: { x: 1, y: 2, w: 30, h: 20 },
+    })
+    box.dispatch({ type: 'browser-set-note-draft', text: 'fix this' })
+    let releaseStage: (() => void) | undefined
+    const stageGate = new Promise<void>((resolve) => { releaseStage = resolve })
+    let stageRequested = false
+    const session = { getSnapshot: () => ({ running: false }), prompt: async () => 'accepted' }
+    const ctx = controllerContext(session, async (_channel: string, endpoint: string, payload: unknown) => {
+      if (endpoint === SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: true, value: { snapshot: box.snapshot() } }
+      if (endpoint === SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT) return { ok: true, value: evidence }
+      if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) {
+        stageRequested = true
+        await stageGate
+        return { ok: true, value: { staged: true } }
+      }
+      if (endpoint === SIDEBAR_UNSTAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { unstaged: true } }
+      if (endpoint === SIDEBAR_DISPATCH_ENDPOINT) {
+        const intent = (payload as { intent: Parameters<typeof box.dispatch>[0] }).intent
+        const effects = box.dispatch(intent)
+        return { ok: true, value: { snapshot: box.snapshot(), effects } }
+      }
+      return { ok: false, error: { message: 'unknown' } }
+    })
+    const controller = new SidebarController(ctx as never)
+    await controller.refresh('sess-a')
+
+    const adding = controller.dispatch('sess-a', { type: 'browser-note-add' })
+    await vi.waitFor(() => { expect(stageRequested).toBe(true) })
+    expect(controller.snap('sess-a')?.attachments).toEqual([])
+
+    releaseStage?.()
+    await adding
+    expect(controller.snap('sess-a')?.attachments).toEqual([
+      expect.objectContaining({ text: 'fix this', evidence }),
+    ])
   })
 
   it('commits Browser evidence and sends text followed by one image', async () => {
@@ -243,6 +315,7 @@ describe('annotation effect prompts', () => {
       }
       let calls = 0
       const ctx = controllerContext(session, async (_channel: string, endpoint: string) => {
+        if (endpoint === SIDEBAR_STAGE_ANNOTATIONS_ENDPOINT) return { ok: true, value: { staged: true } }
         if (endpoint !== SIDEBAR_SNAPSHOT_ENDPOINT) return { ok: false }
         calls += 1
         if (calls === 1) return { ok: false }
