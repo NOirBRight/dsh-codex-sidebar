@@ -1,7 +1,7 @@
 {
   "name": "dsh-codex-sidebar",
-  "version": "0.3.22",
-  "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
+  "version": "0.4.0",
+  "description": "Codex-app-style \u4fa7\u680f for a DeepSeek Harness \u4e3b\u4f1a\u8bdd",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -40,7 +40,6 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-workspace",
         "@deepseek-ai/dsh-client-ui-slots",
@@ -61,13 +60,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
-    "@deepseek-ai/dsh-client-ui-workspace": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
+    "@deepseek-ai/dsh-client-ui-workspace": ">=0.1.0-rc.6 <0.1.1 || >=0.1.1-rc.1 <1.0.0 || >=0.1.2-alpha.1 <1.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

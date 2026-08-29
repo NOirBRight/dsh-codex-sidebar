@@ -2,7 +2,7 @@
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from './shim.js'
 import {
   SIDEBAR_BROWSER_CAPTURE_ENDPOINT,
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,

@@ -54,11 +54,19 @@ describe('managed browser stream protocol', () => {
     }
   })
 
-  it('accepts Mobile tunnel binary JSON and sends a fresh frame after tap', async () => {
+  it('accepts Mobile binary input and captures the visual viewport after scroll', async () => {
     const jpeg = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]).toString('base64')
-    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
-    cdp.send = async (method: string) => {
-      if (method === 'Page.captureScreenshot') return { data: jpeg }
+    const clips: Array<{ x?: number; y?: number }> = []
+    let scrollY = 0
+    let now = 1_000
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+    cdp.send = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseWheel') scrollY += Number(params.deltaY ?? 0)
+      if (method === 'Page.getLayoutMetrics') return { visualViewport: { pageX: 0, pageY: scrollY } }
+      if (method === 'Page.captureScreenshot') {
+        clips.push((params?.clip ?? {}) as { x?: number; y?: number })
+        return { data: jpeg }
+      }
       return {}
     }
     const runtime = {
@@ -67,7 +75,7 @@ describe('managed browser stream protocol', () => {
       touch: () => {},
       projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
     }
-    const stream = new ManagedBrowserStream({ runtime: runtime as never })
+    const stream = new ManagedBrowserStream({ runtime: runtime as never, now: () => now })
     const server = createServer()
     server.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
     await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
@@ -85,6 +93,10 @@ describe('managed browser stream protocol', () => {
       // The Mobile pairing loopback bridge forwards client messages as binary Buffer frames.
       client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'tap', x: 120, y: 240 } })))
       await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(2) })
+      now += 300
+      client.send(Buffer.from(JSON.stringify({ type: 'input', input: { type: 'wheel', x: 120, y: 240, deltaX: 0, deltaY: 360 } })))
+      await vi.waitFor(() => { expect(frames.at(-1)?.sequence).toBe(3) })
+      expect(clips.at(-1)).toMatchObject({ x: 0, y: 360 })
     } finally {
       client.close()
       await stream.dispose()

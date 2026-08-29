@@ -187,14 +187,16 @@ export class ManagedBrowserStream {
     }
     const captureFrame = async (request: CaptureRequest): Promise<void> => {
       try {
+        const metrics = await cdp.send('Page.getLayoutMetrics').catch(() => undefined)
+        const origin = browserStreamVisualViewportOrigin(metrics)
         const result = await cdp.send('Page.captureScreenshot', {
           format: 'jpeg',
           quality: profile.quality,
           fromSurface: true,
           captureBeyondViewport: false,
           clip: {
-            x: 0,
-            y: 0,
+            x: origin.x,
+            y: origin.y,
             width: request.width,
             height: request.height,
             scale: browserStreamCaptureScale(request.width, request.height, profile.maxScale),
@@ -290,6 +292,7 @@ export class ManagedBrowserStream {
     }
     if (message.type !== 'input' || !validInput(message.input)) return
     await dispatchBrowserInput(cdp, message.input)
+    if (message.input.type === 'wheel') await waitForBrowserPaint(cdp)
     const viewport = this.#runtime.target(tab)?.page.viewportSize() ?? { width: 720, height: 860 }
     requestFrame(
       { width: viewport.width, height: viewport.height },
@@ -306,6 +309,18 @@ export class ManagedBrowserStream {
   #pruneTickets(): void {
     const now = this.#now()
     for (const [ticket, record] of this.#tickets) if (record.expiresAt < now) this.#tickets.delete(ticket)
+  }
+}
+
+export function browserStreamVisualViewportOrigin(value: unknown): { x: number; y: number } {
+  if (typeof value !== 'object' || value === null) return { x: 0, y: 0 }
+  const viewport = (value as { visualViewport?: unknown }).visualViewport
+  if (typeof viewport !== 'object' || viewport === null) return { x: 0, y: 0 }
+  const pageX = (viewport as { pageX?: unknown }).pageX
+  const pageY = (viewport as { pageY?: unknown }).pageY
+  return {
+    x: typeof pageX === 'number' && Number.isFinite(pageX) ? pageX : 0,
+    y: typeof pageY === 'number' && Number.isFinite(pageY) ? pageY : 0,
   }
 }
 
@@ -343,6 +358,14 @@ export function decodeBrowserStreamFrame(value: ArrayBuffer | Uint8Array): Brows
     height: view.readUInt16BE(15),
     jpeg: new Uint8Array(bytes.buffer, bytes.byteOffset + 17, bytes.byteLength - 17),
   }
+}
+
+async function waitForBrowserPaint(cdp: ManagedCdpSession): Promise<void> {
+  await cdp.send('Runtime.evaluate', {
+    expression: 'new Promise(resolve => requestAnimationFrame(() => resolve()))',
+    awaitPromise: true,
+    returnByValue: true,
+  }).catch(() => undefined)
 }
 
 export async function dispatchBrowserInput(cdp: ManagedCdpSession, input: BrowserInput): Promise<void> {

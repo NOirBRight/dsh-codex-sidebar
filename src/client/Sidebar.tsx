@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ObservableSnapshot } from './shim.js'
 import type { Intent, SidebarSnapshot, ToolKind } from '../session.ts'
 import { tabAuxIntent } from '../tab-events.ts'
 import { FilesPane } from './FilesPane.tsx'

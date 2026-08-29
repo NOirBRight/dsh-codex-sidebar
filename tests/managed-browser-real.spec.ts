@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
+import type { Page } from 'playwright-core'
 import { decodeBrowserStreamFrame, ManagedBrowserStream } from '../src/managed-browser-stream.ts'
 import { ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
@@ -28,6 +29,20 @@ function jpegSize(bytes: Uint8Array): { width: number; height: number } {
 }
 
 type StreamFrame = ReturnType<typeof decodeBrowserStreamFrame>
+
+async function jpegCenterPixel(page: Page, frame: StreamFrame): Promise<number[]> {
+  const base64 = Buffer.from(frame.jpeg).toString('base64')
+  return page.evaluate(async (value) => {
+    const image = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + value)).blob())
+    const canvas = new OffscreenCanvas(image.width, image.height)
+    const context = canvas.getContext('2d')
+    if (context === null) throw new Error('missing image context')
+    context.drawImage(image, 0, 0)
+    const pixel = Array.from(context.getImageData(Math.floor(image.width / 2), Math.floor(image.height / 2), 1, 1).data)
+    image.close()
+    return pixel
+  }, base64)
+}
 
 function jsonStreamFrame(data: WebSocket.RawData): StreamFrame | undefined {
   const text = typeof data === 'string' ? data : Buffer.from(data as Buffer).toString('utf8')
@@ -108,7 +123,7 @@ describe('real managed Chromium', () => {
   it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('streams a high-density frame while preserving CSS viewport dimensions', async () => {
     const pageServer = createServer((_req, res) => {
       res.setHeader('content-type', 'text/html')
-      res.end('<!doctype html><title>Stream test</title><style>body{font:24px sans-serif}</style><p>Streaming</p>')
+      res.end('<!doctype html><title>Stream test</title><style>*{margin:0}.top,.bottom{height:900px}.top{background:#e11d48}.bottom{background:#2563eb}</style><section class="top"></section><section class="bottom"></section>')
     })
     await new Promise<void>((resolve, reject) => {
       pageServer.once('error', reject)
@@ -120,7 +135,8 @@ describe('real managed Chromium', () => {
     const streamServer = createServer()
     const profileDir = await mkdtemp(join(tmpdir(), 'dcs-real-stream-'))
     const runtime = new ManagedBrowserRuntime({ profileDir, headless: true })
-    const stream = new ManagedBrowserStream({ runtime })
+    let now = 1_000
+    const stream = new ManagedBrowserStream({ runtime, now: () => now })
     streamServer.on('upgrade', (request, socket, head) => { stream.handleUpgrade(request, socket, head) })
     await new Promise<void>((resolve, reject) => {
       streamServer.once('error', reject)
@@ -151,10 +167,19 @@ describe('real managed Chromium', () => {
     expect(frame.width).toBe(720)
     expect(frame.height).toBe(860)
     expect(size).toEqual({ width: 1080, height: 1290 })
+    const page = runtime.target(tab)?.page
+    if (page === undefined) throw new Error('missing managed Page')
+    expect(await jpegCenterPixel(page, frame)).toEqual(expect.arrayContaining([expect.closeTo(225, -1), expect.closeTo(29, -1), expect.closeTo(72, -1)]))
 
     client.send(JSON.stringify({ type: 'resize', width: 390, height: 844 }))
     const resized = await nextStreamFrame(client, (candidate) => candidate.width === 390 && candidate.height === 844)
     expect(jpegSize(resized.jpeg)).toEqual({ width: 585, height: 1266 })
+    now += 300
+    client.send(JSON.stringify({ type: 'input', input: { type: 'wheel', x: 195, y: 422, deltaX: 0, deltaY: 900 } }))
+    const scrolled = await nextStreamFrame(client, (candidate) => candidate.sequence > resized.sequence)
+    const pixel = await jpegCenterPixel(page, scrolled)
+    expect(pixel[2]).toBeGreaterThan(180)
+    expect(pixel[0]).toBeLessThan(80)
     client.close()
   }, 30_000)
 })
