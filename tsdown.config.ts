@@ -41,6 +41,8 @@ const client: UserConfig = {
       '@deepseek-ai/dsh-client-connection/client',
       '@deepseek-ai/dsh-client-locale/client',
       '@deepseek-ai/dsh-client-ui-layout/client',
+      '@deepseek-ai/dsh-client-ui-session/client',
+      '@deepseek-ai/dsh-client-store',
       '@deepseek-ai/dsh-client-ui-slots',
     ],
     alwaysBundle: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-unicode11'],

@@ -64,6 +64,8 @@ describe('details occupancy', () => {
       dsh: { client: { inject: string[] } }
     }
     expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-ui-workspace')
+    expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-ui-session')
+    expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-store')
   })
 
   it('shadows the shipped DetailsPanel (priority 0)', () => {
