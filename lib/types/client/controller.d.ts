@@ -32,6 +32,8 @@ export declare class SidebarController {
     constructor(ctx: ClientContext);
     readonly getSnapshot: () => SidebarStore;
     readonly subscribe: (listener: () => void) => (() => void);
+    /** Release session event subscriptions owned by this controller. */
+    dispose(): void;
     snap(sessionId: string): SidebarSnapshot | undefined;
     browserCapture(sessionId: string, tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserCaptureReply | undefined>;
     browserStreamTicket(sessionId: string, tabId: string): Promise<{
