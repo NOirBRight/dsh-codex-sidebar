@@ -74,6 +74,7 @@ export function apply(ctx: ClientContext): void {
       paintChips: (root) => { decorateChips(chipPorts, root) },
       paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
+        if (controller.openTranscriptPath(path)) return
         const open = (ctx.workspaces as typeof ctx.workspaces & { openPath?: (path: string) => void | Promise<void> }).openPath
         if (typeof open === 'function') {
           void open(path)

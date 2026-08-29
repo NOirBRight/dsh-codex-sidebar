@@ -37,7 +37,10 @@ export function decorate(stats: readonly RowStat[], root: ParentNode = document)
     const del = '−' + String(stat.removed)
     const signature = add + del
     if (existing instanceof HTMLElement) {
-      if (existing.dataset.dcs === signature) continue
+      if (existing.dataset.dcs === signature) {
+        placeStat(existing, pathBtn, row)
+        continue
+      }
       existing.dataset.dcs = signature
       existing.replaceChildren(span('add', add), span('del', del))
       placeStat(existing, pathBtn, row)
@@ -52,8 +55,8 @@ export function decorate(stats: readonly RowStat[], root: ParentNode = document)
 }
 
 function placeStat(badge: HTMLElement, pathBtn: HTMLElement | undefined, row: HTMLElement): void {
-  if (pathBtn !== undefined && pathBtn.parentElement !== null) {
-    if (badge.previousElementSibling !== pathBtn) pathBtn.after(badge)
+  if (pathBtn !== undefined) {
+    if (badge.parentElement !== pathBtn) pathBtn.append(badge)
     return
   }
   if (badge.parentElement !== row) row.append(badge)

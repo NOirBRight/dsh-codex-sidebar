@@ -151,6 +151,15 @@ describe('tool row hunk bridge', () => {
     expect(hunkForToolRow(second as never)).toEqual({ before: 'keep\n', after: 'keep\nplus\n' })
     expect(first.querySelector('.dcs-tool-stat')?.textContent).toBe('+0−1')
     expect(second.querySelector('.dcs-tool-stat')?.textContent).toBe('+1−0')
+    expect(first.querySelector('.dcs-tool-stat')?.parentElement?.tagName).toBe('BUTTON')
+    expect(second.querySelector('.dcs-tool-stat')?.parentElement?.tagName).toBe('BUTTON')
+
+    const stale = first.querySelector('.dcs-tool-stat')
+    if (stale === null) throw new Error('missing first badge')
+    first.append(stale)
+    expect(stale.parentElement?.tagName).toBe('DIV')
+    decorate(rows, root as never)
+    expect(stale.parentElement?.tagName).toBe('BUTTON')
 
     const changed = {
       nodes: [

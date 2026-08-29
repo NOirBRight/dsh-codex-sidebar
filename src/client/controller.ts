@@ -63,6 +63,7 @@ export class SidebarController {
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
   #pathTakeover = false
+  #transcriptPathOpen: ((path: string) => Promise<void>) | undefined
   #urlClicks = false
   #layoutReveal: ILayout | undefined
   #revealing = false
@@ -95,6 +96,7 @@ export class SidebarController {
     for (const watch of watches) watch.dispose()
     this.#listeners.clear()
     this.#conversationProjections.clear()
+    this.#transcriptPathOpen = undefined
   }
 
   snap(sessionId: string): SidebarSnapshot | undefined {
@@ -352,6 +354,7 @@ export class SidebarController {
         ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
       })
     }
+    this.#transcriptPathOpen = patched
     if (original !== undefined) {
       try {
         workspaces.openPath = patched
@@ -364,6 +367,14 @@ export class SidebarController {
       }
     }
     this.#patchRemoteOpenPath(patched)
+  }
+
+  /** Open one decorated transcript path through the exact captured Tool-row context. */
+  openTranscriptPath(path: string): boolean {
+    const open = this.#transcriptPathOpen
+    if (open === undefined) return false
+    void open(path)
+    return true
   }
 
   #patchRemoteOpenPath(openInSidebar: (path: string) => Promise<void>): void {
