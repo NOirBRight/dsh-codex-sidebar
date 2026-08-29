@@ -778,7 +778,7 @@ button.dcs-toggle {
    for the assistant seat, which would crush the host workspace rail to the
    56px fallback on the empty chooser. */
 [data-dcs-pin] {
-  grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
+  grid-template-columns: var(--dcs-sidebar-track, auto) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
   transition: none !important;
 }
 [data-side="details"] { display: none !important; }
