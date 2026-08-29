@@ -125,7 +125,7 @@ export class SidebarController {
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const epoch = this.#refreshEpoch.get(sessionId) ?? 0
-      if (this.snap(sessionId) === undefined && signal?.aborted !== true) {
+      if (this.snap(sessionId) === undefined && !aborted(signal)) {
         const lightGate = this.#gate(sessionId)
         if (lightGate !== undefined) {
           try {
