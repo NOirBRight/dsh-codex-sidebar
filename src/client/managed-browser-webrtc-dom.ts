@@ -13,7 +13,7 @@ export function browserWebRtcVideoAvailable(scope: PeerScope = globalThis): bool
 export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): BrowserMediaReceiverPeer {
   const peer = new RTCPeerConnection()
   peer.addTransceiver('video', { direction: 'recvonly' })
-  peer.onicecandidate = (event) => { events.onCandidate(event.candidate?.toJSON() ?? null) }
+  peer.onicecandidate = (event) => { events.onCandidate(rtcCandidate(event.candidate?.toJSON() ?? null)) }
   peer.onconnectionstatechange = () => { events.onConnectionState(peer.connectionState) }
   peer.ontrack = (event) => { events.onTrack(event.track) }
   return {
@@ -22,6 +22,16 @@ export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): Br
     async setLocalDescription(value) { await peer.setLocalDescription(value) },
     async addIceCandidate(candidate) { await peer.addIceCandidate(candidate) },
     close() { peer.close() },
+  }
+}
+
+function rtcCandidate(candidate: RTCIceCandidateInit | null): BrowserRtcCandidate | null {
+  if (candidate === null || typeof candidate.candidate !== 'string') return null
+  return {
+    candidate: candidate.candidate,
+    ...candidate.sdpMid === undefined ? {} : { sdpMid: candidate.sdpMid },
+    ...candidate.sdpMLineIndex === undefined ? {} : { sdpMLineIndex: candidate.sdpMLineIndex },
+    ...candidate.usernameFragment === undefined ? {} : { usernameFragment: candidate.usernameFragment },
   }
 }
 

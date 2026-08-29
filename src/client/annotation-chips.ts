@@ -30,10 +30,13 @@ export function decorate(ports: AnnotationChipPorts, root: ParentNode = document
   for (const row of rows) {
     if (!(row instanceof HTMLElement)) continue
     const key = row.getAttribute('data-chat-flow-key') ?? ''
-    const marks = key.length === 0 || sessionId === undefined
-      ? undefined
-      : annotationMarksFromSource(ports.nodeSource(key))
     const existing = row.querySelector(':scope > .' + MARK)
+    if (key.length === 0 || sessionId === undefined) {
+      existing?.remove()
+      painted.delete(row)
+      continue
+    }
+    const marks = annotationMarksFromSource(ports.nodeSource(key))
     if (marks === undefined || marks.length === 0) {
       existing?.remove()
       painted.delete(row)

@@ -356,17 +356,23 @@ function looksLikeJsonText(value: string): boolean {
 }
 
 function latin1Buffer(value: string): ArrayBuffer {
-  const bytes = new Uint8Array(value.length)
+  const buffer = new ArrayBuffer(value.length)
+  const bytes = new Uint8Array(buffer)
   for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index) & 0xff
-  return bytes.buffer
+  return buffer
+}
+
+function arrayBufferFromView(view: ArrayBufferView): ArrayBuffer {
+  const buffer = new ArrayBuffer(view.byteLength)
+  new Uint8Array(buffer).set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength))
+  return buffer
 }
 
 /** APP WebViews may deliver JPEG frames as ArrayBuffer, typed arrays, Blob, or binary strings. */
 export function browserStreamFrameBuffer(data: unknown): ArrayBuffer | undefined {
   if (data instanceof ArrayBuffer) return data
   if (ArrayBuffer.isView(data)) {
-    const view = data
-    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+    return arrayBufferFromView(data)
   }
   if (typeof data !== 'string' || looksLikeJsonText(data) || data.length < BROWSER_STREAM_HEADER_BYTES) return undefined
   const buffer = latin1Buffer(data)
@@ -506,7 +512,7 @@ export function browserStreamSignalsReady(value: unknown): boolean {
   if (value instanceof ArrayBuffer) return true
   if (typeof value !== 'string') return false
   try {
-    const message = JSON.parse(value) as { type?: unknown; projection?: unknown }
+    const message = JSON.parse(value) as { type?: unknown; projection?: unknown; version?: unknown }
     if (message.type === 'ready') return browserStreamReady(value) !== undefined
     if (message.type === 'frame') return message.version === 2
     if (message.type !== 'state' || typeof message.projection !== 'object' || message.projection === null) return false

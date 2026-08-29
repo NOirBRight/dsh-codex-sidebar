@@ -11,7 +11,7 @@ export type TurnWritesIntent = {
   type: string
   kind?: string
   id?: string
-  mark?: { source?: string }
+  mark?: string | { source?: string }
 }
 
 export function needsTurnWrites(snapshot: TurnWritesSnapshot | undefined, intent?: TurnWritesIntent): boolean {
@@ -23,7 +23,7 @@ export function needsTurnWrites(snapshot: TurnWritesSnapshot | undefined, intent
 function intentEntersReview(intent: TurnWritesIntent, snapshot: TurnWritesSnapshot | undefined): boolean {
   if (intent.type === 'pick-tool' && intent.kind === 'Review') return true
   if (intent.type.startsWith('review-')) return true
-  if (intent.type === 'reveal-mark' && intent.mark?.source === 'review') return true
+  if (intent.type === 'reveal-mark' && typeof intent.mark === 'object' && intent.mark?.source === 'review') return true
   if (intent.type === 'edit-attachment' && intent.id !== undefined) {
     return snapshot?.attachments?.find((item) => item.id === intent.id)?.source === 'review'
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserEvidenceSelectionPoint, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient, browserElementContentSize, browserObservedContentSize } from './managed-browser-layout.ts'
 import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
@@ -38,6 +38,12 @@ type TouchGesture = BrowserTouchGesture & { pointerId: number }
 type PointerGesture = BrowserPointerGesture & { pointerId: number }
 type RevisionedInput = BrowserInput & { revision: number }
 
+function arrayBufferForBlob(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(buffer).set(bytes)
+  return buffer
+}
+
 export function ManagedBrowserCanvas({ tabId, active, device, annotate, selectedRect, selectedSelector, fitContainerRef, requestTicket, onPick, onState, children }: ManagedBrowserCanvasProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
@@ -73,7 +79,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   const outlineTimerRef = useRef<ReturnType<typeof setTimeout>>()
   annotateRef.current = annotate
   selectedSelectorRef.current = selectedSelector
-  const dragRef = useRef<{ point: Point; pointerId: number } | null>(null)
+  const dragRef = useRef<{ point: BrowserEvidenceSelectionPoint; pointerId: number } | null>(null)
   const touchRef = useRef<TouchGesture | null>(null)
   const pointerGestureRef = useRef<PointerGesture | null>(null)
   const inputQueueRef = useRef<ReturnType<typeof createBrowserInputCoalescer> | null>(null)
@@ -333,7 +339,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           }
           await paintBrowserFrameForConnection(
             identity,
-            () => createImageBitmap(new Blob([frame.frame.jpeg], { type: 'image/jpeg' })),
+            () => createImageBitmap(new Blob([arrayBufferForBlob(frame.frame.jpeg)], { type: 'image/jpeg' })),
             () => !stopped && socketRef.current === frame.socket && connectionGeneration === frame.generation,
             frameCurrent,
             () => {

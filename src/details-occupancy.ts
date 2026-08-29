@@ -9,7 +9,7 @@ export const CLIENT_INJECT = ['slots', 'locale', 'connection', 'layout', 'sessio
 
 export type DetailsSlots = {
   inject: (key: string, callback: () => void) => unknown
-  register: (options: { name: string; locale: string; priority: number; inject: unknown }, component: unknown) => unknown
+  register: (options: { name: string; locale: string; priority: number; inject: () => unknown }, component: unknown) => unknown
 }
 
 export function shadowsDefaultDetails(priority: number): boolean {
@@ -40,7 +40,7 @@ export function occupyDetails(
       name: DETAILS_SLOT,
       locale,
       priority: DETAILS_PRIORITY,
-      inject: face,
+      inject: () => face,
     }, panel)
   })
 }

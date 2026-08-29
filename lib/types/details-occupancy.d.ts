@@ -10,7 +10,7 @@ export type DetailsSlots = {
         name: string;
         locale: string;
         priority: number;
-        inject: unknown;
+        inject: () => unknown;
     }, component: unknown) => unknown;
 };
 export declare function shadowsDefaultDetails(priority: number): boolean;

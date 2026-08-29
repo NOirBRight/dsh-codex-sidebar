@@ -82,7 +82,7 @@ export function apply(ctx: ClientContext): void {
       paintChips: (root) => { decorateChips(chipPorts, root) },
       paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
-        const open = ctx.workspaces?.openPath
+        const open = (ctx.workspaces as typeof ctx.workspaces & { openPath?: (path: string) => void })?.openPath
         if (typeof open === 'function') {
           void open(path)
           return
