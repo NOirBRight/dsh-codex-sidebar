@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BrowserVideoPresentationSwitch, BrowserVideoSurface, browserWebRtcVideoAvailable, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
+import { BrowserVideoPresentationSwitch, BrowserVideoSurface, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from '../src/client/managed-browser-webrtc-dom.ts'
 
 const PRESENTATION_IDENTITY = { ownerId: 'owner-dom', revision: 7, mediaGeneration: 11 } as const
 
 class FakeVideo {
   hidden = false
+  dataset: { dcsPresenter?: string } = {}
   muted = false
   autoplay = false
   playsInline = false
@@ -36,6 +37,24 @@ describe('managed Browser WebRTC DOM adapter', () => {
   it('advertises WebRTC only when RTCPeerConnection is constructible', () => {
     expect(browserWebRtcVideoAvailable({})).toBe(false)
     expect(browserWebRtcVideoAvailable({ RTCPeerConnection: class {} })).toBe(true)
+  })
+
+  it('constructs a STUN-only receive peer with empty iceServers', () => {
+    const constructed: unknown[] = []
+    class FakePeer {
+      connectionState = 'new'
+      constructor(config?: unknown) { constructed.push(config) }
+      addTransceiver(): void {}
+      close(): void {}
+    }
+    const previous = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakePeer as unknown as typeof RTCPeerConnection
+    try {
+      createBrowserDomPeer({ onCandidate() {}, onConnectionState() {}, onTrack() {} })
+      expect(constructed).toEqual([{ iceServers: [] }])
+    } finally {
+      globalThis.RTCPeerConnection = previous
+    }
   })
 
   it('keeps video hidden until a decoded frame and releases it exactly once', async () => {
@@ -107,7 +126,8 @@ describe('managed Browser WebRTC DOM adapter', () => {
       canvas,
       (tracks) => ({ tracks }),
     )
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual([undefined, undefined, '1'])
+    expect([firstVideo.hidden, secondVideo.hidden]).toEqual([false, false])
 
     const first = presentation.stage(PRESENTATION_IDENTITY, 1_000)
     const firstReady = first.surface.present({ kind: 'video', stop() {} })
@@ -115,16 +135,17 @@ describe('managed Browser WebRTC DOM adapter', () => {
     firstVideo.videoHeight = 800
     firstVideo.frame?.()
     await expect(firstReady).resolves.toEqual({ width: 1280, height: 800 })
-    expect(firstVideo.hidden).toBe(true)
+    expect(firstVideo.dataset.dcsPresenter).toBeUndefined()
     expect(presentation.commit(first)).toBe(true)
     expect(presentation.snapshot()).toMatchObject({ presenter: 'video', identity: PRESENTATION_IDENTITY })
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual(['', undefined, '0'])
+    expect([firstVideo.hidden, secondVideo.hidden]).toEqual([false, false])
 
     secondVideo.playResult = Promise.reject(new Error('new generation failed'))
     const failed = presentation.stage({ ...PRESENTATION_IDENTITY, mediaGeneration: 12 }, 1_000)
     await expect(failed.surface.present({ kind: 'video', stop() {} })).resolves.toBeUndefined()
     expect(presentation.discard(failed)).toBe(true)
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual(['', undefined, '0'])
     expect(firstVideo.pauseCalls).toBe(0)
 
     secondVideo.playResult = Promise.resolve()
@@ -135,16 +156,16 @@ describe('managed Browser WebRTC DOM adapter', () => {
     secondVideo.videoHeight = 844
     secondVideo.frame?.()
     await expect(nextReady).resolves.toEqual({ width: 390, height: 844 })
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual(['', undefined, '0'])
     expect(presentation.commit(next)).toBe(true)
     expect(presentation.snapshot()).toMatchObject({ presenter: 'video', identity: nextIdentity })
     expect(presentation.commit(failed)).toBe(false)
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, false, '0'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual([undefined, '', '0'])
     expect(firstVideo.pauseCalls).toBe(1)
 
     const pausesBeforeCanvas = secondVideo.pauseCalls
     presentation.showCanvas()
-    expect([firstVideo.hidden, secondVideo.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
+    expect([firstVideo.dataset.dcsPresenter, secondVideo.dataset.dcsPresenter, canvas.style.opacity]).toEqual([undefined, undefined, '1'])
     expect(secondVideo.pauseCalls).toBe(pausesBeforeCanvas + 1)
   })
 })

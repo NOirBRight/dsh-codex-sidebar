@@ -725,7 +725,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     if (resolved !== undefined) inputQueueRef.current?.push({ ...value, revision: resolved })
   }
 
-  const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     const at = point(event)
@@ -761,7 +761,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     }
   }
 
-  const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const at = point(event)
     if (at === undefined) return
     const { revision, ...coordinates } = at
@@ -789,7 +789,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     input({ type: 'move', ...coordinates }, revision)
   }
 
-  const onPointerUp = (event: PointerEvent<HTMLCanvasElement>): void => {
+  const onPointerUp = (event: PointerEvent<HTMLDivElement>): void => {
     const at = point(event)
     if (at === undefined) return
     const { revision, ...coordinates } = at
@@ -834,7 +834,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
     }
   }
 
-  const onWheel = (event: WheelEvent<HTMLCanvasElement>): void => {
+  const onWheel = (event: WheelEvent<HTMLDivElement>): void => {
     event.preventDefault()
     const at = point(event)
     if (at === undefined) return
@@ -875,9 +875,8 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           muted
           autoPlay
           playsInline
-          hidden
           onResize={() => { publishMediaRoute(mediaRouteRef.current) }}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
         />
         <video
           ref={secondVideoRef}
@@ -885,15 +884,20 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           muted
           autoPlay
           playsInline
-          hidden
           onResize={() => { publishMediaRoute(mediaRouteRef.current) }}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
         />
         <canvas
           ref={canvasRef}
           className="dcs-managed-browser-canvas"
           tabIndex={-1}
-          style={{ opacity: 1, position: 'relative', zIndex: 1 }}
+          style={{ position: 'relative', zIndex: 1 }}
+        />
+        {annotate && selection === null && highlights.selected !== null && <div className="dcs-managed-selected" style={selectionStyle(highlights.selected, viewportRef.current)} />}
+        {annotate && selection === null && highlights.hovered !== null && <div className="dcs-managed-hover" style={selectionStyle(highlights.hovered, viewportRef.current)} />}
+        {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, viewportRef.current)} />}
+        <div
+          className="dcs-managed-browser-input"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -901,9 +905,6 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           onPointerLeave={() => { if (dragRef.current === null) setHovered(null) }}
           onWheel={onWheel}
         />
-        {annotate && selection === null && highlights.selected !== null && <div className="dcs-managed-selected" style={selectionStyle(highlights.selected, viewportRef.current)} />}
-        {annotate && selection === null && highlights.hovered !== null && <div className="dcs-managed-hover" style={selectionStyle(highlights.hovered, viewportRef.current)} />}
-        {annotate && selection !== null && <div className="dcs-managed-selection" style={selectionStyle(selection, viewportRef.current)} />}
         {children}
       </div>
       {mediaRoute === 'direct-video' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Direct video</div>}

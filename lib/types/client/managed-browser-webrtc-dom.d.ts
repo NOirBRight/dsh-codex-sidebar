@@ -27,7 +27,9 @@ type PresentedVideoSize = {
     height: number;
 };
 type PresentationVideo = VideoLike & {
-    hidden: boolean;
+    dataset: {
+        dcsPresenter?: string;
+    };
 };
 type PresentationCanvas = {
     style: {

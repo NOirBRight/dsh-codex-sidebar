@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { LocalHtmlGateway } from '../src/local-html-gateway.ts'
-import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
+import { findBrowserExecutable, MANAGED_BROWSER_CACHE_BUDGET_BYTES, MANAGED_BROWSER_WEBRTC_CHROMIUM_ARGS, ManagedBrowserRuntime } from '../src/managed-browser-runtime.ts'
 
 class FakePage {
   currentUrl = 'about:blank'
@@ -1539,6 +1539,7 @@ describe('ManagedBrowserRuntime', () => {
     expect(MANAGED_BROWSER_CACHE_BUDGET_BYTES).toBe(256 * 1024 * 1024)
     expect(args).toContain('--disk-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
     expect(args).toContain('--media-cache-size=' + MANAGED_BROWSER_CACHE_BUDGET_BYTES)
+    expect(args).toEqual(expect.arrayContaining([...MANAGED_BROWSER_WEBRTC_CHROMIUM_ARGS]))
     await runtime.dispose()
   })
 

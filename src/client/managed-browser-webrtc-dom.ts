@@ -11,7 +11,7 @@ export function browserWebRtcVideoAvailable(scope: PeerScope = globalThis): bool
 
 /** Create the receive-only browser peer used by the transport-neutral receiver. */
 export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): BrowserMediaReceiverPeer {
-  const peer = new RTCPeerConnection()
+  const peer = new RTCPeerConnection({ iceServers: [] })
   peer.addTransceiver('video', { direction: 'recvonly' })
   peer.onicecandidate = (event) => { events.onCandidate(rtcCandidate(event.candidate?.toJSON() ?? null)) }
   peer.onconnectionstatechange = () => { events.onConnectionState(peer.connectionState) }
@@ -59,7 +59,7 @@ type PendingPresentation = {
 }
 
 type PresentedVideoSize = { width: number; height: number }
-type PresentationVideo = VideoLike & { hidden: boolean }
+type PresentationVideo = VideoLike & { dataset: { dcsPresenter?: string } }
 type PresentationCanvas = { style: { opacity: string } }
 type BrowserVideoStage = { readonly slot: 0 | 1; readonly identity: BrowserMediaIdentity; readonly surface: BrowserVideoSurface }
 
@@ -102,8 +102,8 @@ export class BrowserVideoPresentationSwitch {
     this.#videos = videos
     this.#canvas = canvas
     this.#createStream = createStream
-    videos[0].hidden = true
-    videos[1].hidden = true
+    setVideoPresented(videos[0], false)
+    setVideoPresented(videos[1], false)
     canvas.style.opacity = '1'
   }
 
@@ -113,7 +113,7 @@ export class BrowserVideoPresentationSwitch {
     const slot: 0 | 1 = this.#active?.slot === 0 ? 1 : 0
     const surface = new BrowserVideoSurface(this.#videos[slot], this.#createStream, timeoutMs)
     const stage = { slot, identity: copyIdentity(identity), surface } as const
-    this.#videos[slot].hidden = true
+    setVideoPresented(this.#videos[slot], false)
     this.#pending = stage
     return stage
   }
@@ -122,12 +122,12 @@ export class BrowserVideoPresentationSwitch {
   commit(stage: BrowserVideoStage): boolean {
     if (this.#pending !== stage) return false
     const previous = this.#active
-    this.#videos[stage.slot].hidden = false
+    setVideoPresented(this.#videos[stage.slot], true)
     this.#canvas.style.opacity = '0'
     this.#active = stage
     this.#pending = undefined
     if (previous !== undefined && previous !== stage) {
-      this.#videos[previous.slot].hidden = true
+      setVideoPresented(this.#videos[previous.slot], false)
       previous.surface.clear()
     }
     return true
@@ -137,7 +137,7 @@ export class BrowserVideoPresentationSwitch {
   discard(stage: BrowserVideoStage): boolean {
     if (this.#pending !== stage) return false
     this.#pending = undefined
-    this.#videos[stage.slot].hidden = true
+    setVideoPresented(this.#videos[stage.slot], false)
     stage.surface.clear()
     return true
   }
@@ -173,7 +173,7 @@ export class BrowserVideoPresentationSwitch {
     const active = this.#active
     this.#active = undefined
     if (active !== undefined) {
-      this.#videos[active.slot].hidden = true
+      setVideoPresented(this.#videos[active.slot], false)
       active.surface.clear()
     }
   }
@@ -183,6 +183,11 @@ export class BrowserVideoPresentationSwitch {
     this.discardPending()
     this.showCanvas()
   }
+}
+
+function setVideoPresented(video: PresentationVideo, presented: boolean): void {
+  if (presented) video.dataset.dcsPresenter = ''
+  else delete video.dataset.dcsPresenter
 }
 
 function copyIdentity(identity: BrowserMediaIdentity): BrowserMediaIdentity {

@@ -7,6 +7,8 @@ export declare const MANAGED_BROWSER_MAX_LIVE_PAGES = 3;
 export declare const MANAGED_BROWSER_IDLE_MS = 120000;
 export declare const MANAGED_BROWSER_CACHE_BUDGET_BYTES: number;
 export declare const PLAYWRIGHT_IGNORE_DEFAULT_ARGS: string[];
+/** Encoder Chromium must publish host ICE addresses so the GUI peer can connect on loopback. */
+export declare const MANAGED_BROWSER_WEBRTC_CHROMIUM_ARGS: readonly ["--disable-features=WebRtcHideLocalIpsWithMdns"];
 export type ManagedTabKey = {
     sessionId: string;
     tabId: string;

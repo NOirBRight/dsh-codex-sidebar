@@ -9,6 +9,7 @@ const IDENTITY: BrowserMediaIdentity = { ownerId: 'owner-1', revision: 4, mediaG
 
 class FakeVideo {
   hidden = false
+  dataset: { dcsPresenter?: string } = {}
   muted = false
   autoplay = false
   playsInline = false
@@ -98,14 +99,14 @@ describe('managed Browser presentation observability', () => {
       identity: IDENTITY,
       intrinsicSize: { width: 1920, height: 1200 },
     })
-    expect([first.hidden, second.hidden, canvas.style.opacity]).toEqual([false, true, '0'])
+    expect([first.dataset.dcsPresenter, second.dataset.dcsPresenter, canvas.style.opacity]).toEqual(['', undefined, '0'])
 
     presentation.showCanvas()
     const fallback = publishBrowserPresentation(undefined, {
       connection: 'connected', ownerId: IDENTITY.ownerId, layout: client.snapshot(), mediaRoute: 'low-bandwidth-fallback', source: { presenter: 'canvas', identity: IDENTITY },
     })!
     expect(fallback.presenter).toEqual({ kind: 'canvas', identity: IDENTITY })
-    expect([first.hidden, second.hidden, canvas.style.opacity]).toEqual([true, true, '1'])
+    expect([first.dataset.dcsPresenter, second.dataset.dcsPresenter, canvas.style.opacity]).toEqual([undefined, undefined, '1'])
     expect(fallback.committed).toEqual(direct.committed)
     expect(fallback.surface).toEqual(direct.surface)
   })

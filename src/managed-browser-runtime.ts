@@ -22,6 +22,8 @@ export const PLAYWRIGHT_IGNORE_DEFAULT_ARGS = [
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
 ]
+/** Encoder Chromium must publish host ICE addresses so the GUI peer can connect on loopback. */
+export const MANAGED_BROWSER_WEBRTC_CHROMIUM_ARGS = ['--disable-features=WebRtcHideLocalIpsWithMdns'] as const
 
 export type ManagedTabKey = { sessionId: string; tabId: string }
 
@@ -916,6 +918,7 @@ export class ManagedBrowserRuntime {
         args: [
           '--disk-cache-size=' + this.#cacheBudgetBytes,
           '--media-cache-size=' + this.#cacheBudgetBytes,
+          ...MANAGED_BROWSER_WEBRTC_CHROMIUM_ARGS,
         ],
       })
       let contextClosed = false

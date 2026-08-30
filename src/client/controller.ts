@@ -381,7 +381,7 @@ export class SidebarController {
     const remote: ClientRemote['session'] | undefined = (this.#ctx as ClientContext & { remote?: ClientRemote }).remote?.session
     if (remote === undefined || typeof remote.openWorkspacePath !== 'function') return
     const original = remote.openWorkspacePath.bind(remote)
-    const wrapped: typeof remote.openWorkspacePath = async (req, signal) => {
+    const wrapped: typeof remote.openWorkspacePath = async (req: { path?: string }, signal?: unknown) => {
       const path = req.path
       if (typeof path !== 'string' || path.length === 0) return original(req, signal)
       try {
