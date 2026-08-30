@@ -24,7 +24,16 @@ export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stu
   return {
     async setRemoteDescription(description) { await peer.setRemoteDescription(description) },
     async createAnswer() { return description(await peer.createAnswer()) },
-    async setLocalDescription(value) { await peer.setLocalDescription(value) },
+    async setLocalDescription(value) {
+      await peer.setLocalDescription(value)
+      if (peer.iceGatheringState === 'complete') return
+      await new Promise<void>((resolve) => {
+        const finish = (): void => { peer.removeEventListener('icegatheringstatechange', onChange); resolve() }
+        const onChange = (): void => { if (peer.iceGatheringState === 'complete') finish() }
+        peer.addEventListener('icegatheringstatechange', onChange)
+        setTimeout(finish, 2000)
+      })
+    },
     async addIceCandidate(candidate) { await peer.addIceCandidate(candidate) },
     close() { peer.close() },
   }

@@ -19,6 +19,7 @@ import {
   type BrowserRtcCandidate,
   type BrowserRtcDescription,
 } from './managed-browser-protocol.ts'
+import { startLoopbackStunServer, type LoopbackStunServer } from './managed-browser-loopback-stun.ts'
 import {
   MANAGED_BROWSER_DEFAULT_STUN_URLS,
   MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE,
@@ -324,6 +325,8 @@ export class ManagedBrowserStream {
   #tasks = new Set<Promise<void>>()
   #preferredMediaRoute: 'webrtc-preferred' | 'jpeg-only'
   #stunUrls: string[]
+  #loopbackStun: LoopbackStunServer | undefined
+  #loopbackStunTask: Promise<LoopbackStunServer | undefined> | undefined
   #webrtcNegotiationTimeoutMs: number
   #webrtcRetryCooldownMs: number
   #maxMediaPeers: number
@@ -511,6 +514,21 @@ export class ManagedBrowserStream {
     this.#mediaCapacityOwners.clear()
     this.#peerCount = 0
     this.#tasks.clear()
+    const stun = this.#loopbackStun
+    this.#loopbackStun = undefined
+    if (stun !== undefined) await stun.close()
+  }
+
+  async #iceStunUrls(): Promise<string[]> {
+    this.#loopbackStunTask ??= startLoopbackStunServer().then((server) => {
+      this.#loopbackStun = server
+      return server
+    }).catch(() => undefined)
+    await this.#loopbackStunTask
+    const urls = [...this.#stunUrls]
+    const loopback = this.#loopbackStun?.url
+    if (loopback !== undefined && !urls.includes(loopback)) urls.unshift(loopback)
+    return urls
   }
 
   async #drainTasks(): Promise<void> {
@@ -896,12 +914,13 @@ export class ManagedBrowserStream {
       if (detached || !clientWebRtc || this.#preferredMediaRoute === 'jpeg-only' || !sameMediaLayout(currentLayout(), layout)) return
       this.#diagnostics.mediaAttempts += 1
       let attempt: BrowserMediaAttempt | undefined
+      const iceStunUrls = await this.#iceStunUrls()
       const capacityOwner = await this.#reserveMediaCapacity((order) => {
         let owner: BrowserMediaCapacityOwner
         const encoder = this.#encoderFactory({
           identity: { ownerId, generation: layout.mediaGeneration },
           pageFactory: () => this.#runtime.createMediaPage(),
-          stunUrls: this.#stunUrls,
+          stunUrls: iceStunUrls,
           width: layout.viewport.width,
           height: layout.viewport.height,
           frameRate: this.#directVideoFrameRate,
@@ -1105,6 +1124,7 @@ export class ManagedBrowserStream {
       await Promise.all([previousCleanup, mediaTransition, layoutControlTransition, releaseMedia, stopScreencast, captureTask, startTask])
     }
     const start = async (): Promise<void> => {
+      const iceStunUrls = await this.#iceStunUrls()
       socket.send(JSON.stringify({
         type: 'ready',
         version: MANAGED_BROWSER_STREAM_VERSION,
@@ -1115,7 +1135,7 @@ export class ManagedBrowserStream {
         media: {
           preferredRoute: clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'webrtc-direct' : 'jpeg-fallback',
           stunOnly: true,
-          stunUrls: this.#stunUrls,
+          stunUrls: iceStunUrls,
           negotiationTimeoutMs: this.#webrtcNegotiationTimeoutMs,
           retryCooldownMs: this.#webrtcRetryCooldownMs,
           frameRate: this.#directVideoFrameRate,
