@@ -32,19 +32,19 @@
 仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.6
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.7
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.6
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.7
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
 
-0.5.6 让托管 Chromium 使用和 GUI 同一套 Google Chrome，避免 fake-ip 把 ICE 打到另一张网上；并把 Tab + 菜单抬到 Review 工具条之上。
+0.5.7 把编码器 IPv4 host ICE 候选复制到 127.0.0.1（套接字绑在 0.0.0.0 上），GUI Chrome 不必再去打 Clash fake-ip 198.18.0.1。
 
 0.5.0 在 `dsh-client-runtime` 移除后改接精确 0.1.2-alpha.1 的官方 `ui-session`、`ui-conversation`、`ui-chat`、Client store 与 API Remotes。Transcript 消费方统一通过插件 Adapter 读取 canonical Chat nodes，当前 `legacy` 兼容切片只作为 Adapter 内部 fallback。同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入 Alpha 适配线；此前的 0.4.x Alpha 适配分支并不包含这条平行 Browser 开发线。
 

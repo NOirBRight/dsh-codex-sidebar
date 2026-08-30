@@ -32,19 +32,19 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 The exact official DeepSeek Harness 0.1.2-alpha.1 release is required. Later 0.1.2 prereleases or finals remain unsupported until this plugin is revalidated against their public Client contracts. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.6
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.7
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.6
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.7
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
 
-Version 0.5.6 drives managed Chromium with the same Google Chrome as the GUI so Direct video ICE shares host routes, and raises the Tab + menu above Review chrome.
+Version 0.5.7 clones encoder IPv4 host ICE candidates onto 127.0.0.1 (the UDP socket is bound to 0.0.0.0) so GUI Chrome can reach Direct video without routing to Clash fake-ip 198.18.0.1.
 
 Version 0.5.0 moves the Client integration to the exact official 0.1.2-alpha.1 modules (`ui-session`, `ui-conversation`, `ui-chat`, Client store, and API Remotes) after `dsh-client-runtime` was removed. Transcript consumers read canonical Chat nodes through one plugin Adapter; the current `legacy` compatibility slice is only a fallback inside that Adapter. It also rejoins the bounded Browser transport from 0.3.23 with the revisioned Browser v2 implementation; the 0.4.x Alpha adaptation line did not contain that parallel Browser work.
 

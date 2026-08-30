@@ -1,5 +1,6 @@
 /** Chromium-owned Canvas/WebRTC encoder isolated from the Browser control protocol. */
 
+import { candidateWithLoopbackHost, sdpWithLoopbackHostCandidates } from './managed-browser-ice-loopback.ts'
 import type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
 
 export type { BrowserRtcCandidate, BrowserRtcDescription } from './managed-browser-protocol.ts'
@@ -258,7 +259,7 @@ export class ManagedBrowserWebRtcEncoder {
       })
       const offer = await page.evaluateFunction<unknown>(COMMAND, { type: 'create-offer' })
       if (!browserRtcDescription(offer, 'offer')) throw new Error('Managed Browser media Page returned an invalid SDP offer')
-      return offer
+      return { type: 'offer', sdp: sdpWithLoopbackHostCandidates(offer.sdp) }
     } catch (error) {
       if (this.#page === page) this.#page = undefined
       await page.close().catch(() => undefined)
@@ -297,6 +298,10 @@ export class ManagedBrowserWebRtcEncoder {
 
   #emit(signal: BrowserMediaSignal['signal']): void {
     this.#onSignal({ ...this.identity, signal })
+    if (signal.type !== 'candidate' || signal.candidate === null) return
+    const loopback = candidateWithLoopbackHost(signal.candidate.candidate)
+    if (loopback === undefined) return
+    this.#onSignal({ ...this.identity, signal: { type: 'candidate', candidate: { ...signal.candidate, candidate: loopback } } })
   }
 
   async #dispose(): Promise<void> {
