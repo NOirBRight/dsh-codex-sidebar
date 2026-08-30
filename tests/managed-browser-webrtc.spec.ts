@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  MANAGED_BROWSER_DEFAULT_STUN_URLS,
   ManagedBrowserWebRtcEncoder,
   validateBrowserStunUrls,
   type BrowserMediaPage,
@@ -47,6 +49,8 @@ describe('managed Browser WebRTC encoder', () => {
   it('accepts only STUN ICE URLs', () => {
     expect(validateBrowserStunUrls([])).toEqual([])
     expect(validateBrowserStunUrls(['stun:stun.example.test:3478'])).toEqual(['stun:stun.example.test:3478'])
+    expect(readFileSync(new URL('../src/managed-browser-webrtc.ts', import.meta.url), 'utf8')).toContain('iceGatheringState')
+    expect(MANAGED_BROWSER_DEFAULT_STUN_URLS).toEqual(['stun:stun.l.google.com:19302'])
     expect(() => validateBrowserStunUrls(['turn:relay.example.test:3478'])).toThrow('STUN')
     expect(() => validateBrowserStunUrls(['https://stun.example.test'])).toThrow('STUN')
     expect(() => validateBrowserStunUrls(['stun:'])).toThrow('STUN')

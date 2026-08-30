@@ -21,7 +21,7 @@ describe('managed Browser stream client', () => {
       frameEncoding: 'binary-v2',
       flowControl: 'frame-ack-v2',
       ownerId: 'owner-1',
-      media: { preferredRoute: 'webrtc-direct', stunOnly: true, negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 },
+      media: { preferredRoute: 'webrtc-direct', stunOnly: true, stunUrls: [], negotiationTimeoutMs: 5000, retryCooldownMs: 1000, frameRate: 10, maxBitrate: 2_000_000, idleTimeoutMs: 300_000, hideGraceMs: 15_000 },
       fallback: { maxRawBytes: 1024 },
       layoutPolicy: { minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 120, hysteresisPx: 8 },
     })

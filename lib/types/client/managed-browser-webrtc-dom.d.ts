@@ -6,7 +6,7 @@ type PeerScope = {
 /** Report whether the current DOM can construct a receive-only WebRTC peer. */
 export declare function browserWebRtcVideoAvailable(scope?: PeerScope): boolean;
 /** Create the receive-only browser peer used by the transport-neutral receiver. */
-export declare function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): BrowserMediaReceiverPeer;
+export declare function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stunUrls?: readonly string[]): BrowserMediaReceiverPeer;
 type VideoLike = {
     muted: boolean;
     autoplay: boolean;

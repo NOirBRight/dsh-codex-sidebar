@@ -52,6 +52,9 @@ describe('managed Browser WebRTC DOM adapter', () => {
     try {
       createBrowserDomPeer({ onCandidate() {}, onConnectionState() {}, onTrack() {} })
       expect(constructed).toEqual([{ iceServers: [] }])
+      constructed.length = 0
+      createBrowserDomPeer({ onCandidate() {}, onConnectionState() {}, onTrack() {} }, ['stun:stun.example.test:3478'])
+      expect(constructed).toEqual([{ iceServers: [{ urls: ['stun:stun.example.test:3478'] }] }])
     } finally {
       globalThis.RTCPeerConnection = previous
     }

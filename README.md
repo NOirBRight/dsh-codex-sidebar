@@ -32,19 +32,19 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 The exact official DeepSeek Harness 0.1.2-alpha.1 release is required. Later 0.1.2 prereleases or finals remain unsupported until this plugin is revalidated against their public Client contracts. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.2
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.3
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.2
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.3
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
 
-Version 0.5.2 restores click and scroll on the managed Browser surface, keeps pending WebRTC video in the compositor so the first frame can decode, and publishes host ICE addresses so same-machine Direct video can succeed instead of JPEG fallback.
+Version 0.5.3 completes Direct video ICE: the encoder waits for host candidates in the offer, both peers share a STUN-only server list, and JPEG fallback shows its reason. 0.5.2 restored click/scroll and kept pending video in the compositor.
 
 Version 0.5.0 moves the Client integration to the exact official 0.1.2-alpha.1 modules (`ui-session`, `ui-conversation`, `ui-chat`, Client store, and API Remotes) after `dsh-client-runtime` was removed. Transcript consumers read canonical Chat nodes through one plugin Adapter; the current `legacy` compatibility slice is only a fallback inside that Adapter. It also rejoins the bounded Browser transport from 0.3.23 with the revisioned Browser v2 implementation; the 0.4.x Alpha adaptation line did not contain that parallel Browser work.
 

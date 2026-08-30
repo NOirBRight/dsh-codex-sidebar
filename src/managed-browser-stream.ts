@@ -20,6 +20,7 @@ import {
   type BrowserRtcDescription,
 } from './managed-browser-protocol.ts'
 import {
+  MANAGED_BROWSER_DEFAULT_STUN_URLS,
   MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE,
   MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE,
   ManagedBrowserWebRtcEncoder,
@@ -394,7 +395,7 @@ export class ManagedBrowserStream {
     })
     this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
     if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')
-    this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [])
+    this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [...MANAGED_BROWSER_DEFAULT_STUN_URLS])
     this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 5_000, 'webrtcNegotiationTimeoutMs')
     this.#webrtcRetryCooldownMs = nonNegativeStreamInteger(opts.webrtcRetryCooldownMs, 30_000, 'webrtcRetryCooldownMs')
     this.#maxMediaPeers = positiveStreamInteger(opts.maxMediaPeers, 3, 'maxMediaPeers')
@@ -839,6 +840,7 @@ export class ManagedBrowserStream {
     const sendMediaRoute = (route: 'jpeg-fallback' | 'webrtc-direct', status: 'active' | 'degraded' | 'reconnecting', reason?: string): void => {
       this.#diagnostics.lastMediaRoute = { route, status, ...(reason === undefined ? {} : { reason }) }
       if (reason !== undefined) this.#diagnostics.mediaRouteReasons[reason] = (this.#diagnostics.mediaRouteReasons[reason] ?? 0) + 1
+      if (route === 'jpeg-fallback' && reason !== undefined) console.warn('[dsh-codex-sidebar] Browser media jpeg-fallback', reason)
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'media-route', route, status, ...(reason === undefined ? {} : { reason }) }))
     }
     const failMediaAttempt = async (attempt: BrowserMediaAttempt, reason: string): Promise<void> => {
@@ -1112,6 +1114,7 @@ export class ManagedBrowserStream {
         media: {
           preferredRoute: clientWebRtc && this.#preferredMediaRoute === 'webrtc-preferred' ? 'webrtc-direct' : 'jpeg-fallback',
           stunOnly: true,
+          stunUrls: this.#stunUrls,
           negotiationTimeoutMs: this.#webrtcNegotiationTimeoutMs,
           retryCooldownMs: this.#webrtcRetryCooldownMs,
           frameRate: this.#directVideoFrameRate,

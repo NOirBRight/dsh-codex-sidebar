@@ -51,6 +51,8 @@ export type ManagedBrowserWebRtcEncoderOptions = {
 
 export const MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE = 10
 export const MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE = 2_000_000
+/** STUN-only default so GUI Chrome and the encoder Page can form srflx pairs in addition to host ICE. */
+export const MANAGED_BROWSER_DEFAULT_STUN_URLS = ['stun:stun.l.google.com:19302'] as const
 
 const SIGNAL_BINDING = '__dcsManagedMediaSignal'
 
@@ -95,6 +97,14 @@ const BOOTSTRAP = String.raw`async (config) => {
     if (value.type === 'create-offer') {
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
+      if (peer.iceGatheringState !== 'complete') {
+        await new Promise((resolve) => {
+          const finish = () => { peer.removeEventListener('icegatheringstatechange', onChange); resolve(); };
+          const onChange = () => { if (peer.iceGatheringState === 'complete') finish(); };
+          peer.addEventListener('icegatheringstatechange', onChange);
+          setTimeout(finish, 2000);
+        });
+      }
       return peer.localDescription?.toJSON();
     }
     if (value.type === 'accept-answer') {
@@ -171,7 +181,7 @@ export class ManagedBrowserWebRtcEncoder {
   constructor(opts: ManagedBrowserWebRtcEncoderOptions) {
     this.identity = Object.freeze({ ...opts.identity })
     this.#pageFactory = opts.pageFactory
-    this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [])
+    this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [...MANAGED_BROWSER_DEFAULT_STUN_URLS])
     this.#width = positiveDimension(opts.width, 'width')
     this.#height = positiveDimension(opts.height, 'height')
     this.#frameRate = boundedInteger(opts.frameRate ?? MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE, 1, 60, 'frameRate')

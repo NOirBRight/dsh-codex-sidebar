@@ -97,6 +97,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   const [status, setStatus] = useState<'connecting' | 'ready' | 'error'>('connecting')
   const [surfaceSize, setSurfaceSize] = useState<Size>({ width: 0, height: 0 })
   const [mediaRoute, setMediaRoute] = useState<BrowserMediaPresentationRoute>('reconnecting')
+  const [mediaFailure, setMediaFailure] = useState<string>()
   const [visible, setVisible] = useState(() => active && (typeof document === 'undefined' || document.visibilityState === 'visible'))
   surfaceActiveRef.current = active
 
@@ -139,6 +140,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
   }
 
   const publishMediaRoute = (route: BrowserMediaPresentationRoute): boolean => {
+    if (route === 'direct-video') setMediaFailure(undefined)
     const connected = presentationConnectionRef.current === 'connected'
     const videoSource = videoPresentationRef.current?.snapshot()
     return publishPresentation({
@@ -482,6 +484,10 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
         const mediaRouteMessage = decodeBrowserMediaRoute(text)
         if (mediaRouteMessage !== undefined) {
           const route = browserMediaRouteFromHost(mediaRouteMessage, mediaRouteRef.current)
+          if (mediaRouteMessage.reason !== undefined) setMediaFailure(mediaRouteMessage.reason)
+          if (mediaRouteMessage.route === 'jpeg-fallback' && mediaRouteMessage.reason !== undefined) {
+            console.warn('[dsh-codex-sidebar] Browser media jpeg-fallback', mediaRouteMessage.reason)
+          }
           if (mediaRouteMessage.route === 'unavailable') {
             prepareMediaGeneration()
             publishMediaRoute(route)
@@ -511,7 +517,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           let videoSize: Size | undefined
           const receiver = new ManagedBrowserWebRtcReceiver({
             identity,
-            peerFactory: createBrowserDomPeer,
+            peerFactory: (events) => createBrowserDomPeer(events, ready.media.stunUrls),
             negotiationTimeoutMs: ready.media.negotiationTimeoutMs,
             retryCooldownMs: ready.media.retryCooldownMs,
             onEvent: (event) => {
@@ -559,6 +565,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
               } else if (event.event.type === 'route') {
                 publishMediaRoute(browserMediaRouteFromReceiver(event.event.route))
                 if (event.event.route === 'jpeg-fallback') {
+                  if (event.event.reason !== undefined) setMediaFailure(event.event.reason)
                   presentation.discard(stage)
                   declineMedia(event, event.event.reason)
                 }
@@ -909,7 +916,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
       </div>
       {mediaRoute === 'direct-video' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Direct video</div>}
       {mediaRoute === 'reconnecting' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Reconnecting video…</div>}
-      {mediaRoute === 'low-bandwidth-fallback' && <button className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }} type="button" onClick={() => { requestMediaRetry('explicit') }}>Low-bandwidth fallback · Retry video</button>}
+      {mediaRoute === 'low-bandwidth-fallback' && <button className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }} type="button" onClick={() => { requestMediaRetry('explicit') }}>{'Low-bandwidth fallback' + (mediaFailure === undefined ? '' : ' (' + mediaFailure + ')') + ' · Retry video'}</button>}
       {mediaRoute === 'unavailable' && <div className="dcs-managed-browser-route" style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 5 }}>Video unavailable</div>}
       <textarea
         ref={inputRef}

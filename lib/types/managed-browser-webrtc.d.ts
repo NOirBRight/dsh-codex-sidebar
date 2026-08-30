@@ -50,6 +50,8 @@ export type ManagedBrowserWebRtcEncoderOptions = {
 };
 export declare const MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE = 10;
 export declare const MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE = 2000000;
+/** STUN-only default so GUI Chrome and the encoder Page can form srflx pairs in addition to host ICE. */
+export declare const MANAGED_BROWSER_DEFAULT_STUN_URLS: readonly ["stun:stun.l.google.com:19302"];
 /** Validate and copy STUN-only ICE server URLs. */
 export declare function validateBrowserStunUrls(urls: readonly string[]): string[];
 /** One immutable Browser owner/generation and its Chromium media Page. */

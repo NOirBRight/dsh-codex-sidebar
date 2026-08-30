@@ -10,8 +10,8 @@ export function browserWebRtcVideoAvailable(scope: PeerScope = globalThis): bool
 }
 
 /** Create the receive-only browser peer used by the transport-neutral receiver. */
-export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents): BrowserMediaReceiverPeer {
-  const peer = new RTCPeerConnection({ iceServers: [] })
+export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stunUrls: readonly string[] = []): BrowserMediaReceiverPeer {
+  const peer = new RTCPeerConnection({ iceServers: stunUrls.length === 0 ? [] : [{ urls: [...stunUrls] }] })
   peer.addTransceiver('video', { direction: 'recvonly' })
   peer.onicecandidate = (event) => { events.onCandidate(rtcCandidate(event.candidate?.toJSON() ?? null)) }
   peer.onconnectionstatechange = () => { events.onConnectionState(peer.connectionState) }

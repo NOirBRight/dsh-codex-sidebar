@@ -70,6 +70,7 @@ export type BrowserReadyMessage = {
   media: {
     preferredRoute: 'webrtc-direct' | 'jpeg-fallback'
     stunOnly: true
+    stunUrls: string[]
     negotiationTimeoutMs: number
     retryCooldownMs: number
     frameRate: number
@@ -165,11 +166,14 @@ export function decodeBrowserHostMessage(raw: string): BrowserHostMessage | unde
       || !positiveSafeInteger(value.media.maxBitrate) || !positiveSafeInteger(value.media.idleTimeoutMs)
       || !nonNegativeSafeInteger(value.media.hideGraceMs)
       || !layoutPolicy(value.layoutPolicy)) return undefined
+    const stunUrls = stunUrlList(value.media.stunUrls)
+    if (stunUrls === undefined) return undefined
     return {
       type: 'ready', version: 2, frameEncoding: value.frameEncoding, flowControl: 'frame-ack-v2',
       fallback: { maxRawBytes: value.fallback.maxRawBytes }, ownerId: value.ownerId,
       media: {
         preferredRoute: value.media.preferredRoute, stunOnly: true,
+        stunUrls,
         negotiationTimeoutMs: value.media.negotiationTimeoutMs, retryCooldownMs: value.media.retryCooldownMs,
         frameRate: value.media.frameRate, maxBitrate: value.media.maxBitrate,
         idleTimeoutMs: value.media.idleTimeoutMs, hideGraceMs: value.media.hideGraceMs,
@@ -328,6 +332,17 @@ function size(value: unknown): value is BrowserSize {
 
 function layoutMode(value: unknown): value is BrowserLayoutMode {
   return value === 'fit' || value === 'phone' || value === 'tablet' || value === 'laptop'
+}
+
+function stunUrlList(value: unknown): string[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 8) return undefined
+  const urls: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string' || !item.startsWith('stun:') || item.startsWith('stun://') || /\s/.test(item)) return undefined
+    urls.push(item)
+  }
+  return urls
 }
 
 function layoutPolicy(value: unknown): value is BrowserReadyMessage['layoutPolicy'] {

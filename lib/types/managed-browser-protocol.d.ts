@@ -120,6 +120,7 @@ export type BrowserReadyMessage = {
     media: {
         preferredRoute: 'webrtc-direct' | 'jpeg-fallback';
         stunOnly: true;
+        stunUrls: string[];
         negotiationTimeoutMs: number;
         retryCooldownMs: number;
         frameRate: number;
