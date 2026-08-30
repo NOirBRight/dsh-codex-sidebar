@@ -98,7 +98,11 @@ class FakeEncoder implements ManagedBrowserWebRtcEncoderLike {
   disposeGate: Promise<void> | undefined
 
   constructor(options: ManagedBrowserWebRtcEncoderOptions) { this.options = options }
-  async start() { return { type: 'offer' as const, sdp: 'offer-' + this.options.identity.generation } }
+  startDelayMs = 0
+  async start() {
+    if (this.startDelayMs > 0) await new Promise<void>((resolve) => { setTimeout(resolve, this.startDelayMs) })
+    return { type: 'offer' as const, sdp: 'offer-' + this.options.identity.generation }
+  }
   async acceptAnswer(value: unknown) { this.answers.push(value) }
   async addCandidate(value: unknown) { this.candidates.push(value) }
   submit(frame: { sequence: number }) { this.frames.push(frame.sequence); return true }
@@ -125,6 +129,48 @@ describe('ManagedBrowserStream WebRTC ownership', () => {
     expect(() => new ManagedBrowserStream({ runtime, mediaIdleTimeoutMs: 0 })).toThrow('mediaIdleTimeoutMs')
     expect(() => new ManagedBrowserStream({ runtime, mediaHideGraceMs: -1 })).toThrow('mediaHideGraceMs')
     expect(() => new ManagedBrowserStream({ runtime, shutdownTimeoutMs: 0 })).toThrow('shutdownTimeoutMs')
+  })
+
+  it('does not count encoder start against ICE negotiation timeout', async () => {
+    const layout: BrowserLayout = { revision: 1, mode: 'laptop', viewport: { width: 1280, height: 800 }, mediaGeneration: 1 }
+    const cdp = new EventEmitter() as EventEmitter & { send(method: string): Promise<unknown> }
+    cdp.send = async (method) => method === 'Page.getLayoutMetrics' ? { visualViewport: { pageX: 0, pageY: 0 } } : {}
+    const runtime = {
+      ...streamRuntimePorts(() => ({ cdp, layout })), keyOf: () => 's:t', touch: () => {}, acquire: () => () => {},
+      layout: () => ({ ...layout, viewport: { ...layout.viewport } }),
+      layoutPolicy: () => ({ minViewport: { width: 320, height: 240 }, maxViewport: { width: 1920, height: 1440 }, settleMs: 180, hysteresisPx: 8 }),
+      verifyLayout: async () => layout,
+      projection: () => ({ tabId: 't', url: 'https://example.test', title: 'Example', documentId: 'd1', status: 'ready' }),
+      proposeLayout: async () => layout, outline: async () => ({ documentId: 'd1', nodes: [] }),
+      trackRect: async () => ({ documentId: 'd1', selector: '', rect: null }),
+      createMediaPage: async () => { throw new Error('factory must isolate the Page seam') }, mediaPageCount: () => 0,
+    }
+    const encoders: FakeEncoder[] = []
+    const stream = new ManagedBrowserStream({
+      runtime: runtime as never, webrtcNegotiationTimeoutMs: 150,
+      encoderFactory: (options) => {
+        const encoder = new FakeEncoder(options)
+        encoder.startDelayMs = 250
+        encoders.push(encoder)
+        return encoder
+      },
+    })
+    const harness = await ManagedBrowserStreamHarness.start(stream)
+    const client = await harness.connect({ sessionId: 's', tabId: 't' })
+    const messages: Array<Record<string, unknown>> = []
+    client.on('message', (data) => { messages.push(JSON.parse(Buffer.from(data as Buffer).toString('utf8')) as Record<string, unknown>) })
+    try {
+      harness.hello(client, { webrtcVideo: true })
+      await vi.waitFor(() => { expect(messages.some((value) => value.type === 'rtc-offer')).toBe(true) })
+      encoders[0]?.signal({ type: 'connection-state', state: 'connected' })
+      await vi.waitFor(() => {
+        expect(messages).toContainEqual(expect.objectContaining({ type: 'media-route', route: 'webrtc-direct' }))
+      })
+      expect(messages).not.toContainEqual(expect.objectContaining({ reason: 'negotiation-timeout' }))
+    } finally {
+      client.close()
+      await harness.dispose()
+    }
   })
 
   it('waits for the exact previous owner to detach before activating its replacement', async () => {

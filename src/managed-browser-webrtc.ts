@@ -81,8 +81,12 @@ const BOOTSTRAP = String.raw`async (config) => {
   peer.onicecandidate = (event) => {
     void signal({ type: 'candidate', candidate: event.candidate === null ? null : event.candidate.toJSON() });
   };
-  peer.onconnectionstatechange = () => {
-    void signal({ type: 'connection-state', state: peer.connectionState });
+  const reportConnection = (state) => { void signal({ type: 'connection-state', state }); };
+  peer.onconnectionstatechange = () => { reportConnection(peer.connectionState); };
+  peer.oniceconnectionstatechange = () => {
+    const ice = peer.iceConnectionState;
+    if (ice === 'connected' || ice === 'completed') reportConnection('connected');
+    else if (ice === 'failed') reportConnection('failed');
   };
   let disposed = false;
   const command = async (value) => {

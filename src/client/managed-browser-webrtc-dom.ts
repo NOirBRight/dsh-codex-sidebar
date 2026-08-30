@@ -15,6 +15,11 @@ export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stu
   peer.addTransceiver('video', { direction: 'recvonly' })
   peer.onicecandidate = (event) => { events.onCandidate(rtcCandidate(event.candidate?.toJSON() ?? null)) }
   peer.onconnectionstatechange = () => { events.onConnectionState(peer.connectionState) }
+  peer.oniceconnectionstatechange = () => {
+    const ice = peer.iceConnectionState
+    if (ice === 'connected' || ice === 'completed') events.onConnectionState('connected')
+    else if (ice === 'failed') events.onConnectionState('failed')
+  }
   peer.ontrack = (event) => { events.onTrack(event.track) }
   return {
     async setRemoteDescription(description) { await peer.setRemoteDescription(description) },

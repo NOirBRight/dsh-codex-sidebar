@@ -32,19 +32,19 @@
 仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.3
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.4
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.3
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.4
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
 
-0.5.3 补上 Direct video 的 ICE：编码器把 host candidate 写入 offer，两端共用 STUN-only 服务器，JPEG 回退会显示原因。0.5.2 修复了点击/滚动，并让预备 video 留在合成层。
+0.5.4 把 ICE 计时改到 offer 发出之后，Playwright 开页不再吃掉超时。0.5.3 补了 STUN 共享和 offer 内 host candidate。
 
 0.5.0 在 `dsh-client-runtime` 移除后改接精确 0.1.2-alpha.1 的官方 `ui-session`、`ui-conversation`、`ui-chat`、Client store 与 API Remotes。Transcript 消费方统一通过插件 Adapter 读取 canonical Chat nodes，当前 `legacy` 兼容切片只作为 Adapter 内部 fallback。同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入 Alpha 适配线；此前的 0.4.x Alpha 适配分支并不包含这条平行 Browser 开发线。
 

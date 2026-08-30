@@ -396,7 +396,7 @@ export class ManagedBrowserStream {
     this.#preferredMediaRoute = opts.preferredMediaRoute ?? 'webrtc-preferred'
     if (this.#preferredMediaRoute !== 'webrtc-preferred' && this.#preferredMediaRoute !== 'jpeg-only') throw new Error('managedBrowser preferredMediaRoute is invalid')
     this.#stunUrls = validateBrowserStunUrls(opts.stunUrls ?? [...MANAGED_BROWSER_DEFAULT_STUN_URLS])
-    this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 5_000, 'webrtcNegotiationTimeoutMs')
+    this.#webrtcNegotiationTimeoutMs = positiveStreamInteger(opts.webrtcNegotiationTimeoutMs, 10_000, 'webrtcNegotiationTimeoutMs')
     this.#webrtcRetryCooldownMs = nonNegativeStreamInteger(opts.webrtcRetryCooldownMs, 30_000, 'webrtcRetryCooldownMs')
     this.#maxMediaPeers = positiveStreamInteger(opts.maxMediaPeers, 3, 'maxMediaPeers')
     const maxEncoderPages = positiveStreamInteger(opts.maxEncoderPages, 3, 'maxEncoderPages')
@@ -943,13 +943,6 @@ export class ManagedBrowserStream {
       }
       const activeAttempt = attempt
       mediaIdleSuspended = false
-      this.#timerCount += 1
-      activeAttempt.negotiationTimer = setTimeout(() => {
-        activeAttempt.negotiationTimer = undefined
-        this.#timerCount -= 1
-        this.#track(failMediaAttempt(activeAttempt, 'negotiation-timeout'))
-      }, this.#webrtcNegotiationTimeoutMs)
-      activeAttempt.negotiationTimer.unref()
       sendMediaRoute('jpeg-fallback', 'reconnecting')
       try {
         const offer = await activeAttempt.encoder.start()
@@ -957,6 +950,14 @@ export class ManagedBrowserStream {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
           type: 'rtc-offer', ownerId, revision: layout.revision, mediaGeneration: layout.mediaGeneration, description: offer,
         }))
+        if (activeAttempt.connected || activeAttempt.negotiationTimer !== undefined) return
+        this.#timerCount += 1
+        activeAttempt.negotiationTimer = setTimeout(() => {
+          activeAttempt.negotiationTimer = undefined
+          this.#timerCount -= 1
+          this.#track(failMediaAttempt(activeAttempt, 'negotiation-timeout'))
+        }, this.#webrtcNegotiationTimeoutMs)
+        activeAttempt.negotiationTimer.unref()
       } catch {
         await failMediaAttempt(activeAttempt, 'encoder-start-failed')
       }
