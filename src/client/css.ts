@@ -133,7 +133,7 @@ body:has(.dcs-col-handle[data-dragging]) { user-select: none; cursor: col-resize
   flex-shrink: 0;
   overflow: visible;
   position: relative;
-  z-index: 5;
+  z-index: 20;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-base);
 }
@@ -234,7 +234,7 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   box-shadow: var(--dsw-shadow-lv2);
-  z-index: 8;
+  z-index: 30;
 }
 .dcs-add-row {
   display: flex;

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1797,7 +1798,7 @@ describe('ManagedBrowserRuntime', () => {
     await box.runtime.dispose()
   })
 
-  it('prefers an installed Playwright Chromium over system Chrome', async () => {
+  it('prefers the GUI Google Chrome over Playwright Chromium so WebRTC shares host routes', async () => {
     const cacheRoot = await mkdtemp(join(tmpdir(), 'dcs-playwright-cache-'))
     const executable = join(cacheRoot, 'chromium-1223', 'chrome-linux64', 'chrome')
     await mkdir(join(cacheRoot, 'chromium-1223', 'chrome-linux64'), { recursive: true })
@@ -1808,7 +1809,14 @@ describe('ManagedBrowserRuntime', () => {
     process.env.PLAYWRIGHT_BROWSERS_PATH = cacheRoot
     delete process.env.DSH_CODEX_BROWSER_EXECUTABLE
     try {
-      await expect(findBrowserExecutable()).resolves.toBe(executable)
+      const found = await findBrowserExecutable()
+      const systemChrome = ['/opt/google/chrome/chrome', '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome']
+      const present = systemChrome.find((path) => existsSync(path))
+      if (present !== undefined) {
+        expect(found).toBe(present)
+      } else {
+        expect(found).toBe(executable)
+      }
     } finally {
       if (previousCache === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH
       else process.env.PLAYWRIGHT_BROWSERS_PATH = previousCache

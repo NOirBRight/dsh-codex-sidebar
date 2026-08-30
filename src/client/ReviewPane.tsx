@@ -13,7 +13,7 @@ const REVIEW_CSS = `
   padding: 12px 14px 10px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family);
 }
-.dcs-rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; position: relative; z-index: 5; overflow: visible; }
+.dcs-rev-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; position: relative; z-index: 2; overflow: visible; }
 .dcs-rev-seg {
   margin-left: auto; display: flex; background: var(--dsw-alias-bg-layer-2);
   border-radius: 8px; padding: 2px;
