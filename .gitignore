@@ -11,3 +11,6 @@ lib/**
 !lib/types/**/
 !lib/types/**/*.d.ts
 .cursor/
+/.scratch/managed-browser-live-prototype/
+/.scratch/managed-browser-prototype/
+/.scratch/ice-*.mjs

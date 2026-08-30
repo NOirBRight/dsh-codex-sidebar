@@ -83,7 +83,7 @@ type HostContext = EffectContext & {
   }) => void) => void
 }
 
-function agentCwd(agent: unknown): string | undefined {
+function agentWorkspaceCwd(agent: unknown): string | undefined {
   if (typeof agent !== 'object' || agent === null) return undefined
   const session = (agent as { session?: unknown }).session
   if (typeof session !== 'object' || session === null) return undefined
@@ -99,35 +99,14 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   let agentLive = (_id: string): boolean => false
   let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
-  const managedBrowser = new ManagedBrowserRuntime(config.managedBrowser)
+  const browserConfig = config.managedBrowser
+  const managedBrowser = new ManagedBrowserRuntime(browserConfig)
   const managedStream = new ManagedBrowserStream({
     runtime: managedBrowser,
-    ...(config.managedBrowser?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: config.managedBrowser.desktopJpegMaxRawBytes }),
-    ...(config.managedBrowser?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: config.managedBrowser.mobileJpegMaxRawBytes }),
-    ...(config.managedBrowser?.desktopJpegQuality === undefined ? {} : { desktopJpegQuality: config.managedBrowser.desktopJpegQuality }),
-    ...(config.managedBrowser?.desktopJpegFrameIntervalMs === undefined ? {} : { desktopJpegFrameIntervalMs: config.managedBrowser.desktopJpegFrameIntervalMs }),
-    ...(config.managedBrowser?.desktopJpegMaxScale === undefined ? {} : { desktopJpegMaxScale: config.managedBrowser.desktopJpegMaxScale }),
-    ...(config.managedBrowser?.desktopScreencastEveryNthFrame === undefined ? {} : { desktopScreencastEveryNthFrame: config.managedBrowser.desktopScreencastEveryNthFrame }),
-    ...(config.managedBrowser?.desktopJpegInteractionBurstFrames === undefined ? {} : { desktopJpegInteractionBurstFrames: config.managedBrowser.desktopJpegInteractionBurstFrames }),
-    ...(config.managedBrowser?.mobileJpegQuality === undefined ? {} : { mobileJpegQuality: config.managedBrowser.mobileJpegQuality }),
-    ...(config.managedBrowser?.mobileJpegFrameIntervalMs === undefined ? {} : { mobileJpegFrameIntervalMs: config.managedBrowser.mobileJpegFrameIntervalMs }),
-    ...(config.managedBrowser?.mobileJpegMaxScale === undefined ? {} : { mobileJpegMaxScale: config.managedBrowser.mobileJpegMaxScale }),
-    ...(config.managedBrowser?.mobileScreencastEveryNthFrame === undefined ? {} : { mobileScreencastEveryNthFrame: config.managedBrowser.mobileScreencastEveryNthFrame }),
-    ...(config.managedBrowser?.mobileJpegInteractionBurstFrames === undefined ? {} : { mobileJpegInteractionBurstFrames: config.managedBrowser.mobileJpegInteractionBurstFrames }),
-    ...(config.managedBrowser?.preferredMediaRoute === undefined ? {} : { preferredMediaRoute: config.managedBrowser.preferredMediaRoute }),
-    ...(config.managedBrowser?.stunUrls === undefined ? {} : { stunUrls: config.managedBrowser.stunUrls }),
-    ...(config.managedBrowser?.webrtcNegotiationTimeoutMs === undefined ? {} : { webrtcNegotiationTimeoutMs: config.managedBrowser.webrtcNegotiationTimeoutMs }),
-    ...(config.managedBrowser?.webrtcRetryCooldownMs === undefined ? {} : { webrtcRetryCooldownMs: config.managedBrowser.webrtcRetryCooldownMs }),
-    ...(config.managedBrowser?.maxMediaPeers === undefined ? {} : { maxMediaPeers: config.managedBrowser.maxMediaPeers }),
-    ...(config.managedBrowser?.maxEncoderPages === undefined ? {} : { maxEncoderPages: config.managedBrowser.maxEncoderPages }),
-    ...(config.managedBrowser?.directVideoFrameRate === undefined ? {} : { directVideoFrameRate: config.managedBrowser.directVideoFrameRate }),
-    ...(config.managedBrowser?.directVideoMaxBitrate === undefined ? {} : { directVideoMaxBitrate: config.managedBrowser.directVideoMaxBitrate }),
-    ...(config.managedBrowser?.directVideoCaptureQuality === undefined ? {} : { directVideoCaptureQuality: config.managedBrowser.directVideoCaptureQuality }),
-    ...(config.managedBrowser?.directVideoCaptureMaxScale === undefined ? {} : { directVideoCaptureMaxScale: config.managedBrowser.directVideoCaptureMaxScale }),
-    ...(config.managedBrowser?.directVideoCaptureMaxRawBytes === undefined ? {} : { directVideoCaptureMaxRawBytes: config.managedBrowser.directVideoCaptureMaxRawBytes }),
-    ...(config.managedBrowser?.mediaIdleTimeoutMs === undefined ? {} : { mediaIdleTimeoutMs: config.managedBrowser.mediaIdleTimeoutMs }),
-    ...(config.managedBrowser?.mediaHideGraceMs === undefined ? {} : { mediaHideGraceMs: config.managedBrowser.mediaHideGraceMs }),
-    ...(config.managedBrowser?.browserCleanupTimeoutMs === undefined ? {} : { shutdownTimeoutMs: config.managedBrowser.browserCleanupTimeoutMs }),
+    ...browserConfig,
+    ...(browserConfig?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: browserConfig.desktopJpegMaxRawBytes }),
+    ...(browserConfig?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: browserConfig.mobileJpegMaxRawBytes }),
+    ...(browserConfig?.browserCleanupTimeoutMs === undefined ? {} : { shutdownTimeoutMs: browserConfig.browserCleanupTimeoutMs }),
   })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()
@@ -212,7 +191,6 @@ export function apply(ctx: HostContext, config: Config = {}): void {
         busy: exec.agent?.status === 'running',
       })
     }), 'dsh-codex-sidebar: Browser tools')
-    console.info('[dsh-codex-sidebar] browser_tabs/open/snapshot/click/fill registered')
   })
   ctx.inject(['attachments'], (wired) => {
     if (wired.attachments === undefined) return
@@ -221,7 +199,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   ctx.inject(['agents'], (wired) => {
     if (wired.agents === undefined) return
     agentLive = (id) => wired.agents?.get(id) !== undefined
-    cwdForSession = (id) => agentCwd(wired.agents?.get(id))
+    cwdForSession = (id) => agentWorkspaceCwd(wired.agents?.get(id))
     wired.effect(() => installAnnotationSend(wired as unknown as AnnotationSendHost, annotationSend), 'dsh-codex-sidebar: annotation send')
   })
   ctx.inject(['systemPrompt'], (wired) => {

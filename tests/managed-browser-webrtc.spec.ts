@@ -60,7 +60,7 @@ describe('managed Browser WebRTC encoder', () => {
     expect(encoderSource).toContain('iceGatheringState')
     expect(encoderSource).toContain('oniceconnectionstatechange')
     expect(encoderSource).toContain("track.contentHint = 'detail'")
-    expect(encoderSource).toContain("parameters.degradationPreference = 'maintain-resolution'")
+    expect(encoderSource).toContain('setTimeout(resolve, 0)')
     expect(encoderSource).not.toContain('setTimeout(resolve, Math.ceil(1000 / config.frameRate))')
     expect(MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE).toBe(20)
     expect(MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE).toBe(8_000_000)

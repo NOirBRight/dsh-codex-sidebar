@@ -51,7 +51,7 @@ export type BrowserClientMessage =
   | ({ type: 'rtc-answer'; description: BrowserRtcDescription } & BrowserMediaIdentity)
   | ({ type: 'rtc-candidate'; candidate: BrowserRtcCandidate | null } & BrowserMediaIdentity)
   | ({ type: 'media-retry'; trigger: 'explicit' | 'network-change' | 'tab-reactivate' } & BrowserMediaIdentity)
-  | ({ type: 'media-decline'; reason: 'presentation-failed' | 'negotiation-timeout' | 'negotiation-error' | 'ready-missing' | 'ready-owner-mismatch' | 'receiver-sync-failed' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed'; detail?: string } & BrowserMediaIdentity)
+  | ({ type: 'media-decline'; reason: 'presentation-failed' | 'negotiation-timeout' | 'negotiation-error' | 'ready-missing' | 'ready-owner-mismatch' | 'receiver-sync-failed' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed' } & BrowserMediaIdentity)
   | ({ type: 'surface-visibility'; visible: boolean } & BrowserMediaIdentity)
   | { type: 'outline' }
 
@@ -144,8 +144,7 @@ export function decodeBrowserClientMessage(raw: string): BrowserClientMessage | 
       && value.reason !== 'ready-owner-mismatch' && value.reason !== 'receiver-sync-failed'
       && value.reason !== 'remote-description-failed' && value.reason !== 'candidate-failed' && value.reason !== 'answer-failed'
       && value.reason !== 'local-description-failed' && value.reason !== 'peer-failed')) return undefined
-    if (value.detail !== undefined && (typeof value.detail !== 'string' || value.detail.length > 256)) return undefined
-    return { type: 'media-decline', ...identity, reason: value.reason, ...(value.detail === undefined ? {} : { detail: value.detail }) }
+    return { type: 'media-decline', ...identity, reason: value.reason }
   }
   if (value.type === 'surface-visibility') {
     if (identity === undefined || typeof value.visible !== 'boolean') return undefined

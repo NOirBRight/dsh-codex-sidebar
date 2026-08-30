@@ -79,8 +79,6 @@ const BOOTSTRAP = String.raw`async (config) => {
     const parameters = sender.getParameters();
     if (parameters.encodings.length === 0) parameters.encodings = [{}];
     parameters.encodings[0].maxBitrate = config.maxBitrate;
-    parameters.encodings[0].maxFramerate = config.frameRate;
-    parameters.degradationPreference = 'maintain-resolution';
     await sender.setParameters(parameters);
   };
   peer.onicecandidate = (event) => {
@@ -138,6 +136,7 @@ const BOOTSTRAP = String.raw`async (config) => {
         context.drawImage(image, 0, 0, value.width, value.height);
         await applySenderParameters();
         track.requestFrame();
+        await new Promise((resolve) => setTimeout(resolve, 0));
       } finally {
         image.close();
       }
@@ -270,7 +269,6 @@ export class ManagedBrowserWebRtcEncoder {
       if (!browserRtcDescription(offer, 'offer')) throw new Error('Managed Browser media Page returned an invalid SDP offer')
       const sdp = sdpWithLoopbackHostCandidates(offer.sdp)
       this.#offerReady = true
-      console.warn('[dsh-codex-sidebar] rtc-offer hosts', [...sdp.matchAll(/^a=candidate:.+$/gm)].map((row) => row[0]))
       return { type: 'offer', sdp }
     } catch (error) {
       if (this.#page === page) this.#page = undefined
@@ -322,7 +320,6 @@ export class ManagedBrowserWebRtcEncoder {
       if (this.#disposed || this.#connected || this.#page === undefined) return
       try {
         const ice = await this.#page.evaluateFunction<unknown>(COMMAND, { type: 'ice-state' })
-        console.warn('[dsh-codex-sidebar] ice-poll', ice)
         if (ice === 'connected' || ice === 'completed') {
           this.#connected = true
           this.#emit({ type: 'connection-state', state: 'connected' })

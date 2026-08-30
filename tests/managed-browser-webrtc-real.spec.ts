@@ -37,6 +37,10 @@ describe('real managed Browser WebRTC encoder', () => {
     await encoder.acceptAnswer(answer)
 
     await vi.waitFor(() => { expect(signals.some((value) => value.signal.type === 'connection-state' && value.signal.state === 'connected')).toBe(true) }, { timeout: 10_000 })
+    await vi.waitFor(() => {
+      expect(signals.some((value) => value.signal.type === 'frame-painted' || value.signal.type === 'encoder-error')).toBe(true)
+    }, { timeout: 10_000 })
+    expect(signals.filter((value) => value.signal.type === 'encoder-error')).toEqual([])
     await receiver.waitForFunction(() => {
       const video = (globalThis as unknown as { __dcsReceiver: { video: HTMLVideoElement } }).__dcsReceiver.video
       return video.readyState >= 2 && video.videoWidth === 640 && video.videoHeight === 480

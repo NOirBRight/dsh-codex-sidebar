@@ -66,15 +66,15 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
       layoutPaintTimeoutMs: 1000
       preferredMediaRoute: webrtc-preferred
       stunUrls: []
-      webrtcNegotiationTimeoutMs: 5000
+      webrtcNegotiationTimeoutMs: 10000
       webrtcRetryCooldownMs: 30000
       maxMediaPeers: 3
       maxEncoderPages: 3
-      directVideoFrameRate: 10
-      directVideoMaxBitrate: 2000000
-      directVideoCaptureQuality: 80
+      directVideoFrameRate: 20
+      directVideoMaxBitrate: 8000000
+      directVideoCaptureQuality: 90
       directVideoCaptureMaxScale: 1.5
-      directVideoCaptureMaxRawBytes: 491520
+      directVideoCaptureMaxRawBytes: 1048576
       desktopJpegQuality: 80
       desktopJpegFrameIntervalMs: 100
       desktopJpegMaxScale: 1.5

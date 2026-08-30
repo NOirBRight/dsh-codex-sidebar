@@ -485,9 +485,6 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
         if (mediaRouteMessage !== undefined) {
           const route = browserMediaRouteFromHost(mediaRouteMessage, mediaRouteRef.current)
           if (mediaRouteMessage.reason !== undefined) setMediaFailure(mediaRouteMessage.reason)
-          if (mediaRouteMessage.route === 'jpeg-fallback' && mediaRouteMessage.reason !== undefined) {
-            console.warn('[dsh-codex-sidebar] Browser media jpeg-fallback', mediaRouteMessage.reason)
-          }
           if (mediaRouteMessage.route === 'unavailable') {
             prepareMediaGeneration()
             publishMediaRoute(route)
@@ -586,11 +583,8 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           let negotiation: Promise<BrowserRtcDescription | undefined>
           try {
             negotiation = receiver.acceptOffer(identity, hostMessage.description)
-          } catch (error: unknown) {
-            send(socket, {
-              type: 'media-decline', ...identity, reason: 'receiver-sync-failed',
-              detail: error instanceof Error ? (error.name + ': ' + error.message).slice(0, 256) : 'unknown synchronous receiver error',
-            })
+          } catch {
+            declineMedia(identity, 'receiver-sync-failed')
             if (stage !== undefined) presentation?.discard(stage)
             if (receiverRef.current === receiver) receiverRef.current = null
             receiver.dispose()

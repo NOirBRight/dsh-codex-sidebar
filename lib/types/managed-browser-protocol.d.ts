@@ -95,7 +95,6 @@ export type BrowserClientMessage = {
 } & BrowserMediaIdentity) | ({
     type: 'media-decline';
     reason: 'presentation-failed' | 'negotiation-timeout' | 'negotiation-error' | 'ready-missing' | 'ready-owner-mismatch' | 'receiver-sync-failed' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed';
-    detail?: string;
 } & BrowserMediaIdentity) | ({
     type: 'surface-visibility';
     visible: boolean;
