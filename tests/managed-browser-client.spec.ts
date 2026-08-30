@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaDeclineMessage, browserMediaRetryRequest, browserRtcAnswerMessage, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFitSurface, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect } from '../src/client/managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient } from '../src/client/managed-browser-layout.ts'
 import { browserSurfaceOccupants } from '../src/client/browser-occupancy.ts'
-import { encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
+import { decodeBrowserClientMessage, encodeBrowserStreamFrameV2, encodeBrowserStreamJsonFrameV2, type BrowserMediaIdentity, type BrowserStreamFrameV2 } from '../src/managed-browser-protocol.ts'
 
 describe('managed Browser stream client', () => {
   afterEach(() => { vi.useRealTimers() })
+
+  it('does not let an offer-shaped structural identity overwrite the rtc-answer discriminant', () => {
+    const identity = { type: 'rtc-offer', ownerId: 'owner-1', revision: 3, mediaGeneration: 2 } as unknown as BrowserMediaIdentity
+    const outbound = browserRtcAnswerMessage(identity, { type: 'answer', sdp: 'answer-sdp' })
+    expect(outbound.type).toBe('rtc-answer')
+    expect(decodeBrowserClientMessage(JSON.stringify(outbound))).toMatchObject({
+      type: 'rtc-answer', ownerId: 'owner-1', revision: 3, mediaGeneration: 2,
+    })
+  })
 
   it('offers both frame carriers and frame ACK flow control in hello', () => {
     expect(browserStreamHello(true)).toEqual({
@@ -61,11 +70,11 @@ describe('managed Browser stream client', () => {
     })
   })
 
-  it('declines every current local presentation failure but never a stale or Host-selected fallback', () => {
+  it('preserves every current local media failure but never declines a stale or Host-selected fallback', () => {
     const current = { ownerId: 'owner-1', revision: 4, mediaGeneration: 9 }
     for (const reason of ['negotiation-timeout', 'negotiation-error', 'peer-failed', 'presentation-failed'] as const) {
       expect(browserMediaDeclineForFailure(current, current, reason)).toEqual({
-        type: 'media-decline', ...current, reason: 'presentation-failed',
+        type: 'media-decline', ...current, reason,
       })
     }
     expect(browserMediaDeclineForFailure({ ...current, ownerId: 'stale-owner' }, current, 'negotiation-timeout')).toBeUndefined()

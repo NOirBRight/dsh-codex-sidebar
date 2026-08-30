@@ -1,5 +1,7 @@
-import { type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts';
+import { type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts';
 export declare function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean, surfaceActive?: boolean): boolean;
+/** Build the client answer without trusting structural identities to be runtime-exact. */
+export declare function browserRtcAnswerMessage(identity: BrowserMediaIdentity, description: BrowserRtcDescription): BrowserClientMessage;
 /** Buffers bounded Host ICE candidates only for the current owner and media generation. */
 export declare class BrowserRtcCandidateBuffer {
     #private;
@@ -85,9 +87,11 @@ export type BrowserMediaRetryState = {
     nextRetryAt: number;
 };
 export type BrowserMediaPresentationRoute = 'direct-video' | 'low-bandwidth-fallback' | 'reconnecting' | 'unavailable';
-export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed';
+export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'ready-missing' | 'ready-owner-mismatch' | 'receiver-sync-failed' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed' | 'host-fallback' | 'presentation-failed';
 /** Assemble an exact client decline after direct video cannot present its first frame. */
-export declare function browserMediaDeclineMessage(identity: BrowserMediaIdentity): Extract<BrowserClientMessage, {
+export declare function browserMediaDeclineMessage(identity: BrowserMediaIdentity, reason?: Extract<BrowserClientMessage, {
+    type: 'media-decline';
+}>['reason']): Extract<BrowserClientMessage, {
     type: 'media-decline';
 }>;
 /** Decline only a local failure that still belongs to the current Host media identity. */

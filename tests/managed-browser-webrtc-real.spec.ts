@@ -61,6 +61,44 @@ describe('real managed Browser WebRTC encoder', () => {
     await encoder.dispose()
     await vi.waitFor(() => { expect(context.pages()).toHaveLength(pageCountWithReceiver) })
   }, 30_000)
+
+  it.skipIf(process.env.DSH_BROWSER_E2E !== '1')('reports encoder connected when the receiver can only use 127.0.0.1 host candidates', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'dcs-webrtc-loop-'))
+    const recvDir = await mkdtemp(join(tmpdir(), 'dcs-webrtc-recv-'))
+    const runtime = new ManagedBrowserRuntime({ profileDir })
+    const recvContext = await chromium.launchPersistentContext(recvDir, {
+      executablePath: '/opt/google/chrome/chrome',
+      headless: true,
+    })
+    cleanups.push(async () => {
+      await runtime.dispose()
+      await recvContext.close()
+      await rm(profileDir, { recursive: true, force: true })
+      await rm(recvDir, { recursive: true, force: true })
+    })
+    const signals: BrowserMediaSignal[] = []
+    const encoder = new ManagedBrowserWebRtcEncoder({
+      identity: { ownerId: 'loop-owner', generation: 1 },
+      pageFactory: () => runtime.createMediaPage(),
+      stunUrls: [],
+      width: 320,
+      height: 240,
+      onSignal: (signal) => { signals.push(signal) },
+    })
+    cleanups.push(async () => { await encoder.dispose() })
+    const offer = await encoder.start()
+    const loopbackOnly = {
+      type: 'offer' as const,
+      sdp: offer.sdp.split(/\r?\n/).filter((line) => !line.startsWith('a=candidate:') || (line.includes('127.0.0.1') && line.includes('typ host'))).join('\r\n'),
+    }
+    expect(loopbackOnly.sdp).toContain('127.0.0.1')
+    const receiver = await recvContext.newPage()
+    const answer = await receiverAnswer(receiver, loopbackOnly, [])
+    await encoder.acceptAnswer(answer)
+    await vi.waitFor(() => {
+      expect(signals.some((value) => value.signal.type === 'connection-state' && value.signal.state === 'connected')).toBe(true)
+    }, { timeout: 10_000 })
+  }, 30_000)
 })
 
 async function launchContext(profileDir: string): Promise<BrowserContext> {

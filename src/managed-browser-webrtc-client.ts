@@ -27,7 +27,7 @@ export type BrowserMediaReceiverPeer = {
 }
 
 export type BrowserMediaRetryTrigger = 'explicit' | 'network-change' | 'tab-reactivate'
-export type BrowserMediaFallbackReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
+export type BrowserMediaFallbackReason = 'negotiation-timeout' | 'negotiation-error' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
 
 export type BrowserMediaReceiverEvent = BrowserMediaClientIdentity & {
   event:
@@ -78,14 +78,23 @@ export class ManagedBrowserWebRtcReceiver {
   #disposed = false
 
   constructor(opts: ManagedBrowserWebRtcReceiverOptions) {
-    this.identity = Object.freeze({ ...opts.identity })
-    this.#peerFactory = opts.peerFactory
+    this.identity = Object.freeze({
+      ownerId: opts.identity.ownerId,
+      revision: opts.identity.revision,
+      mediaGeneration: opts.identity.mediaGeneration,
+    })
+    const peerFactory = opts.peerFactory
+    const onEvent = opts.onEvent ?? (() => {})
+    const now = opts.now ?? Date.now
+    const schedule = opts.schedule ?? globalThis.setTimeout
+    const cancel = opts.cancel ?? globalThis.clearTimeout
+    this.#peerFactory = (events) => peerFactory(events)
     this.#negotiationTimeoutMs = positiveDuration(opts.negotiationTimeoutMs, 'negotiationTimeoutMs')
     this.#retryCooldownMs = nonnegativeDuration(opts.retryCooldownMs, 'retryCooldownMs')
-    this.#onEvent = opts.onEvent ?? (() => {})
-    this.#now = opts.now ?? Date.now
-    this.#schedule = opts.schedule ?? setTimeout
-    this.#cancel = opts.cancel ?? clearTimeout
+    this.#onEvent = (event) => { onEvent(event) }
+    this.#now = () => now()
+    this.#schedule = (callback, delayMs) => schedule(callback, delayMs)
+    this.#cancel = (timer) => { cancel(timer) }
   }
 
   /** Replace the current receive attempt and create an SDP answer for an exact current identity. */
@@ -140,8 +149,8 @@ export class ManagedBrowserWebRtcReceiver {
     this.#current = attempt
     this.#route = 'connecting'
     this.#emit({ type: 'route', route: 'connecting' })
-    const negotiation = this.#negotiate(attempt, offer).catch(() => {
-      if (this.#isCurrent(attempt)) this.#fallback(attempt, 'negotiation-error')
+    const negotiation = this.#negotiate(attempt, offer).catch((error: unknown) => {
+      if (this.#isCurrent(attempt)) this.#fallback(attempt, negotiationFailureReason(error))
       return undefined
     })
     return Promise.race([negotiation, aborted])
@@ -160,7 +169,7 @@ export class ManagedBrowserWebRtcReceiver {
       await attempt.peer.addIceCandidate(candidate)
       return this.#isCurrent(attempt)
     } catch {
-      if (this.#isCurrent(attempt)) this.#fallback(attempt, 'negotiation-error')
+      if (this.#isCurrent(attempt)) this.#fallback(attempt, 'candidate-failed')
       return false
     }
   }
@@ -202,16 +211,16 @@ export class ManagedBrowserWebRtcReceiver {
   }
 
   async #negotiate(attempt: ReceiverAttempt, offer: BrowserRtcDescription): Promise<BrowserRtcDescription | undefined> {
-    await attempt.peer.setRemoteDescription(offer)
+    await negotiationStep('remote-description-failed', () => attempt.peer.setRemoteDescription(offer))
     if (!this.#isCurrent(attempt)) return undefined
     attempt.remoteReady = true
     for (const candidate of attempt.pendingCandidates.splice(0)) {
-      await attempt.peer.addIceCandidate(candidate)
+      await negotiationStep('candidate-failed', () => attempt.peer.addIceCandidate(candidate))
       if (!this.#isCurrent(attempt)) return undefined
     }
-    const answer = await attempt.peer.createAnswer()
+    const answer = await negotiationStep('answer-failed', () => attempt.peer.createAnswer())
     if (!this.#isCurrent(attempt) || answer.type !== 'answer') return undefined
-    await attempt.peer.setLocalDescription(answer)
+    await negotiationStep('local-description-failed', () => attempt.peer.setLocalDescription(answer))
     return this.#isCurrent(attempt) ? answer : undefined
   }
 
@@ -225,7 +234,7 @@ export class ManagedBrowserWebRtcReceiver {
     this.#emit({ type: 'generation-ready', track })
   }
 
-  #fallback(attempt: ReceiverAttempt, reason: 'negotiation-timeout' | 'negotiation-error' | 'peer-failed'): void {
+  #fallback(attempt: ReceiverAttempt, reason: BrowserMediaFallbackReason): void {
     if (!this.#isCurrent(attempt)) return
     this.#disposeAttempt(attempt)
     this.#route = 'jpeg-fallback'
@@ -250,6 +259,29 @@ export class ManagedBrowserWebRtcReceiver {
   #emit(event: BrowserMediaReceiverEvent['event']): void {
     if (!this.#disposed) this.#onEvent({ ...this.identity, event })
   }
+}
+
+type BrowserMediaNegotiationStep = 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed'
+
+class BrowserMediaNegotiationError extends Error {
+  readonly reason: BrowserMediaNegotiationStep
+
+  constructor(reason: BrowserMediaNegotiationStep) {
+    super(reason)
+    this.reason = reason
+  }
+}
+
+async function negotiationStep<T>(reason: BrowserMediaNegotiationStep, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch {
+    throw new BrowserMediaNegotiationError(reason)
+  }
+}
+
+function negotiationFailureReason(error: unknown): BrowserMediaFallbackReason {
+  return error instanceof BrowserMediaNegotiationError ? error.reason : 'negotiation-error'
 }
 
 function sameIdentity(left: BrowserMediaClientIdentity, right: BrowserMediaClientIdentity): boolean {

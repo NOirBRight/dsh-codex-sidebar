@@ -492,7 +492,7 @@ describe('managed browser stream protocol', () => {
   })
 
   it('uses an Origin-independent capture profile for direct video', () => {
-    expect(browserDirectCaptureProfile()).toEqual({ quality: 80, maxScale: 1.5, maxRawBytes: 480 * 1024 })
+    expect(browserDirectCaptureProfile()).toEqual({ quality: 90, maxScale: 1.5, maxRawBytes: 1024 * 1024 })
     expect(browserDirectCaptureProfile({
       directVideoCaptureQuality: 88,
       directVideoCaptureMaxScale: 1.25,

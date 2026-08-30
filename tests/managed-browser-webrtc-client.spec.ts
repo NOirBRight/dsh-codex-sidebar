@@ -27,6 +27,7 @@ class FakePeer implements BrowserMediaReceiverPeer {
   readonly localDescriptions: BrowserRtcDescription[] = []
   readonly candidates: unknown[] = []
   closeCalls = 0
+  failStep: 'remote' | 'answer' | 'local' | 'candidate' | undefined
   remoteGate: Promise<void> | undefined
   events: Parameters<NonNullable<ConstructorParameters<typeof ManagedBrowserWebRtcReceiver>[0]['peerFactory']>>[0]
 
@@ -36,19 +37,23 @@ class FakePeer implements BrowserMediaReceiverPeer {
 
   async setRemoteDescription(description: BrowserRtcDescription): Promise<void> {
     this.remoteDescriptions.push(description)
+    if (this.failStep === 'remote') throw new Error('remote')
     await this.remoteGate
   }
 
   async createAnswer(): Promise<BrowserRtcDescription> {
+    if (this.failStep === 'answer') throw new Error('answer')
     return { type: 'answer', sdp: 'answer-sdp' }
   }
 
   async setLocalDescription(description: BrowserRtcDescription): Promise<void> {
     this.localDescriptions.push(description)
+    if (this.failStep === 'local') throw new Error('local')
   }
 
   async addIceCandidate(candidate: unknown): Promise<void> {
     this.candidates.push(candidate)
+    if (this.failStep === 'candidate') throw new Error('candidate')
   }
 
   close(): void { this.closeCalls += 1 }
@@ -58,7 +63,7 @@ class FakePeer implements BrowserMediaReceiverPeer {
   track(track: BrowserMediaReceiverTrack): void { this.events.onTrack(track) }
 }
 
-function harness(opts: { timeoutMs?: number; cooldownMs?: number; remoteGate?: Promise<void> } = {}): {
+function harness(opts: { timeoutMs?: number; cooldownMs?: number; remoteGate?: Promise<void>; failStep?: FakePeer['failStep'] } = {}): {
   receiver: ManagedBrowserWebRtcReceiver
   peers: FakePeer[]
   events: BrowserMediaReceiverEvent[]
@@ -71,6 +76,7 @@ function harness(opts: { timeoutMs?: number; cooldownMs?: number; remoteGate?: P
       peerFactory: (callbacks) => {
         const peer = new FakePeer(callbacks)
         peer.remoteGate = opts.remoteGate
+        peer.failStep = opts.failStep
         peers.push(peer)
         return peer
       },
@@ -84,6 +90,24 @@ function harness(opts: { timeoutMs?: number; cooldownMs?: number; remoteGate?: P
 }
 
 describe('managed Browser WebRTC receiver', () => {
+  it('invokes timer adapters without binding the receiver as this', async () => {
+    let scheduleThis: unknown = 'unset'
+    let cancelThis: unknown = 'unset'
+    const timer = {} as ReturnType<typeof setTimeout>
+    const receiver = new ManagedBrowserWebRtcReceiver({
+      identity: IDENTITY,
+      peerFactory: (callbacks) => new FakePeer(callbacks),
+      negotiationTimeoutMs: 1_000,
+      retryCooldownMs: 5_000,
+      schedule: function (this: unknown): ReturnType<typeof setTimeout> { scheduleThis = this; return timer },
+      cancel: function (this: unknown): void { cancelThis = this },
+    })
+    await receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'offer' })
+    receiver.dispose()
+    expect(scheduleThis).toBeUndefined()
+    expect(cancelThis).toBeUndefined()
+  })
+
   it('answers an offer and exchanges candidates through the injected peer', async () => {
     const { receiver, peers, events } = harness()
     const offer = { type: 'offer', sdp: 'offer-sdp' } as const
@@ -148,6 +172,27 @@ describe('managed Browser WebRTC receiver', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it.each([
+    ['remote', 'remote-description-failed'],
+    ['answer', 'answer-failed'],
+    ['local', 'local-description-failed'],
+  ] as const)('reports the exact %s negotiation stage', async (failStep, reason) => {
+    const { receiver, events } = harness({ failStep })
+    await expect(receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'offer' })).resolves.toBeUndefined()
+    expect(events.at(-1)).toEqual({ ...IDENTITY, event: { type: 'route', route: 'jpeg-fallback', reason } })
+  })
+
+  it('reports a queued candidate failure separately', async () => {
+    let releaseRemote: (() => void) | undefined
+    const remoteGate = new Promise<void>((resolve) => { releaseRemote = resolve })
+    const { receiver, events } = harness({ remoteGate, failStep: 'candidate' })
+    const pending = receiver.acceptOffer(IDENTITY, { type: 'offer', sdp: 'offer' })
+    await receiver.addCandidate(IDENTITY, { candidate: 'candidate:bad' })
+    releaseRemote?.()
+    await expect(pending).resolves.toBeUndefined()
+    expect(events.at(-1)).toEqual({ ...IDENTITY, event: { type: 'route', route: 'jpeg-fallback', reason: 'candidate-failed' } })
   })
 
   it('unblocks a hung offer at timeout and rate-limits every retry trigger', async () => {

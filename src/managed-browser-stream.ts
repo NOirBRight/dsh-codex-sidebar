@@ -45,12 +45,12 @@ export const MANAGED_BROWSER_MOBILE_EVERY_NTH_FRAME = 4
 const HIGH_DENSITY_SCALE = 1.5
 export const MANAGED_BROWSER_MOBILE_MAX_RAW_BYTES = 96 * 1024
 export const MANAGED_BROWSER_DESKTOP_MAX_RAW_BYTES = 480 * 1024
-export const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_RAW_BYTES = 480 * 1024
+export const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_RAW_BYTES = 1024 * 1024
 export const MANAGED_BROWSER_DESKTOP_INTERACTION_BURST_FRAMES = 20
 export const MANAGED_BROWSER_MOBILE_INTERACTION_BURST_FRAMES = 4
 
 export const MANAGED_BROWSER_STREAM_QUALITY = 80
-export const MANAGED_BROWSER_DIRECT_CAPTURE_QUALITY = 80
+export const MANAGED_BROWSER_DIRECT_CAPTURE_QUALITY = 90
 export const MANAGED_BROWSER_DIRECT_CAPTURE_MAX_SCALE = 1.5
 export const MANAGED_BROWSER_MOBILE_STREAM_QUALITY = 65
 export const MANAGED_BROWSER_MEDIA_IDLE_TIMEOUT_MS = 5 * 60_000
@@ -1191,6 +1191,12 @@ export class ManagedBrowserStream {
         return
       }
       const message = decodeBrowserClientMessage(raw)
+      try {
+        const parsed = JSON.parse(raw) as { type?: unknown }
+        if (typeof parsed.type === 'string' && parsed.type !== 'frame-ack' && parsed.type !== 'input' && parsed.type !== 'hello') {
+          console.warn('[dsh-codex-sidebar] ws-in', parsed.type, message === undefined ? 'decode-fail' : 'ok')
+        }
+      } catch { /* not JSON */ }
       if (!activated) {
         if (message !== undefined && message.type !== 'hello') socket.close(1008, 'Previous Browser owner is still detaching')
         return
@@ -1231,15 +1237,27 @@ export class ManagedBrowserStream {
           const attempt = mediaAttempt
           if (attempt === undefined || message.ownerId !== ownerId || message.revision !== attempt.layout.revision
             || message.mediaGeneration !== attempt.layout.mediaGeneration) return
+          if (message.detail !== undefined) console.warn('[dsh-codex-sidebar] client media-decline detail', message.reason, message.detail)
           this.#track(failMediaAttempt(attempt, 'client-' + message.reason))
           return
         }
         const attempt = mediaAttempt
         if (attempt === undefined || message.ownerId !== ownerId
-          || message.revision !== attempt.layout.revision || message.mediaGeneration !== attempt.layout.mediaGeneration) return
+          || message.revision !== attempt.layout.revision || message.mediaGeneration !== attempt.layout.mediaGeneration) {
+          console.warn('[dsh-codex-sidebar] rtc drop', message.type, {
+            haveAttempt: attempt !== undefined,
+            owner: message.ownerId === ownerId,
+            revision: attempt?.layout.revision,
+            mediaGeneration: attempt?.layout.mediaGeneration,
+            gotRevision: message.revision,
+            gotGeneration: message.mediaGeneration,
+          })
+          return
+        }
         if (message.type === 'rtc-answer') {
           if (attempt.answerStarted) return
           attempt.answerStarted = true
+          console.warn('[dsh-codex-sidebar] rtc-answer', message.description.sdp.split(/\r?\n/).filter((line) => line.includes('candidate')).slice(0, 8))
           const task = attempt.encoder.acceptAnswer(message.description).then(async () => {
             if (mediaAttempt !== attempt) return
             attempt.answerAccepted = true

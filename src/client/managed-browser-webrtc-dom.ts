@@ -11,8 +11,15 @@ export function browserWebRtcVideoAvailable(scope: PeerScope = globalThis): bool
 
 /** Create the receive-only browser peer used by the transport-neutral receiver. */
 export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stunUrls: readonly string[] = []): BrowserMediaReceiverPeer {
-  const peer = new RTCPeerConnection({ iceServers: stunUrls.length === 0 ? [] : [{ urls: [...stunUrls] }] })
-  peer.addTransceiver('video', { direction: 'recvonly' })
+  const configured = { iceServers: stunUrls.length === 0 ? [] : [{ urls: [...stunUrls] }] }
+  const Peer = globalThis.RTCPeerConnection
+  let peer: RTCPeerConnection
+  try {
+    peer = new Peer(configured)
+  } catch (error) {
+    if (stunUrls.length === 0) throw error
+    peer = new Peer({ iceServers: [] })
+  }
   peer.onicecandidate = (event) => { events.onCandidate(rtcCandidate(event.candidate?.toJSON() ?? null)) }
   peer.onconnectionstatechange = () => { events.onConnectionState(peer.connectionState) }
   peer.oniceconnectionstatechange = () => {
@@ -24,16 +31,7 @@ export function createBrowserDomPeer(events: BrowserMediaReceiverPeerEvents, stu
   return {
     async setRemoteDescription(description) { await peer.setRemoteDescription(description) },
     async createAnswer() { return description(await peer.createAnswer()) },
-    async setLocalDescription(value) {
-      await peer.setLocalDescription(value)
-      if (peer.iceGatheringState === 'complete') return
-      await new Promise<void>((resolve) => {
-        const finish = (): void => { peer.removeEventListener('icegatheringstatechange', onChange); resolve() }
-        const onChange = (): void => { if (peer.iceGatheringState === 'complete') finish() }
-        peer.addEventListener('icegatheringstatechange', onChange)
-        setTimeout(finish, 2000)
-      })
-    },
+    async setLocalDescription(value) { await peer.setLocalDescription(value) },
     async addIceCandidate(candidate) { await peer.addIceCandidate(candidate) },
     close() { peer.close() },
   }

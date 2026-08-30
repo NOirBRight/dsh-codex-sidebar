@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
   MANAGED_BROWSER_DEFAULT_STUN_URLS,
+  MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE,
+  MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE,
   ManagedBrowserWebRtcEncoder,
   validateBrowserStunUrls,
   type BrowserMediaPage,
@@ -15,6 +17,7 @@ class FakeMediaPage implements BrowserMediaPage {
   closeCalls = 0
   binding: ((source: unknown, payload: unknown) => void) | undefined
   paintGate: Promise<void> | undefined
+  onCreateOffer: (() => void) | undefined
 
   async exposeBinding(_name: string, callback: (source: unknown, payload: unknown) => void): Promise<void> {
     this.binding = callback
@@ -22,8 +25,12 @@ class FakeMediaPage implements BrowserMediaPage {
 
   async evaluateFunction<R>(_expression: string, argument: unknown): Promise<R> {
     if (isCommand(argument)) {
+      if (argument.type === 'ice-state') return 'new' as R
       this.commands.push(argument)
-      if (argument.type === 'create-offer') return { type: 'offer', sdp: 'offer-sdp' } as R
+      if (argument.type === 'create-offer') {
+        this.onCreateOffer?.()
+        return { type: 'offer', sdp: 'offer-sdp' } as R
+      }
       if (argument.type === 'paint') await this.paintGate
       return undefined as R
     }
@@ -52,6 +59,11 @@ describe('managed Browser WebRTC encoder', () => {
     const encoderSource = readFileSync(new URL('../src/managed-browser-webrtc.ts', import.meta.url), 'utf8')
     expect(encoderSource).toContain('iceGatheringState')
     expect(encoderSource).toContain('oniceconnectionstatechange')
+    expect(encoderSource).toContain("track.contentHint = 'detail'")
+    expect(encoderSource).toContain("parameters.degradationPreference = 'maintain-resolution'")
+    expect(encoderSource).not.toContain('setTimeout(resolve, Math.ceil(1000 / config.frameRate))')
+    expect(MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE).toBe(20)
+    expect(MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE).toBe(8_000_000)
     expect(MANAGED_BROWSER_DEFAULT_STUN_URLS).toEqual(['stun:stun.l.google.com:19302'])
     expect(() => validateBrowserStunUrls(['turn:relay.example.test:3478'])).toThrow('STUN')
     expect(() => validateBrowserStunUrls(['https://stun.example.test'])).toThrow('STUN')
@@ -86,6 +98,25 @@ describe('managed Browser WebRTC encoder', () => {
       { type: 'accept-answer', description: { type: 'answer', sdp: 'answer-sdp' } },
       { type: 'add-candidate', candidate: { candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 } },
     ])
+  })
+
+  it('does not trickle candidates already embedded while creating the offer', async () => {
+    const page = new FakeMediaPage()
+    const onSignal = vi.fn()
+    const encoder = new ManagedBrowserWebRtcEncoder({
+      identity: { ownerId: 'owner-1', generation: 1 }, pageFactory: async () => page,
+      width: 640, height: 480, onSignal,
+    })
+    page.onCreateOffer = () => {
+      page.emit({ type: 'candidate', candidate: { candidate: 'candidate:embedded' } })
+      page.emit({ type: 'candidate', candidate: null })
+    }
+    await encoder.start()
+    expect(onSignal).not.toHaveBeenCalled()
+    page.emit({ type: 'candidate', candidate: { candidate: 'candidate:late' } })
+    expect(onSignal).toHaveBeenCalledWith(expect.objectContaining({
+      signal: { type: 'candidate', candidate: { candidate: 'candidate:late' } },
+    }))
   })
 
   it('rejects invalid direct-video encoder limits before creating a Page', () => {

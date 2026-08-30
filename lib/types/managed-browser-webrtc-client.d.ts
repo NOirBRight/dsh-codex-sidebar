@@ -20,7 +20,7 @@ export type BrowserMediaReceiverPeer = {
     close(): void;
 };
 export type BrowserMediaRetryTrigger = 'explicit' | 'network-change' | 'tab-reactivate';
-export type BrowserMediaFallbackReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed';
+export type BrowserMediaFallbackReason = 'negotiation-timeout' | 'negotiation-error' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed' | 'host-fallback' | 'presentation-failed';
 export type BrowserMediaReceiverEvent = BrowserMediaClientIdentity & {
     event: {
         type: 'candidate';

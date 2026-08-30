@@ -60,6 +60,30 @@ describe('managed Browser WebRTC DOM adapter', () => {
     }
   })
 
+  it('retries peer construction without STUN when Chromium rejects the configured server list', () => {
+    const constructed: unknown[] = []
+    class FakePeer {
+      connectionState = 'new'
+      constructor(config?: unknown) {
+        constructed.push(config)
+        if (constructed.length === 1) throw new TypeError('invalid iceServers')
+      }
+      addTransceiver(): void {}
+      close(): void {}
+    }
+    const previous = globalThis.RTCPeerConnection
+    globalThis.RTCPeerConnection = FakePeer as unknown as typeof RTCPeerConnection
+    try {
+      createBrowserDomPeer({ onCandidate() {}, onConnectionState() {}, onTrack() {} }, ['stun:127.0.0.1:12345'])
+      expect(constructed).toEqual([
+        { iceServers: [{ urls: ['stun:127.0.0.1:12345'] }] },
+        { iceServers: [] },
+      ])
+    } finally {
+      globalThis.RTCPeerConnection = previous
+    }
+  })
+
   it('keeps video hidden until a decoded frame and releases it exactly once', async () => {
     const video = new FakeVideo()
     const track = { kind: 'video', stop: vi.fn() }

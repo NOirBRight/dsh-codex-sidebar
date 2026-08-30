@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactElement, type ReactNode, type RefObject, type WheelEvent } from 'react'
-import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
+import { BrowserRtcCandidateBuffer, BrowserVisibilityGrace, browserAnnotationHighlightRects, browserAnnotationNodeAt, browserBinaryFrameIdentity, browserEvidenceSelectionRect, browserJsonFrameIdentity, browserMediaDeclineForFailure, browserMediaRetryRequest, browserMediaRouteFromHost, browserRtcAnswerMessage, browserMediaRouteFromReceiver, browserPointerGestureEnd, browserPointerGestureMove, browserPointerShouldFocusIme, browserSelectedRectForOutline, browserStreamFrameBuffer, browserStreamHello, browserStreamReady, browserStreamShouldRun, browserStreamSignalsReady, browserStreamTextMessage, browserSurfaceVisibilityMessage, browserTouchGestureMove, browserTouchShouldFocusIme, browserWebSocketUrl, createBrowserInputCoalescer, decodeBrowserFrame, decodeBrowserJpegJson, decodeBrowserLayoutCommit, decodeBrowserMediaRoute, decodeBrowserOutline, decodeBrowserTrackedRect, paintBrowserFrameForConnection, updateBrowserSelectedRect, type BrowserMediaFailureReason, type BrowserMediaPresentationRoute, type BrowserMediaRetryState, type BrowserOutlineNode, type BrowserPointerGesture, type BrowserTouchGesture } from './managed-browser-stream.ts'
 import { ManagedBrowserLayoutClient, browserElementContentSize, browserObservedContentSize } from './managed-browser-layout.ts'
 import { publishBrowserPresentation, type BrowserPresentationConnection, type BrowserPresentationState } from './managed-browser-observability.ts'
 import { BrowserVideoPresentationSwitch, browserWebRtcVideoAvailable, createBrowserDomPeer, handleBrowserVideoPresentation } from './managed-browser-webrtc-dom.ts'
@@ -503,17 +503,26 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
         const hostMessage = decodeBrowserHostMessage(text)
         if (hostMessage?.type === 'rtc-offer') {
           const ready = readyRef.current
-          const committed = layoutRef.current?.snapshot().committed
+          if (ready === null || hostMessage.ownerId !== ready.ownerId) {
+            send(socket, {
+              type: 'media-decline', ownerId: hostMessage.ownerId, revision: hostMessage.revision,
+              mediaGeneration: hostMessage.mediaGeneration,
+              reason: ready === null ? 'ready-missing' : 'ready-owner-mismatch',
+            })
+            return
+          }
           const presentation = videoPresentation()
-          if (ready === null || presentation === undefined || hostMessage.ownerId !== ready.ownerId
-            || committed?.revision !== hostMessage.revision || committed.mediaGeneration !== hostMessage.mediaGeneration) return
           const previousReceiver = receiverRef.current
           if (previousReceiver !== activeReceiverRef.current) previousReceiver?.dispose()
-          presentation.discardPending()
+          presentation?.discardPending()
           earlyCandidates.setIdentity(hostMessage)
-          const identity: BrowserMediaIdentity = hostMessage
-          const stage = presentation.stage(identity, ready.media.negotiationTimeoutMs)
-          const surface = stage.surface
+          const identity: BrowserMediaIdentity = {
+            ownerId: hostMessage.ownerId,
+            revision: hostMessage.revision,
+            mediaGeneration: hostMessage.mediaGeneration,
+          }
+          const stage = presentation?.stage(identity, ready.media.negotiationTimeoutMs)
+          const surface = stage?.surface
           let videoSize: Size | undefined
           const receiver = new ManagedBrowserWebRtcReceiver({
             identity,
@@ -526,6 +535,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
                 send(socket, { type: 'rtc-candidate', ownerId: event.ownerId, revision: event.revision, mediaGeneration: event.mediaGeneration, candidate: event.event.candidate })
               } else if (event.event.type === 'video-track') {
                 const track = event.event.track
+                if (surface === undefined) return
                 void handleBrowserVideoPresentation(
                   surface.present(track),
                   () => {
@@ -542,7 +552,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
                 )
               } else if (event.event.type === 'generation-ready') {
                 const current = layoutRef.current?.snapshot().committed
-                if (current === undefined || videoSize === undefined || !presentation.canCommit(stage)
+                if (current === undefined || videoSize === undefined || presentation === undefined || stage === undefined || !presentation.canCommit(stage)
                   || event.ownerId !== ready.ownerId || event.revision !== current.revision
                   || event.mediaGeneration !== current.mediaGeneration) return
                 const accepted = layoutRef.current?.acceptFrame({
@@ -566,7 +576,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
                 publishMediaRoute(browserMediaRouteFromReceiver(event.event.route))
                 if (event.event.route === 'jpeg-fallback') {
                   if (event.event.reason !== undefined) setMediaFailure(event.event.reason)
-                  presentation.discard(stage)
+                  if (stage !== undefined) presentation?.discard(stage)
                   declineMedia(event, event.event.reason)
                 }
               }
@@ -576,9 +586,12 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           let negotiation: Promise<BrowserRtcDescription | undefined>
           try {
             negotiation = receiver.acceptOffer(identity, hostMessage.description)
-          } catch {
-            declineMedia(hostMessage, 'negotiation-error')
-            presentation.discard(stage)
+          } catch (error: unknown) {
+            send(socket, {
+              type: 'media-decline', ...identity, reason: 'receiver-sync-failed',
+              detail: error instanceof Error ? (error.name + ': ' + error.message).slice(0, 256) : 'unknown synchronous receiver error',
+            })
+            if (stage !== undefined) presentation?.discard(stage)
             if (receiverRef.current === receiver) receiverRef.current = null
             receiver.dispose()
             publishMediaRoute('low-bandwidth-fallback')
@@ -593,7 +606,7 @@ export function ManagedBrowserCanvas({ tabId, active, device, annotate, selected
           })()
           void negotiation.then((answer) => {
             if (answer !== undefined && receiverRef.current === receiver && isCurrent()) {
-              send(socket, { type: 'rtc-answer', ...identity, description: answer })
+              send(socket, browserRtcAnswerMessage(identity, answer))
             }
           })
           return

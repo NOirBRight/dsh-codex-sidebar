@@ -1,7 +1,15 @@
-import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MAX_RTC_CANDIDATES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
+import { BROWSER_STREAM_V2_HEADER_BYTES, MANAGED_BROWSER_MAX_RTC_CANDIDATES, MANAGED_BROWSER_MEDIA_HIDE_GRACE_MS, MANAGED_BROWSER_PROTOCOL_VERSION, decodeBrowserHostMessage, decodeBrowserStreamFrameV2, decodeBrowserStreamJsonFrameV2, type BrowserClientMessage, type BrowserLayoutCommitMessage, type BrowserMediaIdentity, type BrowserMediaRouteMessage, type BrowserReadyMessage, type BrowserRtcCandidate, type BrowserRtcDescription, type BrowserStreamFrameV2 } from '../managed-browser-protocol.ts'
 
 export function browserStreamShouldRun(pageVisible: boolean, intersecting: boolean, surfaceActive = true): boolean {
   return pageVisible && intersecting && surfaceActive
+}
+
+/** Build the client answer without trusting structural identities to be runtime-exact. */
+export function browserRtcAnswerMessage(identity: BrowserMediaIdentity, description: BrowserRtcDescription): BrowserClientMessage {
+  return {
+    type: 'rtc-answer', ownerId: identity.ownerId, revision: identity.revision,
+    mediaGeneration: identity.mediaGeneration, description,
+  }
 }
 
 /** Buffers bounded Host ICE candidates only for the current owner and media generation. */
@@ -12,7 +20,7 @@ export class BrowserRtcCandidateBuffer {
   /** Select the authoritative signaling identity and discard candidates from an older generation. */
   setIdentity(identity: BrowserMediaIdentity): void {
     if (this.#identity !== undefined && sameMediaIdentity(this.#identity, identity)) return
-    this.#identity = { ...identity }
+    this.#identity = exactMediaIdentity(identity)
     this.#candidates = []
   }
 
@@ -35,6 +43,10 @@ export class BrowserRtcCandidateBuffer {
     this.#identity = undefined
     this.#candidates = []
   }
+}
+
+function exactMediaIdentity(identity: BrowserMediaIdentity): BrowserMediaIdentity {
+  return { ownerId: identity.ownerId, revision: identity.revision, mediaGeneration: identity.mediaGeneration }
 }
 
 function sameMediaIdentity(left: BrowserMediaIdentity, right: BrowserMediaIdentity): boolean {
@@ -198,11 +210,14 @@ export type BrowserStreamFrameEncoding = 'binary-v2' | 'json-base64-v2'
 export type BrowserFrameIdentity = Pick<BrowserStreamFrameV2, 'sequence' | 'revision' | 'mediaGeneration'>
 export type BrowserMediaRetryState = { identity: BrowserMediaIdentity; nextRetryAt: number }
 export type BrowserMediaPresentationRoute = 'direct-video' | 'low-bandwidth-fallback' | 'reconnecting' | 'unavailable'
-export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
+export type BrowserMediaFailureReason = 'negotiation-timeout' | 'negotiation-error' | 'ready-missing' | 'ready-owner-mismatch' | 'receiver-sync-failed' | 'remote-description-failed' | 'candidate-failed' | 'answer-failed' | 'local-description-failed' | 'peer-failed' | 'host-fallback' | 'presentation-failed'
 
 /** Assemble an exact client decline after direct video cannot present its first frame. */
-export function browserMediaDeclineMessage(identity: BrowserMediaIdentity): Extract<BrowserClientMessage, { type: 'media-decline' }> {
-  return { type: 'media-decline', ...identity, reason: 'presentation-failed' }
+export function browserMediaDeclineMessage(
+  identity: BrowserMediaIdentity,
+  reason: Extract<BrowserClientMessage, { type: 'media-decline' }>['reason'] = 'presentation-failed',
+): Extract<BrowserClientMessage, { type: 'media-decline' }> {
+  return { type: 'media-decline', ...exactMediaIdentity(identity), reason }
 }
 
 /** Decline only a local failure that still belongs to the current Host media identity. */
@@ -212,7 +227,7 @@ export function browserMediaDeclineForFailure(
   reason: BrowserMediaFailureReason | undefined,
 ): Extract<BrowserClientMessage, { type: 'media-decline' }> | undefined {
   if (current === undefined || reason === undefined || reason === 'host-fallback' || !sameMediaIdentity(failed, current)) return undefined
-  return browserMediaDeclineMessage(failed)
+  return browserMediaDeclineMessage(failed, reason)
 }
 
 /** Report immediate surface visibility for the exact committed media identity. */
@@ -254,8 +269,9 @@ export function browserMediaRetryRequest(
   const same = state !== undefined && state.identity.ownerId === identity.ownerId
     && state.identity.revision === identity.revision && state.identity.mediaGeneration === identity.mediaGeneration
   if (same && now < state.nextRetryAt) return { state }
-  const next = { identity: { ...identity }, nextRetryAt: now + cooldownMs }
-  return { state: next, message: { type: 'media-retry', ...identity, trigger } }
+  const exact = exactMediaIdentity(identity)
+  const next = { identity: exact, nextRetryAt: now + cooldownMs }
+  return { state: next, message: { type: 'media-retry', ...exact, trigger } }
 }
 
 /** Declare the encodings and flow control understood by the Canvas client. */

@@ -50,8 +50,8 @@ export type ManagedBrowserWebRtcEncoderOptions = {
   onSignal?: (signal: BrowserMediaSignal) => void
 }
 
-export const MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE = 10
-export const MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE = 2_000_000
+export const MANAGED_BROWSER_DIRECT_VIDEO_FRAME_RATE = 20
+export const MANAGED_BROWSER_DIRECT_VIDEO_MAX_BITRATE = 8_000_000
 /** STUN-only default so GUI Chrome and the encoder Page can form srflx pairs in addition to host ICE. */
 export const MANAGED_BROWSER_DEFAULT_STUN_URLS = ['stun:stun.l.google.com:19302'] as const
 
@@ -68,7 +68,9 @@ const BOOTSTRAP = String.raw`async (config) => {
   const stream = canvas.captureStream(0);
   const track = stream.getVideoTracks()[0];
   if (track === undefined) throw new Error('Managed Browser media track is unavailable');
+  if ('contentHint' in track) track.contentHint = 'detail';
   const peer = new RTCPeerConnection({ iceServers: config.iceServers });
+  globalThis.__dcsManagedMediaPeer = peer;
   const sender = peer.addTrack(track, stream);
   let parametersApplied = false;
   const applySenderParameters = async () => {
@@ -77,6 +79,8 @@ const BOOTSTRAP = String.raw`async (config) => {
     const parameters = sender.getParameters();
     if (parameters.encodings.length === 0) parameters.encodings = [{}];
     parameters.encodings[0].maxBitrate = config.maxBitrate;
+    parameters.encodings[0].maxFramerate = config.frameRate;
+    parameters.degradationPreference = 'maintain-resolution';
     await sender.setParameters(parameters);
   };
   peer.onicecandidate = (event) => {
@@ -120,6 +124,9 @@ const BOOTSTRAP = String.raw`async (config) => {
       await peer.addIceCandidate(value.candidate);
       return;
     }
+    if (value.type === 'ice-state') {
+      return globalThis.__dcsManagedMediaPeer && globalThis.__dcsManagedMediaPeer.iceConnectionState;
+    }
     if (value.type === 'paint') {
       const binary = atob(value.jpegBase64);
       const bytes = new Uint8Array(binary.length);
@@ -129,9 +136,8 @@ const BOOTSTRAP = String.raw`async (config) => {
         if (canvas.width !== value.width) canvas.width = value.width;
         if (canvas.height !== value.height) canvas.height = value.height;
         context.drawImage(image, 0, 0, value.width, value.height);
-        track.requestFrame();
-        await new Promise((resolve) => setTimeout(resolve, Math.ceil(1000 / config.frameRate)));
         await applySenderParameters();
+        track.requestFrame();
       } finally {
         image.close();
       }
@@ -180,6 +186,8 @@ export class ManagedBrowserWebRtcEncoder {
   #disposePromise: Promise<void> | undefined
   #disposed = false
   #connected = false
+  #offerReady = false
+  #icePollTimer: ReturnType<typeof setTimeout> | undefined
   #dirty: Omit<BrowserMediaFrame, 'jpeg'> & { jpegBase64: string } | undefined
   #paintPromise: Promise<void> | undefined
 
@@ -205,6 +213,7 @@ export class ManagedBrowserWebRtcEncoder {
   async acceptAnswer(description: BrowserRtcDescription): Promise<void> {
     if (description.type !== 'answer') throw new Error('Managed Browser WebRTC expected an SDP answer')
     await this.#command({ type: 'accept-answer', description })
+    this.#armIcePoll()
   }
 
   /** Add one authenticated client ICE candidate, including the end-of-candidates marker. */
@@ -243,7 +252,7 @@ export class ManagedBrowserWebRtcEncoder {
       await page.exposeBinding(SIGNAL_BINDING, (source, payload) => {
         if (this.#disposed || this.#page !== page || sourcePage(source) !== page) return
         const signal = browserMediaPageSignal(payload)
-        if (signal === undefined) return
+        if (signal === undefined || (signal.type === 'candidate' && !this.#offerReady)) return
         this.#emit(signal)
         if (signal.type === 'connection-state') {
           this.#connected = signal.state === 'connected'
@@ -259,7 +268,10 @@ export class ManagedBrowserWebRtcEncoder {
       })
       const offer = await page.evaluateFunction<unknown>(COMMAND, { type: 'create-offer' })
       if (!browserRtcDescription(offer, 'offer')) throw new Error('Managed Browser media Page returned an invalid SDP offer')
-      return { type: 'offer', sdp: sdpWithLoopbackHostCandidates(offer.sdp) }
+      const sdp = sdpWithLoopbackHostCandidates(offer.sdp)
+      this.#offerReady = true
+      console.warn('[dsh-codex-sidebar] rtc-offer hosts', [...sdp.matchAll(/^a=candidate:.+$/gm)].map((row) => row[0]))
+      return { type: 'offer', sdp }
     } catch (error) {
       if (this.#page === page) this.#page = undefined
       await page.close().catch(() => undefined)
@@ -298,15 +310,37 @@ export class ManagedBrowserWebRtcEncoder {
 
   #emit(signal: BrowserMediaSignal['signal']): void {
     this.#onSignal({ ...this.identity, signal })
+    if (signal.type === 'connection-state' && signal.state === 'connected') this.#connected = true
     if (signal.type !== 'candidate' || signal.candidate === null) return
-    const loopback = candidateWithLoopbackHost(signal.candidate.candidate)
-    if (loopback === undefined) return
-    this.#onSignal({ ...this.identity, signal: { type: 'candidate', candidate: { ...signal.candidate, candidate: loopback } } })
+    for (const loopback of candidateWithLoopbackHost(signal.candidate.candidate)) {
+      this.#onSignal({ ...this.identity, signal: { type: 'candidate', candidate: { ...signal.candidate, candidate: loopback } } })
+    }
+  }
+
+  #armIcePoll(): void {
+    const tick = async (): Promise<void> => {
+      if (this.#disposed || this.#connected || this.#page === undefined) return
+      try {
+        const ice = await this.#page.evaluateFunction<unknown>(COMMAND, { type: 'ice-state' })
+        console.warn('[dsh-codex-sidebar] ice-poll', ice)
+        if (ice === 'connected' || ice === 'completed') {
+          this.#connected = true
+          this.#emit({ type: 'connection-state', state: 'connected' })
+          this.#pump()
+          return
+        }
+      } catch { /* keep polling until dispose or connected */ }
+      this.#icePollTimer = setTimeout(() => { void tick() }, 250)
+      this.#icePollTimer.unref()
+    }
+    void tick()
   }
 
   async #dispose(): Promise<void> {
     this.#disposed = true
     this.#connected = false
+    if (this.#icePollTimer !== undefined) clearTimeout(this.#icePollTimer)
+    this.#icePollTimer = undefined
     this.#dirty = undefined
     if (this.#startPromise !== undefined) await this.#startPromise.catch(() => undefined)
     const page = this.#page
