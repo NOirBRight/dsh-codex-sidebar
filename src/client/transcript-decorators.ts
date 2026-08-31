@@ -117,7 +117,8 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
   let frame = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let lastPaint = 0
-  let fullScan = false
+  let stopped = false
+  let hidden = document.hidden === true
   const pendingRoots = new Set<Element>()
   let observer: MutationObserver
 
@@ -134,24 +135,43 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     try {
       pass()
     } finally {
-      observer.observe(document.documentElement, OBSERVE)
+      if (!stopped) observer.observe(document.documentElement, OBSERVE)
     }
   }
 
-  const takeRoots = (): ParentNode[] => {
-    if (fullScan || pendingRoots.size > MAX_INCREMENTAL_ROOTS) {
-      pendingRoots.clear()
-      fullScan = false
-      return transcriptPaintHosts()
+  const takeRoots = (): Element[] => {
+    const roots: Element[] = []
+    for (const root of pendingRoots) {
+      roots.push(root)
+      pendingRoots.delete(root)
+      if (roots.length >= MAX_INCREMENTAL_ROOTS) break
     }
-    const roots = [...pendingRoots]
-    pendingRoots.clear()
-    return roots.length === 0 ? transcriptPaintHosts() : roots
+    return roots
+  }
+
+  const syncHidden = (): boolean => {
+    hidden = document.hidden === true
+    return hidden
+  }
+
+  const scheduleDom = (): void => {
+    if (stopped || syncHidden() || pendingRoots.size === 0 || frame !== 0 || timer !== undefined) return
+    const wait = Math.max(0, TRANSCRIPT_PAINT_MIN_MS - (Date.now() - lastPaint))
+    if (wait === 0) {
+      armFrame()
+      return
+    }
+    timer = setTimeout(() => {
+      timer = undefined
+      if (!stopped && !syncHidden()) armFrame()
+    }, wait)
   }
 
   const paintDom = (): void => {
-    lastPaint = Date.now()
+    if (stopped || syncHidden()) return
     const roots = takeRoots()
+    if (roots.length === 0) return
+    lastPaint = Date.now()
     run(() => {
       for (const root of roots) {
         isolate(() => { paints.paintStats(root) })
@@ -159,14 +179,27 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
         isolate(() => { paints.paintPaths(root) })
       }
     })
+    scheduleDom()
+  }
+
+  const paintInitial = (): void => {
+    lastPaint = Date.now()
+    const hosts = transcriptPaintHosts()
+    run(() => {
+      for (const host of hosts) {
+        isolate(() => { paints.paintStats(host) })
+        isolate(() => { paints.paintChips(host) })
+        isolate(() => { paints.paintPaths(host) })
+      }
+    })
   }
 
   const paintData = (opts?: TranscriptPaintData): void => {
+    if (stopped || syncHidden()) return
     const stats = opts?.stats !== false
     const chips = opts?.chips !== false
     if (!stats && !chips) return
     pendingRoots.clear()
-    fullScan = false
     lastPaint = Date.now()
     const hosts = transcriptPaintHosts()
     run(() => {
@@ -177,25 +210,32 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     })
   }
 
-  const armFrame = (): void => {
-    if (frame !== 0) return
+  function armFrame(): void {
+    if (stopped || syncHidden() || pendingRoots.size === 0 || frame !== 0) return
     frame = requestAnimationFrame(() => {
       frame = 0
       paintDom()
     })
   }
 
-  const scheduleDom = (): void => {
-    if (frame !== 0 || timer !== undefined) return
-    const wait = Math.max(0, TRANSCRIPT_PAINT_MIN_MS - (Date.now() - lastPaint))
-    if (wait === 0) {
-      armFrame()
+  const cancelScheduled = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+    if (frame !== 0) {
+      cancelAnimationFrame(frame)
+      frame = 0
+    }
+  }
+
+  const onVisibility = (): void => {
+    hidden = document.hidden === true
+    if (hidden) {
+      cancelScheduled()
       return
     }
-    timer = setTimeout(() => {
-      timer = undefined
-      armFrame()
-    }, wait)
+    scheduleDom()
   }
 
   const onClick = (event: Event): void => {
@@ -207,6 +247,7 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
   }
 
   observer = new MutationObserver((records) => {
+    if (stopped) return
     let dirty = false
     for (const record of records) {
       const roots = collectAddedTranscriptRoots(record)
@@ -218,21 +259,19 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
   })
   observer.observe(document.documentElement, OBSERVE)
   document.addEventListener('click', onClick, true)
-  fullScan = true
-  paintDom()
+  document.addEventListener('visibilitychange', onVisibility)
+  paintInitial()
 
   return {
     paintData,
     stop(): void {
+      if (stopped) return
+      stopped = true
       observer.disconnect()
       document.removeEventListener('click', onClick, true)
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
-      if (frame === 0) return
-      cancelAnimationFrame(frame)
-      frame = 0
+      document.removeEventListener('visibilitychange', onVisibility)
+      cancelScheduled()
+      pendingRoots.clear()
     },
   }
 }

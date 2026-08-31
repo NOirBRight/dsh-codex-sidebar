@@ -16,6 +16,12 @@ export interface ConversationProjection {
     } | undefined;
 }
 type ConversationProjectionContext = Pick<Context, 'uiConversation'>;
+/**
+ * Create lazy, independently cached views over one Chat binding.
+ * @param ctx - Client context that resolves Chat targets.
+ * @param binding - Session binding whose Chat target supplies the snapshot.
+ * @returns a projection with semantic invalidation and lazy derived views.
+ */
 export declare function createConversationProjection(ctx: ConversationProjectionContext, binding: SessionBinding): ConversationProjection;
 export {};
 //# sourceMappingURL=conversation-projection.d.ts.map

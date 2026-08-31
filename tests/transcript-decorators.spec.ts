@@ -4,6 +4,7 @@ import {
   createPendingThrottle,
   ignoredTranscriptTarget,
   installTranscriptDecorators,
+  MAX_INCREMENTAL_ROOTS,
   mutationPaintTarget,
   shouldRebindSession,
   transcriptMutationIsIgnored,
@@ -106,7 +107,7 @@ function record(target: FakeElement, added: FakeElement[] = []): MutationRecord 
 }
 
 let rafQueue: FrameRequestCallback[] = []
-let listeners: Array<(event: Event) => void> = []
+let listeners: Array<{ type: string; fn: (event: Event) => void }> = []
 
 afterEach(() => {
   FakeObserver.instances = []
@@ -116,8 +117,10 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function stubDom(): { root: { id: string } } {
+function stubDom(): { root: { id: string }; page: { hidden: boolean }; queryAll: ReturnType<typeof vi.fn>; fire: (type: string) => void } {
   const root = { id: 'documentElement' }
+  const page = { hidden: false }
+  const queryAll = vi.fn(() => [])
   rafQueue = []
   listeners = []
   FakeObserver.instances = []
@@ -132,17 +135,20 @@ function stubDom(): { root: { id: string } } {
   })
   vi.stubGlobal('document', {
     documentElement: root,
-    querySelectorAll() {
-      return []
+    hidden: false,
+    querySelectorAll: queryAll,
+    addEventListener(type: string, fn: (event: Event) => void) {
+      listeners.push({ type, fn })
     },
-    addEventListener(_type: string, fn: (event: Event) => void) {
-      listeners.push(fn)
-    },
-    removeEventListener(_type: string, fn: (event: Event) => void) {
-      listeners = listeners.filter((item) => item !== fn)
+    removeEventListener(type: string, fn: (event: Event) => void) {
+      listeners = listeners.filter((item) => item.type !== type || item.fn !== fn)
     },
   })
-  return { root }
+  Object.defineProperty(page, 'hidden', {
+    get: () => (document as unknown as { hidden: boolean }).hidden,
+    set: (value: boolean) => { (document as unknown as { hidden: boolean }).hidden = value },
+  })
+  return { root, page, queryAll, fire: (type) => { for (const item of [...listeners]) if (item.type === type) item.fn(new Event(type)) } }
 }
 
 function flushFrame(): void {
@@ -245,9 +251,40 @@ describe('installTranscriptDecorators', () => {
     installed.stop()
   })
 
-  it('falls back to transcript hosts past the incremental root cap', () => {
+  it('drains a large mutation burst with bounded row paints and no host rescan', () => {
     vi.useFakeTimers()
-    stubDom()
+    const dom = stubDom()
+    const stats = vi.fn()
+    const chips = vi.fn()
+    const paths = vi.fn()
+    const installed = installTranscriptDecorators({
+      paintStats: stats,
+      paintChips: chips,
+      paintPaths: paths,
+      openPath() {},
+    })
+    const observer = FakeObserver.instances[0]!
+    const rows = Array.from({ length: 100 }, () => toolRow())
+    observer.deliver(rows.map((row) => record(row, [row])))
+    expect(stats).toHaveBeenCalledTimes(1)
+    expect(dom.queryAll).toHaveBeenCalledTimes(1)
+
+    for (let frame = 0; frame < Math.ceil(rows.length / MAX_INCREMENTAL_ROOTS); frame++) {
+      vi.advanceTimersByTime(200)
+      flushFrame()
+      expect(stats).toHaveBeenCalledTimes(1 + Math.min((frame + 1) * MAX_INCREMENTAL_ROOTS, rows.length))
+    }
+
+    expect(stats.mock.calls.slice(1).map(([root]) => root)).toEqual(rows)
+    expect(chips).toHaveBeenCalledTimes(1 + rows.length)
+    expect(paths).toHaveBeenCalledTimes(1 + rows.length)
+    expect(dom.queryAll).toHaveBeenCalledTimes(1)
+    installed.stop()
+  })
+
+  it('pauses pending work while hidden and resumes with one bounded repaint', () => {
+    vi.useFakeTimers()
+    const dom = stubDom()
     const stats = vi.fn()
     const installed = installTranscriptDecorators({
       paintStats: stats,
@@ -256,14 +293,27 @@ describe('installTranscriptDecorators', () => {
       openPath() {},
     })
     const observer = FakeObserver.instances[0]!
-    observer.deliver(Array.from({ length: 21 }, () => {
-      const row = toolRow()
-      return record(row, [row])
-    }))
+    const row = toolRow()
+    observer.deliver([record(row, [row])])
+    dom.page.hidden = true
+    dom.fire('visibilitychange')
+    vi.advanceTimersByTime(1000)
+    flushFrame()
+    expect(stats).toHaveBeenCalledTimes(1)
+
+    dom.page.hidden = false
+    dom.fire('visibilitychange')
+    expect(stats).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(200)
     flushFrame()
-    expect(stats).toHaveBeenLastCalledWith(document)
+    expect(stats).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(1000)
+    flushFrame()
+    expect(stats).toHaveBeenCalledTimes(2)
+    expect(dom.queryAll).toHaveBeenCalledTimes(1)
+
     installed.stop()
+    expect(listeners).toHaveLength(0)
   })
 
   it('does not scan for sidebar-only mutations', () => {
@@ -332,6 +382,24 @@ describe('installTranscriptDecorators', () => {
     installed.paintData({ stats: false, chips: true })
     expect(stats).toHaveBeenCalledTimes(1)
     expect(chips).toHaveBeenCalledTimes(2)
+    installed.stop()
+  })
+
+  it('paintData does not scan hosts while the document is hidden', () => {
+    const dom = stubDom()
+    const stats = vi.fn()
+    const chips = vi.fn()
+    const installed = installTranscriptDecorators({
+      paintStats: stats,
+      paintChips: chips,
+      paintPaths() {},
+      openPath() {},
+    })
+    expect(stats).toHaveBeenCalledTimes(1)
+    dom.page.hidden = true
+    installed.paintData()
+    expect(stats).toHaveBeenCalledTimes(1)
+    expect(chips).toHaveBeenCalledTimes(1)
     installed.stop()
   })
 

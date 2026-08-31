@@ -32,19 +32,19 @@
 仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.9
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.9
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
 
-0.5.8 恢复 managed Browser 的点击与滚动，让 + 菜单保持在 Review 上方，并使 Direct video 能在 GUI Chrome 中可靠协商。它还把已验证的屏幕内容配置提高到 20 fps / 8 Mbps、quality 90，并移除重复的帧节流，同时保留有界 JPEG fallback。
+0.5.9 取消 live mutation 时对整个 transcript 的全量扫描，并在纯 assistant 文本更新时不再重算 tool stats、turn writes 和批注 chips。
 
 0.5.7 把编码器 IPv4 host ICE 候选复制到 127.0.0.1（套接字绑在 0.0.0.0 上），GUI Chrome 不必再去打 Clash fake-ip 198.18.0.1。
 

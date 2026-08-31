@@ -32,19 +32,19 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 The exact official DeepSeek Harness 0.1.2-alpha.1 release is required. Later 0.1.2 prereleases or finals remain unsupported until this plugin is revalidated against their public Client contracts. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.9
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.9
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
 
-Version 0.5.8 restores managed Browser click/scroll input, keeps the + menu above Review, and makes Direct video negotiate reliably in GUI Chrome. It also raises the verified screen-content profile to 20 fps / 8 Mbps with quality-90 capture and removes duplicate frame pacing, while retaining the bounded JPEG fallback.
+Version 0.5.9 stops live transcript mutations from scanning the whole conversation, and ignores assistant-only Conversation updates when deriving tool stats, turn writes, and chips.
 
 Version 0.5.7 clones encoder IPv4 host ICE candidates onto 127.0.0.1 (the UDP socket is bound to 0.0.0.0) so GUI Chrome can reach Direct video without routing to Clash fake-ip 198.18.0.1.
 
