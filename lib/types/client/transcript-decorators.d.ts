@@ -7,7 +7,7 @@ export type TranscriptDecoratorPaints = {
     paintStats: (root?: ParentNode) => void;
     paintChips: (root?: ParentNode) => void;
     paintPaths: (root?: ParentNode) => void;
-    openPath: (path: string) => void;
+    openPath: (path: string) => boolean | Promise<boolean> | undefined;
 };
 export type TranscriptPaintData = {
     stats?: boolean;

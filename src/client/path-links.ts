@@ -4,7 +4,6 @@ import { isTakeoverUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 
 const MARK = 'dcs-path-link'
-const URL_HREF = '#dcs-browser'
 const FILE_EXT = /\.(tsx?|jsx?|mjs|cjs|md|json|css|html?|vue|svelte|py|rs|go|toml|ya?ml|svg|png|jpe?g|gif|webp|txt|map|lock|sh|bash)$/i
 
 export function transcriptPath(text: string): string | undefined {
@@ -57,10 +56,6 @@ function decorateUrls(root: ParentNode): void {
     const href = (node.getAttribute('data-dcs-url') ?? node.getAttribute('href') ?? '').trim()
     if (!isTakeoverUrl(href)) continue
     node.setAttribute('data-dcs-url', href)
-    const target = node.getAttribute('target')
-    if (target !== null) node.setAttribute('data-dcs-target', target)
-    node.setAttribute('href', URL_HREF)
-    node.removeAttribute('target')
   }
 }
 

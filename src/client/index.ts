@@ -44,11 +44,10 @@ export function apply(ctx: ClientContext): void {
     controller,
   })
   occupyDetails(ctx.slots, face, SidebarPanel, NS)
-  try {
+  ctx.effect(() => {
     controller.installPathTakeover()
-  } catch (err) {
-    console.error('[dsh-codex-sidebar] path takeover skipped', err)
-  }
+    return () => { controller.uninstallCompat() }
+  }, 'dsh-codex-sidebar: alpha.1 compatibility adapter')
   ctx.effect(() => {
     let conversationProjection: ConversationProjection | undefined
     let lastStats: readonly RowHunkStat[] = []
@@ -74,14 +73,11 @@ export function apply(ctx: ClientContext): void {
       paintChips: (root) => { decorateChips(chipPorts, root) },
       paintPaths: (root) => { decoratePaths(root) },
       openPath: (path) => {
-        if (controller.openTranscriptPath(path)) return
+        const takeover = controller.openTranscriptPath(path)
+        if (takeover !== undefined) return takeover
         const open = (ctx.workspaces as typeof ctx.workspaces & { openPath?: (path: string) => void | Promise<void> }).openPath
-        if (typeof open === 'function') {
-          void open(path)
-          return
-        }
-        const current = ctx.sessions.list.getSnapshot().current
-        if (current !== undefined) void controller.dispatch(String(current), { type: 'open-path', path })
+        if (typeof open !== 'function') return false
+        return Promise.resolve(open(path)).then(() => false)
       },
     })
     const throttle = createPendingThrottle(() => {
@@ -112,10 +108,13 @@ export function apply(ctx: ClientContext): void {
     bindSession()
     const stopList = ctx.sessions.list.subscribe(bindSession)
     return () => {
-      decorators.stop()
-      stopList()
-      unsubStats?.()
-      throttle.cancel()
+      const failures: unknown[] = []
+      try { decorators.stop() } catch (error) { failures.push(error) }
+      try { stopList() } catch (error) { failures.push(error) }
+      try { unsubStats?.() } catch (error) { failures.push(error) }
+      try { throttle.cancel() } catch (error) { failures.push(error) }
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures, 'transcript decorator disposal failed')
     }
   }, 'dsh-codex-sidebar: edit +/− and 批注 chips')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({

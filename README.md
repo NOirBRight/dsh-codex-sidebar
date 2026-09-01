@@ -32,14 +32,14 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 The exact official DeepSeek Harness 0.1.2-alpha.1 release is required. Later 0.1.2 prereleases or finals remain unsupported until this plugin is revalidated against their public Client contracts. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
@@ -112,11 +112,13 @@ Local HTML is active content. Its scripts can read resources served from the sel
 
 ## Local install
 
-Client typechecking is pinned to the official `dsh-v0.1.2-alpha.1` declarations. Point `DSH_ALPHA1_CHECKOUT` at a clean checkout of that exact tag after running the official `pnpm install --frozen-lockfile && pnpm run build` there; the checkout is read only as a development type fixture and is never packaged.
+Client typechecking is pinned to the official `dsh-v0.1.2-alpha.1` declarations. The offline pack gate consumes the committed exact-version fixture bundle in `fixtures/alpha1/`; it does not inspect an external DSH checkout or pre-existing dependency tree. Refresh that bundle only from a clean, built checkout of the exact tag with `pnpm run prepare:pack-fixtures`; the generated tarballs include their provenance and integrity records.
+The gate invokes `npm`, `pnpm`, `node`, `git`, and `tar` directly with one sanitized child environment. Its pnpm install policy is `--offline --ignore-scripts --strict-peer-dependencies --lockfile=false --registry http://127.0.0.1:9/ --store-dir <fresh> --config.audit=false --config.fund=false`; the audit and fund settings are pnpm config equivalents, not npm-only `--no-audit` or `--no-fund` flags.
 
 ```sh
 pnpm install
-DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run check
+DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run typecheck
+pnpm run pack:check
 dsh plugin --profile web add "$(pwd)"
 dsh web
 ```
@@ -126,3 +128,41 @@ Then open a session and use the sidebar toggle.
 ## Spec
 
 See `CONTEXT.md` and `docs/adr/`.
+
+
+## Release installation (Latest)
+
+Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. The release artifact targets DeepSeek Harness 0.1.2-alpha.1 and contains built Host/Client files only; it has no sibling-repository source, workstation path, link:, or workspace: dependency.
+
+Latest installation (the URL never contains a version):
+
+~~~sh
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/latest/download/dsh-codex-sidebar.tgz
+~~~
+
+Fixed-version installation:
+
+~~~sh
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/dsh-codex-sidebar.tgz
+~~~
+
+Update, uninstall, and verify:
+
+~~~sh
+# Update to the latest Release
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/latest/download/dsh-codex-sidebar.tgz
+# Verify the loaded version
+dsh plugin --profile web list
+dsh plugin --profile web doctor
+# Uninstall only this plugin
+dsh plugin --profile web remove dsh-codex-sidebar
+~~~
+
+Configuration: use the plugin section in Settings for Web UI plugins, or the profile dsh.profile.bundles entry for Host-only plugins. Start with this README's minimal YAML/JSON example and provide credentials/backend addresses explicitly.
+
+Rollback: rerun the fixed v0.5.10 command, verify the profile list, then restart the Web service once. Inspect journalctl --user -u dsh-web.service and dsh plugin --profile web doctor; never put a source checkout in the production profile.
+
+Release and integrity: [v0.5.10](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.10) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/SHA256SUMS).

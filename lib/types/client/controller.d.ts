@@ -49,7 +49,9 @@ export declare class SidebarController {
     dispatch(sessionId: string, intent: Intent, applyEffects?: boolean): Promise<SidebarSnapshot | undefined>;
     installPathTakeover(): void;
     /** Open one decorated transcript path through the exact captured Tool-row context. */
-    openTranscriptPath(path: string): boolean;
+    openTranscriptPath(path: string): Promise<boolean> | undefined;
+    /** @internal - adapter disposer owned by ctx.effect */
+    uninstallCompat(): void;
     /**
      * AppFrame columns are pinned by the overlay ColumnPin. Do not closeDetails
      * while the 侧栏 is open — that would collapse the third track.

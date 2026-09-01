@@ -1,7 +1,6 @@
 /** Live SidebarSession store + host RPC + 主会话 prompt / path takeover. */
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
-import type { ClientRemote } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { ClientContext } from './shim.js'
 import {
@@ -22,9 +21,10 @@ import type { ReviewChange } from '../review.ts'
 import { createConversationProjection, type ConversationProjection } from './conversation-projection.ts'
 import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
-import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
 import { viewForTool } from '../tool-open.ts'
-import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
+import type { ToolRowHunk } from './tool-stats.ts'
+import { SidebarAlpha1CompatAdapter, type CapturedToolContext } from './sidebar-alpha1-compat-adapter.ts'
+import { relativize } from '../relativize.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
@@ -62,11 +62,9 @@ export class SidebarController {
   #layout: ILayout
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
-  #pathTakeover = false
-  #transcriptPathOpen: ((path: string) => Promise<void>) | undefined
-  #urlClicks = false
-  #layoutReveal: ILayout | undefined
   #revealing = false
+  #compatAdapter: SidebarAlpha1CompatAdapter | undefined
+  #compatDispose: (() => void) | undefined
   #pendingCollapsed = new Map<string, boolean>()
   /** This client's details-track chrome. Host `collapsed` is not applied here. */
   #chromeCollapsed = new Map<string, boolean>()
@@ -91,12 +89,22 @@ export class SidebarController {
   dispose(): void {
     if (this.#disposed) return
     this.#disposed = true
+    const failures: unknown[] = []
+    const compatDispose = this.#compatDispose
+    this.#compatDispose = undefined
+    this.#compatAdapter = undefined
+    if (compatDispose !== undefined) {
+      try { compatDispose() } catch (error) { failures.push(error) }
+    }
     const watches = [...this.#userWatch.values()]
     this.#userWatch.clear()
-    for (const watch of watches) watch.dispose()
+    for (const watch of watches) {
+      try { watch.dispose() } catch (error) { failures.push(error) }
+    }
     this.#listeners.clear()
     this.#conversationProjections.clear()
-    this.#transcriptPathOpen = undefined
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'SidebarController disposal failed')
   }
 
   snap(sessionId: string): SidebarSnapshot | undefined {
@@ -305,146 +313,71 @@ export class SidebarController {
   }
 
   installPathTakeover(): void {
-    this.#installUrlClicks()
-    this.#installLayoutReveal()
-    if (this.#pathTakeover) return
-    const workspaces = this.#ctx.workspaces as ClientContext['workspaces'] & {
-      openPath?: (path: string) => void | Promise<void>
+    if (this.#compatDispose !== undefined) return
+    if (this.#compatAdapter === undefined) {
+      this.#compatAdapter = new SidebarAlpha1CompatAdapter(
+        this.#ctx,
+        {
+          dispatch: (sessionId: string, intent: Intent) => this.dispatch(sessionId, intent),
+          openPath: (path: string, captured: CapturedToolContext) => this.#handleCompatOpenPath(path, captured),
+          onLayoutOpen: () => this.#handleCompatLayoutOpenDetails(),
+        },
+        this.#layout,
+      )
     }
-    this.#pathTakeover = true
-    const original = typeof workspaces.openPath === 'function' ? workspaces.openPath.bind(workspaces) : undefined
-    let lastTool: string | undefined
-    let lastHunkId: string | undefined
-    let lastRowHunk: ToolRowHunk | undefined
-    if (typeof document !== 'undefined') {
-      const captureToolContext = (target: EventTarget | null): void => {
-        const raw = target
-        const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
-        const host = node instanceof Element ? node.closest('[data-tool]') : null
-        lastTool = host instanceof Element ? host.getAttribute('data-tool') ?? undefined : undefined
-        lastHunkId = host instanceof HTMLElement ? host.dataset.dcsHunkId : undefined
-        lastRowHunk = host instanceof HTMLElement ? hunkForToolRow(host) : undefined
-      }
-      document.addEventListener('pointerdown', (event) => { captureToolContext(event.target) }, true)
-      // Keyboard activation has no pointerdown; capture the row before the host click handler runs.
-      document.addEventListener('click', (event) => { captureToolContext(event.target) }, true)
+    try {
+      const dispose = this.#compatAdapter.install()
+      this.#compatDispose = dispose
+    } catch (error) {
+      this.#compatAdapter = undefined
+      this.#compatDispose = undefined
+      throw error
     }
-    const patched = async (path: string): Promise<void> => {
-      const sessionId = this.#ctx.sessions.list.getSnapshot().current
-      if (sessionId === undefined) {
-        if (original === undefined) throw new Error('no active Session for sidebar path takeover')
-        await original(path)
-        return
-      }
-      if (isTakeoverUrl(path)) {
-        await this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(path) })
-        return
-      }
-      const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
-      const view = viewForTool(lastTool)
-      const hunk = lastRowHunk
-        ?? this.#conversationFor(String(sessionId))?.hunkForOpen(path, lastTool, lastHunkId)
-      lastTool = undefined
-      lastHunkId = undefined
-      lastRowHunk = undefined
-      await this.dispatch(String(sessionId), {
-        type: 'open-path',
-        path: relativize(path, cwd),
-        view,
-        ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
-      })
-    }
-    this.#transcriptPathOpen = patched
-    if (original !== undefined) {
-      try {
-        workspaces.openPath = patched
-      } catch {
-        try {
-          Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
-        } catch {
-          // Fall through to Remote session.openWorkspacePath patch below.
-        }
-      }
-    }
-    this.#patchRemoteOpenPath(patched)
   }
 
   /** Open one decorated transcript path through the exact captured Tool-row context. */
-  openTranscriptPath(path: string): boolean {
-    const open = this.#transcriptPathOpen
-    if (open === undefined) return false
-    void open(path)
-    return true
+  openTranscriptPath(path: string): Promise<boolean> | undefined {
+    return this.#compatAdapter?.tryOpenTranscriptPath(path)
   }
 
-  #patchRemoteOpenPath(openInSidebar: (path: string) => Promise<void>): void {
-    const remote: ClientRemote['session'] | undefined = (this.#ctx as ClientContext & { remote?: ClientRemote }).remote?.session
-    if (remote === undefined || typeof remote.openWorkspacePath !== 'function') return
-    const original = remote.openWorkspacePath.bind(remote)
-    const wrapped: typeof remote.openWorkspacePath = async (req: { path?: string }, signal?: unknown) => {
-      const path = req.path
-      if (typeof path !== 'string' || path.length === 0) return original(req, signal)
-      try {
-        await openInSidebar(path)
-        return { ok: true, value: { opened: true } }
-      } catch {
-        return original(req, signal)
-      }
+  async #handleCompatOpenPath(path: string, captured: CapturedToolContext): Promise<boolean> {
+    const sessionId = this.#ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) return false
+    const key = String(sessionId)
+    if (isTakeoverUrl(path)) {
+      return (await this.dispatch(key, { type: 'open-url', url: normalizeUrl(path) })) !== undefined
     }
-    try {
-      remote.openWorkspacePath = wrapped
-    } catch {
-      try {
-        Object.defineProperty(remote, 'openWorkspacePath', { value: wrapped, writable: true, configurable: true })
-      } catch { /* official OS opener remains */ }
-    }
+    const cwd = (this.#ctx.sessions.list.getSnapshot().byId as Record<string, { cwd?: string }>)[key]?.cwd ?? ''
+    const view = viewForTool(captured.lastTool)
+    const hunk = captured.lastRowHunk ?? this.#getCompatHunk(key, path, captured.lastTool, captured.lastHunkId)
+    return (await this.dispatch(key, {
+      type: 'open-path',
+      path: relativize(path, cwd),
+      view,
+      ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
+    })) !== undefined
   }
 
-  #installLayoutReveal(): void {
-    const layout = this.#layoutFace() as ILayout & { openDetails?: () => void }
-    if (this.#layoutReveal === layout || typeof layout.openDetails !== 'function') return
-    const original = layout.openDetails.bind(layout)
-    const wrapped = (): void => {
-      original()
-      if (this.#revealing) return
-      const current = this.#ctx.sessions.list.getSnapshot().current
-      if (current !== undefined) this.#revealLocal(String(current))
-    }
-    try {
-      layout.openDetails = wrapped
-      this.#layoutReveal = layout
-    } catch {
-      try {
-        Object.defineProperty(layout, 'openDetails', { value: wrapped, writable: true, configurable: true })
-        this.#layoutReveal = layout
-      } catch {
-        // A replacement layout may appear later; the next reveal retries.
-      }
-    }
+  #getCompatHunk(sessionId: string, path: string, tool: string | undefined, hunkId: string | undefined): ToolRowHunk | undefined {
+    return this.#conversationFor(sessionId)?.hunkForOpen(path, tool, hunkId)
   }
 
-  #installUrlClicks(): void {
-    if (this.#urlClicks || typeof document === 'undefined') return
-    this.#urlClicks = true
-    const onClick = (event: MouseEvent): void => {
-      const raw = event.target
-      const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
-      if (!(node instanceof Element)) return
-      const anchor = node.closest('a')
-      if (anchor === null) return
-      if (!allowTranscriptClick(event, anchor.hasAttribute('data-dcs-url'))) return
-      if (!allowTranscriptTakeover((selector) => anchor.closest(selector))) return
-      const href = (anchor.getAttribute('data-dcs-url') ?? anchor.getAttribute('href') ?? '').trim()
-      if (!isTakeoverUrl(href)) return
-      event.preventDefault()
-      event.stopPropagation()
-      const sessionId = this.#ctx.sessions.list.getSnapshot().current
-      if (sessionId === undefined) return
-      void this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(href) })
-    }
-    const roots: TranscriptClickCaptureRoot[] = [document as unknown as TranscriptClickCaptureRoot]
-    if (typeof window !== 'undefined') roots.unshift(window as unknown as TranscriptClickCaptureRoot)
-    installTranscriptClickCapture(roots, onClick as (event: unknown) => void)
+  #handleCompatLayoutOpenDetails(): void {
+    if (this.#revealing) return
+    const current = this.#ctx.sessions.list.getSnapshot().current
+    if (current !== undefined) this.#revealLocal(String(current))
+  }
+
+  /** @internal - adapter disposer owned by ctx.effect */
+  uninstallCompat(): void {
+    const dispose = this.#compatDispose
+    this.#compatDispose = undefined
+    this.#compatAdapter = undefined
+    dispose?.()
+  }
+
+  #ensureCompatLayout(): void {
+    this.#compatAdapter?.ensureLayoutPatched()
   }
 
   #gate(sessionId: string, opts: { includeLogs?: boolean; includeRoster?: boolean; intent?: Intent } = {}): {
@@ -583,8 +516,8 @@ export class SidebarController {
   }
 
   #applyTrack(collapsed: boolean | undefined): void {
+    this.#ensureCompatLayout()
     try {
-      if (this.#layoutReveal !== undefined) this.#installLayoutReveal()
       applyDetailsTrack(this.#layoutFace(), collapsed)
     } catch {
       // layout face is missing until AppFrame mounts
@@ -801,14 +734,6 @@ function isLayoutFace(value: unknown): value is ILayout {
     && value !== null
     && typeof (value as { openDetails?: unknown }).openDetails === 'function'
     && typeof (value as { closeDetails?: unknown }).closeDetails === 'function'
-}
-
-function relativize(path: string, cwd: string): string {
-  if (cwd.length === 0) return path
-  const prefix = cwd.endsWith('/') ? cwd : `${cwd}/`
-  if (path.startsWith(prefix)) return path.slice(prefix.length)
-  if (path === cwd) return ''
-  return path
 }
 
 function archivedIds(ctx: ClientContext): ReadonlySet<string> {

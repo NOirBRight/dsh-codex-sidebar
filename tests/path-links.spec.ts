@@ -135,7 +135,7 @@ describe('transcript path links', () => {
 })
 
 describe('path link decorate and click', () => {
-  it('makes transcript HTTP anchors inert before the official shell capture sees them', () => {
+  it('marks transcript HTTP anchors without changing official fallback attributes', () => {
     stubDom()
     const root = new FakeHTMLElement('MAIN')
     const row = new FakeHTMLElement('DIV')
@@ -149,8 +149,8 @@ describe('path link decorate and click', () => {
     decorate(root as never)
 
     expect(anchor.getAttribute('data-dcs-url')).toBe('https://example.test/docs')
-    expect(anchor.getAttribute('href')).toBe('#dcs-browser')
-    expect(anchor.getAttribute('target')).toBeNull()
+    expect(anchor.getAttribute('href')).toBe('https://example.test/docs')
+    expect(anchor.getAttribute('target')).toBe('_blank')
 
     const outside = new FakeHTMLElement('A')
     outside.setAttribute('href', 'https://example.test/settings')

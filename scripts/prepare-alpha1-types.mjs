@@ -1,11 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readlinkSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { sanitizedSubprocessEnv } from './subprocess-env.mjs'
 
 export const ALPHA1_REVISION = 'cd5ef8148158c3a752a658978873241fdf8e2bbc'
+export const ALPHA1_TAG = 'dsh-v0.1.2-alpha.1'
+export const ALPHA1_VERSION = '0.1.2-alpha.1'
 const OFFICIAL_REPOSITORY = 'deepseek-ai/deepseek-harness'
-const REQUIRED_TYPES = [
+export const REQUIRED_TYPES = [
   'packages/api/remotes/lib/types/client/index.d.ts',
   'packages/api/session-controller/lib/types/client/index.d.ts',
   'packages/api/workspace-controller/lib/types/client/index.d.ts',
@@ -31,25 +34,27 @@ function repositoryOf(remote) {
     .replace(/\.git$/, '')
 }
 
-export function assessAlpha1Checkout({ remote, status, head, missingTypes = [] }) {
+export function assessAlpha1Checkout({ remote, status, head, tag, missingTypes = [] }) {
   const reasons = []
   if (repositoryOf(remote) !== OFFICIAL_REPOSITORY) reasons.push('origin is not deepseek-ai/deepseek-harness')
   if (status.trim() !== '') reasons.push('official DSH checkout has local changes')
-  if (head.trim() !== ALPHA1_REVISION) reasons.push('official DSH revision is not dsh-v0.1.2-alpha.1')
+  if (head.trim() !== ALPHA1_REVISION) reasons.push('official DSH revision is not ' + ALPHA1_REVISION)
+  if (tag?.trim() !== ALPHA1_TAG) reasons.push('official DSH tag is not ' + ALPHA1_TAG)
   if (missingTypes.length > 0) reasons.push(`official DSH declarations are missing: ${missingTypes.join(', ')}`)
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons }
 }
 
-function git(checkout, ...args) {
-  return execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 10_000 }).trim()
+function git(checkout, env, ...args) {
+  return execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 10_000, env }).trim()
 }
 
-function inspect(checkout) {
+function inspect(checkout, env) {
   const missingTypes = REQUIRED_TYPES.filter((path) => !existsSync(resolve(checkout, path)))
   return assessAlpha1Checkout({
-    remote: git(checkout, 'config', '--get', 'remote.origin.url'),
-    status: git(checkout, 'status', '--porcelain'),
-    head: git(checkout, 'rev-parse', 'HEAD'),
+    remote: git(checkout, env, 'config', '--get', 'remote.origin.url'),
+    status: git(checkout, env, 'status', '--porcelain'),
+    head: git(checkout, env, 'rev-parse', 'HEAD'),
+    tag: git(checkout, env, 'describe', '--exact-match', '--tags', 'HEAD'),
     missingTypes,
   })
 }
@@ -66,15 +71,17 @@ function currentTarget(link) {
 export function prepareAlpha1Types({ root, requested = process.env.DSH_ALPHA1_CHECKOUT }) {
   const link = resolve(root, '.dsh-alpha1')
   const existing = currentTarget(link)
-  const candidates = [requested === undefined ? undefined : resolve(requested), existing, resolve(root, '../deepseek-harness')]
+  const candidates = [requested === undefined ? undefined : resolve(requested), existing]
   const failures = []
+  const env = sanitizedSubprocessEnv({ GIT_CONFIG_NOSYSTEM: '1' })
   let target
   for (const candidate of candidates) {
     if (candidate === undefined || !existsSync(candidate)) continue
     try {
-      const result = inspect(candidate)
+      const actual = realpathSync(candidate)
+      const result = inspect(actual, env)
       if (result.ok) {
-        target = candidate
+        target = actual
         break
       }
       failures.push(`${candidate}: ${result.reasons.join('; ')}`)

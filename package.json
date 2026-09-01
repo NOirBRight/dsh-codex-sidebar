@@ -1,6 +1,6 @@
 {
   "name": "dsh-codex-sidebar",
-  "version": "0.5.8",
+  "version": "0.5.10",
   "description": "Codex-app-style 侧栏 for a DeepSeek Harness 主会话",
   "type": "module",
   "main": "lib/index.js",
@@ -27,6 +27,7 @@
   "scripts": {
     "test": "vitest run",
     "prepare:alpha1-types": "node scripts/prepare-alpha1-types.mjs",
+    "prepare:pack-fixtures": "node scripts/prepare-pack-fixtures.mjs",
     "typecheck": "pnpm run prepare:alpha1-types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.check.json",
     "build": "pnpm run prepare:alpha1-types && tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown",
     "pack:check": "node scripts/check-pack.mjs",

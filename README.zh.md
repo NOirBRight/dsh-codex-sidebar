@@ -32,14 +32,14 @@
 仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.8
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
@@ -114,11 +114,13 @@ DSH session 被释放时，插件会立即关闭该 session 的 Browser 控制�
 
 ## 本地安装
 
-客户端类型检查固定使用官方 `dsh-v0.1.2-alpha.1` 声明。先在该精确 tag 的干净 checkout 中执行官方 `pnpm install --frozen-lockfile && pnpm run build`，再让 `DSH_ALPHA1_CHECKOUT` 指向它；这个 checkout 只作为开发期类型 fixture 读取，不会进入发布包。
+客户端类型检查固定使用官方 `dsh-v0.1.2-alpha.1` 声明。离线 pack gate 使用仓库内提交的精确版本 fixture bundle：`fixtures/alpha1/`；它不会读取外部 DSH checkout 或已有依赖树。只有在精确 tag 的干净、已构建 checkout 上执行 `pnpm run prepare:pack-fixtures` 才能刷新 bundle；生成的 tarball 会同时保存 provenance 与 integrity。
+gate 会直接调用 `npm`、`pnpm`、`node`、`git` 和 `tar`，并为它们共用一个经过清理的子进程环境。pnpm install 的策略是 `--offline --ignore-scripts --strict-peer-dependencies --lockfile=false --registry http://127.0.0.1:9/ --store-dir <fresh> --config.audit=false --config.fund=false`；audit 与 fund 是 pnpm 配置等价项，不宣称 npm 专用的 `--no-audit` 或 `--no-fund`。
 
 ```sh
 pnpm install
-DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run check
+DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run typecheck
+pnpm run pack:check
 dsh plugin --profile web add "$(pwd)"
 dsh web
 ```
@@ -128,3 +130,41 @@ dsh web
 ## 规格
 
 见 `CONTEXT.md` 与 `docs/adr/`。
+
+
+## 正式版安装（Latest）
+
+Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. 正式成品只支持 DeepSeek Harness 0.1.2-alpha.1；发布包只包含构建后的 Host/Client 产物，不包含兄弟仓库源码、本机路径或 link:/workspace: 依赖。
+
+Latest 安装命令（永久不含版本号）：
+
+~~~sh
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/latest/download/dsh-codex-sidebar.tgz
+~~~
+
+固定版本安装命令：
+
+~~~sh
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/dsh-codex-sidebar.tgz
+~~~
+
+更新、卸载与验证：
+
+~~~sh
+# 更新到最新 Release
+dsh plugin --profile web add --force \
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/latest/download/dsh-codex-sidebar.tgz
+# 验证加载与版本
+dsh plugin --profile web list
+dsh plugin --profile web doctor
+# 只卸载本插件
+dsh plugin --profile web remove dsh-codex-sidebar
+~~~
+
+配置入口：Web 使用「设置」中的本插件页面；Host-only 插件使用 profile 的 dsh.profile.bundles 配置。先复制本 README 的最小 YAML/JSON 示例，再填写凭据或后端地址。
+
+回滚：重新执行固定版本 v0.5.10 命令，确认插件列表后只重启一次 Web 服务。失败时查看 journalctl --user -u dsh-web.service 与 dsh plugin --profile web doctor，不要把源码 checkout 写入 production profile。
+
+Release 与完整性：[v0.5.10](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.10) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/SHA256SUMS)。

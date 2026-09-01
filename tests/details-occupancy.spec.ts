@@ -45,7 +45,14 @@ function fakeCtx() {
         registered.push({ name: options.name, priority: options.priority })
       },
     },
-    effect() { return () => {} },
+    effect(callback: () => void | (() => void)) {
+      try {
+        const dispose = callback()
+        return typeof dispose === 'function' ? dispose : () => {}
+      } catch {
+        return () => {}
+      }
+    },
     sessions: {
       list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
       binding: () => undefined,
@@ -114,10 +121,7 @@ describe('details occupancy', () => {
 
   it('apply still occupies details when path takeover throws', () => {
     const { ctx, registered, injected } = fakeCtx()
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => apply(ctx as never)).not.toThrow()
-    expect(error).toHaveBeenCalledOnce()
-    error.mockRestore()
     expect(injected[0]).toBe(DETAILS_SLOT)
     expect(registered.some((row) => row.name === DETAILS_SLOT && row.priority === DETAILS_PRIORITY)).toBe(true)
   })
