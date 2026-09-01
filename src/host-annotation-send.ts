@@ -7,6 +7,7 @@ import {
   type AnnotationMarkView,
 } from './annotation.ts'
 import { formatEvidenceSend } from './send-text.ts'
+import { stripAnnotationDraftSentinel } from './annotation-message.ts'
 import type { Annotation, BrowserEvidence } from './session.ts'
 
 export type ImageAttachmentRef = {
@@ -145,7 +146,12 @@ export function enrichUserMessage(message: EnrichableMessage, batch: StagedAnnot
     : { kind: 'user', annotations: batch.marks }
   return {
     ...message,
-    content: [...message.content, ...evidence],
+    content: [
+      ...message.content.map((block) => block.type === 'text'
+        ? { ...block, text: stripAnnotationDraftSentinel(block.text) }
+        : block),
+      ...evidence,
+    ],
     source,
   }
 }
@@ -230,6 +236,8 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     typeof rec.id !== 'string'
     || typeof rec.captureId !== 'string'
     || typeof rec.documentId !== 'string'
+    || !Number.isSafeInteger(rec.layoutRevision) || (rec.layoutRevision as number) <= 0
+    || !Number.isSafeInteger(rec.mediaGeneration) || (rec.mediaGeneration as number) <= 0
     || typeof rec.ref !== 'string'
     || rec.mediaType !== 'image/jpeg'
     || typeof rec.width !== 'number'
@@ -239,6 +247,8 @@ function decodeEvidence(value: unknown): BrowserEvidence | undefined {
     id: rec.id,
     captureId: rec.captureId,
     documentId: rec.documentId,
+    layoutRevision: rec.layoutRevision as number,
+    mediaGeneration: rec.mediaGeneration as number,
     ref: rec.ref,
     mediaType: 'image/jpeg',
     width: rec.width,

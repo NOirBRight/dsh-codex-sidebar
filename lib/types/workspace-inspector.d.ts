@@ -23,6 +23,7 @@ export declare function createWorkspaceInspector(opts?: {
     now?: () => number;
 }): WorkspaceInspector;
 export declare function parsePatch(patch: string): FileDiff | null;
+export declare function expandUserPath(path: string): string;
 export declare function readPreview(cwd: string, path: string, signal?: AbortSignal): Promise<string | undefined>;
 export declare function parseNumstat(raw: string): Record<string, Stat>;
 export {};

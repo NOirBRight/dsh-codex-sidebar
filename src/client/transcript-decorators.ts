@@ -13,7 +13,7 @@ export type TranscriptDecoratorPaints = {
   paintStats: (root?: ParentNode) => void
   paintChips: (root?: ParentNode) => void
   paintPaths: (root?: ParentNode) => void
-  openPath: (path: string) => void
+  openPath: (path: string) => boolean | Promise<boolean> | undefined
 }
 
 export type TranscriptPaintData = {
@@ -109,16 +109,45 @@ export function shouldRebindSession(
   return boundId !== nextId || boundStore !== nextStore
 }
 
+function disposeReverse(disposers: readonly (() => void)[]): void {
+  const failures: unknown[] = []
+  for (let index = disposers.length - 1; index >= 0; index--) {
+    const dispose = disposers[index]
+    if (dispose === undefined) continue
+    try {
+      dispose()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, 'transcript decorator teardown failed')
+}
+
 export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): TranscriptDecorators {
   if (typeof document === 'undefined' || document.documentElement === null) {
+    return { paintData() {}, stop() {} }
+  }
+  const observerConstructor = typeof MutationObserver === 'function' ? MutationObserver : undefined
+  const requestFrame = globalThis.requestAnimationFrame
+  const cancelFrame = globalThis.cancelAnimationFrame
+  if (observerConstructor === undefined
+    || typeof observerConstructor.prototype.observe !== 'function'
+    || typeof observerConstructor.prototype.disconnect !== 'function'
+    || typeof requestFrame !== 'function'
+    || typeof cancelFrame !== 'function'
+    || typeof document.addEventListener !== 'function'
+    || typeof document.removeEventListener !== 'function') {
     return { paintData() {}, stop() {} }
   }
 
   let frame = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let lastPaint = 0
-  let fullScan = false
+  let stopped = false
+  let hidden = document.hidden === true
   const pendingRoots = new Set<Element>()
+  let paintHosts: ParentNode[] = []
   let observer: MutationObserver
 
   const isolate = (paint: () => void): void => {
@@ -134,24 +163,43 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     try {
       pass()
     } finally {
-      observer.observe(document.documentElement, OBSERVE)
+      if (!stopped) observer.observe(document.documentElement, OBSERVE)
     }
   }
 
-  const takeRoots = (): ParentNode[] => {
-    if (fullScan || pendingRoots.size > MAX_INCREMENTAL_ROOTS) {
-      pendingRoots.clear()
-      fullScan = false
-      return transcriptPaintHosts()
+  const takeRoots = (): Element[] => {
+    const roots: Element[] = []
+    for (const root of pendingRoots) {
+      roots.push(root)
+      pendingRoots.delete(root)
+      if (roots.length >= MAX_INCREMENTAL_ROOTS) break
     }
-    const roots = [...pendingRoots]
-    pendingRoots.clear()
-    return roots.length === 0 ? transcriptPaintHosts() : roots
+    return roots
+  }
+
+  const syncHidden = (): boolean => {
+    hidden = document.hidden === true
+    return hidden
+  }
+
+  const scheduleDom = (): void => {
+    if (stopped || syncHidden() || pendingRoots.size === 0 || frame !== 0 || timer !== undefined) return
+    const wait = Math.max(0, TRANSCRIPT_PAINT_MIN_MS - (Date.now() - lastPaint))
+    if (wait === 0) {
+      armFrame()
+      return
+    }
+    timer = setTimeout(() => {
+      timer = undefined
+      if (!stopped && !syncHidden()) armFrame()
+    }, wait)
   }
 
   const paintDom = (): void => {
-    lastPaint = Date.now()
+    if (stopped || syncHidden()) return
     const roots = takeRoots()
+    if (roots.length === 0) return
+    lastPaint = Date.now()
     run(() => {
       for (const root of roots) {
         isolate(() => { paints.paintStats(root) })
@@ -159,16 +207,30 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
         isolate(() => { paints.paintPaths(root) })
       }
     })
+    scheduleDom()
+  }
+
+  const paintInitial = (): void => {
+    lastPaint = Date.now()
+    paintHosts = transcriptPaintHosts()
+    const hosts = paintHosts
+    run(() => {
+      for (const host of hosts) {
+        isolate(() => { paints.paintStats(host) })
+        isolate(() => { paints.paintChips(host) })
+        isolate(() => { paints.paintPaths(host) })
+      }
+    })
   }
 
   const paintData = (opts?: TranscriptPaintData): void => {
+    if (stopped) return
     const stats = opts?.stats !== false
     const chips = opts?.chips !== false
     if (!stats && !chips) return
     pendingRoots.clear()
-    fullScan = false
     lastPaint = Date.now()
-    const hosts = transcriptPaintHosts()
+    const hosts = paintHosts
     run(() => {
       for (const host of hosts) {
         if (stats) isolate(() => { paints.paintStats(host) })
@@ -177,62 +239,92 @@ export function installTranscriptDecorators(paints: TranscriptDecoratorPaints): 
     })
   }
 
-  const armFrame = (): void => {
-    if (frame !== 0) return
-    frame = requestAnimationFrame(() => {
+  function armFrame(): void {
+    if (stopped || syncHidden() || pendingRoots.size === 0 || frame !== 0) return
+    frame = requestFrame(() => {
       frame = 0
       paintDom()
     })
   }
 
-  const scheduleDom = (): void => {
-    if (frame !== 0 || timer !== undefined) return
-    const wait = Math.max(0, TRANSCRIPT_PAINT_MIN_MS - (Date.now() - lastPaint))
-    if (wait === 0) {
-      armFrame()
+  const cancelScheduled = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      timer = undefined
+    }
+    if (frame !== 0) {
+      cancelFrame(frame)
+      frame = 0
+    }
+  }
+
+  const onVisibility = (): void => {
+    hidden = document.hidden === true
+    if (hidden) {
+      cancelScheduled()
       return
     }
-    timer = setTimeout(() => {
-      timer = undefined
-      armFrame()
-    }, wait)
+    scheduleDom()
   }
 
   const onClick = (event: Event): void => {
     const path = pathFromClick(event)
     if (path === undefined) return
-    event.preventDefault()
-    event.stopPropagation()
-    paints.openPath(path)
+    const result = paints.openPath(path)
+    const takeOver = (opened: boolean | undefined): void => {
+      if (opened !== true) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    if (result === undefined || typeof result === 'boolean') {
+      takeOver(result)
+      return
+    }
+    void result.then(takeOver)
   }
 
-  observer = new MutationObserver((records) => {
-    let dirty = false
-    for (const record of records) {
-      const roots = collectAddedTranscriptRoots(record)
-      if (roots.length === 0) continue
-      dirty = true
-      for (const root of roots) pendingRoots.add(root)
+  const setupDisposers: Array<() => void> = []
+  try {
+    observer = new observerConstructor((records) => {
+      if (stopped) return
+      let dirty = false
+      for (const record of records) {
+        const roots = collectAddedTranscriptRoots(record)
+        if (roots.length === 0) continue
+        dirty = true
+        for (const root of roots) pendingRoots.add(root)
+      }
+      if (dirty) scheduleDom()
+    })
+    observer.observe(document.documentElement, OBSERVE)
+    setupDisposers.push(() => { observer.disconnect() })
+    document.addEventListener('click', onClick, true)
+    setupDisposers.push(() => { document.removeEventListener('click', onClick, true) })
+    document.addEventListener('visibilitychange', onVisibility)
+    setupDisposers.push(() => { document.removeEventListener('visibilitychange', onVisibility) })
+    setupDisposers.push(cancelScheduled)
+    paintInitial()
+  } catch (error) {
+    stopped = true
+    pendingRoots.clear()
+    try {
+      disposeReverse(setupDisposers)
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], 'transcript decorator setup failed and rollback failed')
     }
-    if (dirty) scheduleDom()
-  })
-  observer.observe(document.documentElement, OBSERVE)
-  document.addEventListener('click', onClick, true)
-  fullScan = true
-  paintDom()
+    throw error
+  }
 
+  let disposed = false
   return {
     paintData,
     stop(): void {
-      observer.disconnect()
-      document.removeEventListener('click', onClick, true)
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        timer = undefined
-      }
-      if (frame === 0) return
-      cancelAnimationFrame(frame)
-      frame = 0
+      if (disposed) return
+      disposed = true
+      stopped = true
+      pendingRoots.clear()
+      disposeReverse(setupDisposers)
+      setupDisposers.length = 0
     },
   }
 }

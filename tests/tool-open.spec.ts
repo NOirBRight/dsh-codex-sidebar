@@ -39,10 +39,11 @@ function running(over: Record<string, unknown> = {}): Record<string, unknown> {
 }
 
 describe('tool-open', () => {
-  it('opens edit/write as Diff and read/link as preview', () => {
+  it('opens only edit-like tools as Diff and write/read as preview', () => {
     expect(viewForTool('edit')).toBe('diff')
-    expect(viewForTool('write')).toBe('diff')
+    expect(viewForTool('write')).toBe('preview')
     expect(viewForTool('str_replace')).toBe('diff')
+    expect(viewForTool('apply_patch')).toBe('diff')
     expect(viewForTool('read')).toBe('preview')
     expect(viewForTool(undefined)).toBe('preview')
   })

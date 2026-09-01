@@ -4,7 +4,6 @@ import { isTakeoverUrl } from '../browser.ts'
 import { allowTranscriptTakeover } from '../transcript-takeover.ts'
 
 const MARK = 'dcs-path-link'
-const URL_HREF = '#dcs-browser'
 const FILE_EXT = /\.(tsx?|jsx?|mjs|cjs|md|json|css|html?|vue|svelte|py|rs|go|toml|ya?ml|svg|png|jpe?g|gif|webp|txt|map|lock|sh|bash)$/i
 
 export function transcriptPath(text: string): string | undefined {
@@ -57,10 +56,6 @@ function decorateUrls(root: ParentNode): void {
     const href = (node.getAttribute('data-dcs-url') ?? node.getAttribute('href') ?? '').trim()
     if (!isTakeoverUrl(href)) continue
     node.setAttribute('data-dcs-url', href)
-    const target = node.getAttribute('target')
-    if (target !== null) node.setAttribute('data-dcs-target', target)
-    node.setAttribute('href', URL_HREF)
-    node.removeAttribute('target')
   }
 }
 
@@ -68,9 +63,17 @@ export function pathFromClick(event: Event): string | undefined {
   const target = event.target
   if (!(target instanceof Element)) return undefined
   const code = target.closest('code.' + MARK)
-  if (!(code instanceof HTMLElement)) return undefined
-  const path = code.dataset.dcsPath
-  return path === undefined || path.length === 0 ? undefined : path
+  if (code instanceof HTMLElement) {
+    const path = code.dataset.dcsPath
+    return path === undefined || path.length === 0 ? undefined : path
+  }
+  const row = target.closest('[data-tool]')
+  if (!(row instanceof HTMLElement)) return undefined
+  const btn = target.closest('button')
+  if (!(btn instanceof HTMLElement) || btn.closest('[data-tool]') !== row) return undefined
+  const mark = btn.querySelector('.dcs-tool-stat')
+  const raw = (btn.textContent ?? '').replace(mark?.textContent ?? '', '').trim()
+  return transcriptPath(raw.split('\n')[0] ?? '')
 }
 
 function clearMark(node: HTMLElement): void {

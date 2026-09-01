@@ -133,7 +133,7 @@ body:has(.dcs-col-handle[data-dragging]) { user-select: none; cursor: col-resize
   flex-shrink: 0;
   overflow: visible;
   position: relative;
-  z-index: 5;
+  z-index: 20;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-base);
 }
@@ -234,7 +234,7 @@ button.dcs-plus:hover, button.dcs-plus[aria-expanded="true"] {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   box-shadow: var(--dsw-shadow-lv2);
-  z-index: 8;
+  z-index: 30;
 }
 .dcs-add-row {
   display: flex;
@@ -778,7 +778,7 @@ button.dcs-toggle {
    for the assistant seat, which would crush the host workspace rail to the
    56px fallback on the empty chooser. */
 [data-dcs-pin] {
-  grid-template-columns: var(--dcs-sidebar-track, 56px) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
+  grid-template-columns: var(--dcs-sidebar-track, auto) minmax(0, 1fr) var(--dcs-details-track, 0px) !important;
   transition: none !important;
 }
 [data-side="details"] { display: none !important; }

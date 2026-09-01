@@ -12,12 +12,15 @@ describe('annotation composer draft bridge', () => {
     expect(annotationDraftProjection('', 1, 1)).toBe('')
   })
 
-  it('removes the sentinel once annotations leave or visible text appears', () => {
+  it('removes only the trailing sentinel owned by an annotation-only draft', () => {
+    expect(stripAnnotationDraftSentinel(' \t\u200b')).toBe(' \t')
     expect(annotationDraftProjection('\u200b', 0, 0)).toBe('')
-    expect(annotationDraftProjection('\u200bhello', 1, 0)).toBe('hello')
+    expect(annotationDraftProjection('   \u200b', 0, 0)).toBe('   ')
   })
 
-  it('strips every sentinel before prompt formatting', () => {
-    expect(stripAnnotationDraftSentinel('\u200bhello\u200b')).toBe('hello')
+  it('preserves user-authored zero-width spaces in visible text', () => {
+    expect(stripAnnotationDraftSentinel('\u200bhello')).toBe('\u200bhello')
+    expect(stripAnnotationDraftSentinel('hel\u200blo')).toBe('hel\u200blo')
+    expect(stripAnnotationDraftSentinel('hello\u200b')).toBe('hello\u200b')
   })
 })

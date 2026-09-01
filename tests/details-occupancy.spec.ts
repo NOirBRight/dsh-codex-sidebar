@@ -45,7 +45,14 @@ function fakeCtx() {
         registered.push({ name: options.name, priority: options.priority })
       },
     },
-    effect() { return () => {} },
+    effect(callback: () => void | (() => void)) {
+      try {
+        const dispose = callback()
+        return typeof dispose === 'function' ? dispose : () => {}
+      } catch {
+        return () => {}
+      }
+    },
     sessions: {
       list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} },
       binding: () => undefined,
@@ -60,10 +67,16 @@ describe('details occupancy', () => {
   it('injects both the workspaces service and its boot provider', () => {
     expect(CLIENT_INJECT).toEqual(inject)
     expect(CLIENT_INJECT).toContain('workspaces')
+    expect(CLIENT_INJECT).toContain('uiConversation')
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
       dsh: { client: { inject: string[] } }
     }
     expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-ui-workspace')
+    expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-ui-session')
+    expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-client-store')
+    expect(manifest.dsh.client.inject).toContain('@deepseek-ai/dsh-api-remotes')
+    expect(CLIENT_INJECT).toContain('remote')
+    expect(CLIENT_INJECT).toContain('remote.session')
   })
 
   it('shadows the shipped DetailsPanel (priority 0)', () => {
@@ -108,10 +121,7 @@ describe('details occupancy', () => {
 
   it('apply still occupies details when path takeover throws', () => {
     const { ctx, registered, injected } = fakeCtx()
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => apply(ctx as never)).not.toThrow()
-    expect(error).toHaveBeenCalledOnce()
-    error.mockRestore()
     expect(injected[0]).toBe(DETAILS_SLOT)
     expect(registered.some((row) => row.name === DETAILS_SLOT && row.priority === DETAILS_PRIORITY)).toBe(true)
   })

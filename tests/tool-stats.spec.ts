@@ -49,6 +49,21 @@ class FakeElement {
     return this.attrs.get(name) ?? null
   }
 
+  get previousElementSibling(): FakeElement | null {
+    if (this.parentElement === null) return null
+    const index = this.parentElement.children.indexOf(this)
+    return index > 0 ? this.parentElement.children[index - 1] ?? null : null
+  }
+
+  after(node: FakeElement): void {
+    const parent = this.parentElement
+    if (parent === null) return
+    node.parentElement?.removeChild(node)
+    node.parentElement = parent
+    const index = parent.children.indexOf(this)
+    parent.children.splice(index + 1, 0, node)
+  }
+
   append(...nodes: FakeElement[]): void {
     for (const node of nodes) {
       node.parentElement?.removeChild(node)
@@ -134,6 +149,17 @@ describe('tool row hunk bridge', () => {
     decorate(rows, root as never)
     expect(hunkForToolRow(first as never)).toEqual({ before: 'old\n', after: '' })
     expect(hunkForToolRow(second as never)).toEqual({ before: 'keep\n', after: 'keep\nplus\n' })
+    expect(first.querySelector('.dcs-tool-stat')?.textContent).toBe('+0−1')
+    expect(second.querySelector('.dcs-tool-stat')?.textContent).toBe('+1−0')
+    expect(first.querySelector('.dcs-tool-stat')?.parentElement?.tagName).toBe('BUTTON')
+    expect(second.querySelector('.dcs-tool-stat')?.parentElement?.tagName).toBe('BUTTON')
+
+    const stale = first.querySelector('.dcs-tool-stat')
+    if (stale === null) throw new Error('missing first badge')
+    first.append(stale)
+    expect(stale.parentElement?.tagName).toBe('DIV')
+    decorate(rows, root as never)
+    expect(stale.parentElement?.tagName).toBe('BUTTON')
 
     const changed = {
       nodes: [

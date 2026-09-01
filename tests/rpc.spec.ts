@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { SIDEBAR_BROWSER_CAPTURE_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, SIDEBAR_DISPATCH_ENDPOINT, SIDEBAR_FILE_READ_ENDPOINT, SIDEBAR_SNAPSHOT_ENDPOINT } from '../src/contract.ts'
 import { createFilePersist } from '../src/host-persist.ts'
 import { handleSidebarRpc, handleSidebarRpcAsync } from '../src/host-rpc.ts'
 import { createHostSideChat } from '../src/host-side-chat.ts'
@@ -36,6 +36,87 @@ function memoryPersist(): PersistPort {
 }
 
 describe('sidebar RPC', () => {
+  it('issues a Browser control ticket without committing the persisted preset out of band', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const gate = { sessionId: 'sess-preset', cwd: '/tmp', busy: false }
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      ...gate, intent: { type: 'open-url', url: 'https://example.com' },
+    })
+    if (!opened.ok) throw new Error('failed to open Browser Tab')
+    const tabId = (opened.value as { snapshot: { active: string } }).snapshot.active
+    const selected = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      ...gate, intent: { type: 'browser-set-device', device: 'phone' },
+    })
+    expect(selected).toMatchObject({ ok: true, value: { snapshot: { browser: { device: 'phone' } } } })
+
+    const ensure = vi.fn(async () => ({ status: 'ready' }))
+    const proposeLayout = vi.fn(async () => ({
+      revision: 2, mode: 'phone', viewport: { width: 390, height: 844 }, mediaGeneration: 2,
+    }))
+    const issue = vi.fn(() => ({ path: '/browser?ticket=one', expiresAt: 123 }))
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_STREAM_TICKET_ENDPOINT, {
+      ...gate, tabId,
+    }, {
+      managedBrowser: { ensure, proposeLayout } as never,
+      browserStream: { issue } as never,
+    })).resolves.toEqual({ ok: true, value: { path: '/browser?ticket=one', expiresAt: 123 } })
+
+    expect(ensure).toHaveBeenCalledOnce()
+    expect(proposeLayout).not.toHaveBeenCalled()
+    expect(issue).toHaveBeenCalledOnce()
+  })
+
+  it('requires exact Browser layout identity for capture and temporary evidence commit', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const opened = handleSidebarRpc(registry, SIDEBAR_DISPATCH_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, intent: { type: 'open-url', url: 'https://example.com' },
+    })
+    if (!opened.ok) throw new Error('failed to open Browser Tab')
+    const tabId = (opened.value as { snapshot: { active: string } }).snapshot.active
+    const capture = vi.fn(async () => ({ captureId: 'c1' }))
+    const commit = vi.fn(async () => ({ id: 'e1' }))
+    const services = { browserEvidence: { capture, commit } as never }
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, tabId,
+    }, services)).resolves.toMatchObject({ ok: false })
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      sessionId: 'sess-a', cwd: '/tmp', busy: false, tabId, expectedRevision: 4, expectedMediaGeneration: 7,
+    }, services)).resolves.toMatchObject({ ok: true })
+    expect(capture).toHaveBeenCalledWith({ sessionId: 'sess-a', tabId }, { revision: 4, mediaGeneration: 7 })
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
+      sessionId: 'sess-a', captureId: 'c1', expectedRevision: 4,
+    }, services)).resolves.toMatchObject({ ok: false })
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
+      sessionId: 'sess-a', captureId: 'c1', expectedRevision: 4, expectedMediaGeneration: 7,
+    }, services)).resolves.toMatchObject({ ok: true })
+    expect(commit).toHaveBeenCalledWith('sess-a', 'c1', { revision: 4, mediaGeneration: 7 })
+  })
+
+  it('reads Browser evidence through an explicit bounded chunk offset', async () => {
+    const registry = createRegistry({ persist: memoryPersist() })
+    const readChunk = vi.fn(async () => ({
+      mediaType: 'image/jpeg', data: 'AQID', offset: 96 * 1024, nextOffset: 96 * 1024 + 3,
+      totalBytes: 96 * 1024 + 3, done: true,
+    }))
+    const evidence = {
+      id: 'e1', captureId: 'c1', documentId: 'd1', layoutRevision: 4, mediaGeneration: 7,
+      ref: '0123456789abcdef0123/0123456789abcdef0123456789abcdef.jpg',
+      mediaType: 'image/jpeg', width: 720, height: 860,
+    }
+    const services = { browserEvidence: { readChunk } as never }
+
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, {
+      sessionId: 'sess-a', evidence, offset: 96 * 1024,
+    }, services)).resolves.toMatchObject({ ok: true, value: { offset: 96 * 1024, done: true } })
+    expect(readChunk).toHaveBeenCalledWith('sess-a', evidence, 96 * 1024)
+    await expect(handleSidebarRpcAsync(registry, SIDEBAR_BROWSER_EVIDENCE_READ_ENDPOINT, {
+      sessionId: 'sess-a', evidence, offset: -1,
+    }, services)).resolves.toMatchObject({ ok: false })
+    expect(readChunk).toHaveBeenCalledOnce()
+  })
+
   it('opens a Files Tab through dispatch and reloads it for the same 主会话', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dcs-'))
     const persist = createFilePersist(root)

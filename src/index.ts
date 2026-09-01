@@ -1,9 +1,11 @@
 /** Host half: one SidebarSession per 主会话, reached over Connection RPC. */
 
+import type {} from '@deepseek-ai/dsh-session'
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
 import { createHostBrowser } from './host-browser.ts'
 import { ManagedBrowserRuntime, type ManagedBrowserConfig } from './managed-browser-runtime.ts'
 import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
+import { installManagedBrowserSessionLifecycle } from './managed-browser-session-lifecycle.ts'
 import { ManagedBrowserStream, MANAGED_BROWSER_STREAM_PATH } from './managed-browser-stream.ts'
 import { createManagedBrowserDriveService } from './host-browser-tools.ts'
 import { BROWSER_DRIVE_GUIDANCE, registerBrowserDriveTools } from './register-browser-tools.ts'
@@ -66,6 +68,11 @@ type EffectContext = {
 }
 
 type HostContext = EffectContext & {
+  on: (
+    name: 'session/disposed',
+    listener: (session: { id: string }) => void,
+    options: { global: true },
+  ) => () => void
   inject: (deps: readonly string[], callback: (ctx: EffectContext & {
     connection?: { rpc: RpcHandle }
     tools?: ToolsHost
@@ -76,7 +83,7 @@ type HostContext = EffectContext & {
   }) => void) => void
 }
 
-function agentCwd(agent: unknown): string | undefined {
+function agentWorkspaceCwd(agent: unknown): string | undefined {
   if (typeof agent !== 'object' || agent === null) return undefined
   const session = (agent as { session?: unknown }).session
   if (typeof session !== 'object' || session === null) return undefined
@@ -92,20 +99,35 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   let agentLive = (_id: string): boolean => false
   let cwdForSession = (_id: string): string | undefined => undefined
   let saveImage: ((input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }) => Promise<{ attachmentId: string; mediaType: 'image/jpeg'; bytes: number; width: number; height: number; name?: string }>) | undefined
-  const managedBrowser = new ManagedBrowserRuntime(config.managedBrowser)
-  const managedStream = new ManagedBrowserStream({ runtime: managedBrowser })
+  const browserConfig = config.managedBrowser
+  const managedBrowser = new ManagedBrowserRuntime(browserConfig)
+  const managedStream = new ManagedBrowserStream({
+    runtime: managedBrowser,
+    ...browserConfig,
+    ...(browserConfig?.desktopJpegMaxRawBytes === undefined ? {} : { desktopMaxRawBytes: browserConfig.desktopJpegMaxRawBytes }),
+    ...(browserConfig?.mobileJpegMaxRawBytes === undefined ? {} : { mobileMaxRawBytes: browserConfig.mobileJpegMaxRawBytes }),
+    ...(browserConfig?.browserCleanupTimeoutMs === undefined ? {} : { shutdownTimeoutMs: browserConfig.browserCleanupTimeoutMs }),
+  })
   const managedEvidence = new ManagedBrowserEvidenceStore(managedBrowser)
   const persist = createFilePersist()
   const workspace = createWorkspaceInspector()
   ctx.effect(() => {
+    const releaseTargetInvalidation = managedBrowser.onTargetInvalidated((tab, identity) => {
+      managedStream.invalidateTarget(tab, identity)
+    })
     const timer = setInterval(() => { void managedBrowser.reap() }, 15_000)
     timer.unref()
     return () => {
       clearInterval(timer)
+      releaseTargetInvalidation()
       void persist.flush()
       void Promise.all([managedStream.dispose(), managedBrowser.dispose()])
     }
   }, 'dsh-codex-sidebar: managed browser lifecycle')
+  ctx.effect(
+    () => installManagedBrowserSessionLifecycle(ctx, managedStream, managedBrowser, filesBySession),
+    'dsh-codex-sidebar: managed browser session lifecycle',
+  )
   const registry = createRegistry({
     persist,
     filesFor: (sessionId, io) => {
@@ -115,7 +137,11 @@ export function apply(ctx: HostContext, config: Config = {}): void {
     },
     browserFor: (sessionId, io) => createHostBrowser({
       isBusy: io.isBusy,
-      managed: { runtime: managedBrowser, sessionId },
+      managed: {
+        runtime: managedBrowser,
+        sessionId,
+        closeStream: (tabId) => { managedStream.closeTab({ sessionId, tabId }) },
+      },
     }),
     terminalFor: (_sessionId, io) => createHostTerminal(io.cwdOf),
     sideChatFor: (sessionId, io) => createHostSideChat({
@@ -165,7 +191,6 @@ export function apply(ctx: HostContext, config: Config = {}): void {
         busy: exec.agent?.status === 'running',
       })
     }), 'dsh-codex-sidebar: Browser tools')
-    console.info('[dsh-codex-sidebar] browser_tabs/open/snapshot/click/fill registered')
   })
   ctx.inject(['attachments'], (wired) => {
     if (wired.attachments === undefined) return
@@ -174,7 +199,7 @@ export function apply(ctx: HostContext, config: Config = {}): void {
   ctx.inject(['agents'], (wired) => {
     if (wired.agents === undefined) return
     agentLive = (id) => wired.agents?.get(id) !== undefined
-    cwdForSession = (id) => agentCwd(wired.agents?.get(id))
+    cwdForSession = (id) => agentWorkspaceCwd(wired.agents?.get(id))
     wired.effect(() => installAnnotationSend(wired as unknown as AnnotationSendHost, annotationSend), 'dsh-codex-sidebar: annotation send')
   })
   ctx.inject(['systemPrompt'], (wired) => {

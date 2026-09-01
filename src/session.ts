@@ -8,7 +8,7 @@ import {
   noteBody,
 } from './annotation.ts'
 import type { BrowserIntent, BrowserPort, BrowserState } from './browser.ts'
-import { browserDeviceViewport, emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser, syncManagedBrowser } from './browser.ts'
+import { emptyBrowser, hydrateBrowserPages, normalizeUrl, projectBrowser, reduceBrowser, syncManagedBrowser } from './browser.ts'
 import type { FileDiff, ReviewIntent, ReviewPort, ReviewState } from './review.ts'
 import { emptyReview, fileDiff, projectReview, reduceReview, rememberReview } from './review.ts'
 import type { SideChatIntent, SideChatPort, SideChatState } from './side-chat.ts'
@@ -45,6 +45,8 @@ export type BrowserEvidence = {
   id: string
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   ref: string
   mediaType: 'image/jpeg'
   width: number
@@ -374,8 +376,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
 
   function projectPages(): Record<string, BrowserState> {
     const out: Record<string, BrowserState> = {}
-    for (const [id, state] of Object.entries(pages)) {
-      out[id] = projectBrowser(state, opts.browser)
+    for (const tab of tabs) {
+      if (tab.kind !== 'Browser') continue
+      out[tab.id] = projectBrowser(pages[tab.id] ?? emptyBrowser(), opts.browser)
     }
     return out
   }
@@ -385,7 +388,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
   }
 
   function applyBrowser(intent: { type: string }): Effect[] | undefined {
-    const id = browserTabId()
+    const requestedTabId = 'tabId' in intent && typeof intent.tabId === 'string' ? intent.tabId : undefined
+    const id = requestedTabId ?? browserTabId()
+    if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) return undefined
     if (id === undefined) return undefined
     const next = reduceBrowser(pages[id] ?? emptyBrowser(), intent, opts.browser)
     if (next === undefined) return undefined
@@ -406,10 +411,6 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             ? 'refresh'
             : 'open'
       opts.browser?.manage?.(id, next.state.url, action)
-    }
-    if (intent.type === 'browser-set-device') {
-      const viewport = browserDeviceViewport(next.state.device)
-      if (viewport !== null) opts.browser?.resize?.(id, viewport.width, viewport.height)
     }
     return next.effects
   }
@@ -525,11 +526,6 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           const href = pages[tab.id]?.url || tab.target
           if (href.length > 0) opts.browser?.manage?.(tab.id, href, 'open')
         }
-        const selectedBrowser = pages[tab.id]
-        const viewport = tab.kind === 'Browser' && selectedBrowser !== undefined
-          ? browserDeviceViewport(selectedBrowser.device)
-          : null
-        if (viewport !== null) opts.browser?.resize?.(tab.id, viewport.width, viewport.height)
         break
       }
       case 'toggle-collapsed':
@@ -686,6 +682,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             pendingRect: item.rect ?? null,
             pendingCaptureId: item.evidence?.captureId ?? null,
             pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingLayoutRevision: item.evidence?.layoutRevision ?? null,
+            pendingMediaGeneration: item.evidence?.mediaGeneration ?? null,
             pendingEvidence: item.evidence ?? null,
             notePos: null,
             noteDraft: '',
@@ -744,6 +742,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
             pendingRect: item.rect ?? null,
             pendingCaptureId: item.evidence?.captureId ?? null,
             pendingDocumentId: item.evidence?.documentId ?? null,
+            pendingLayoutRevision: item.evidence?.layoutRevision ?? null,
+            pendingMediaGeneration: item.evidence?.mediaGeneration ?? null,
             pendingEvidence: item.evidence ?? null,
             notePos,
             noteDraft: item.text,
@@ -786,7 +786,9 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
         break
       }
       case 'browser-note-add': {
-        const id = browserTabId()
+        const requestedTabId = (intent as BrowserIntent & { type: 'browser-note-add' }).tabId
+        const id = requestedTabId ?? browserTabId()
+        if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) break
         const current = id === undefined ? undefined : pages[id]
         if (id === undefined || current === undefined || current.pendingMark === null) break
         const evidence = (intent as BrowserIntent & { type: 'browser-note-add' }).evidence ?? current.pendingEvidence
@@ -810,13 +812,17 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           pendingRect: null,
           pendingCaptureId: null,
           pendingDocumentId: null,
+          pendingLayoutRevision: null,
+          pendingMediaGeneration: null,
           pendingEvidence: null,
           editingId: null,
         })
         break
       }
       case 'browser-note-send': {
-        const id = browserTabId()
+        const requestedTabId = (intent as BrowserIntent & { type: 'browser-note-send' }).tabId
+        const id = requestedTabId ?? browserTabId()
+        if (requestedTabId !== undefined && !tabs.some((tab) => tab.id === requestedTabId && tab.kind === 'Browser')) break
         const current = id === undefined ? undefined : pages[id]
         if (id === undefined || current === undefined || current.pendingMark === null) break
         const evidence = (intent as BrowserIntent & { type: 'browser-note-send' }).evidence ?? current.pendingEvidence
@@ -843,6 +849,8 @@ export function createSidebarSession(opts: SessionOptions): SidebarSession {
           pendingRect: null,
           pendingCaptureId: null,
           pendingDocumentId: null,
+          pendingLayoutRevision: null,
+          pendingMediaGeneration: null,
           pendingEvidence: null,
           editingId: null,
         })

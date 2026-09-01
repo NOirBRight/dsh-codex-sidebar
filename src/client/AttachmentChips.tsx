@@ -2,7 +2,7 @@
 
 import { useEffect, type ReactNode } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ObservableSnapshot } from './shim.js'
 import type { Annotation } from '../session.ts'
 import { SidebarController, type SidebarStore } from './controller.ts'
 import { Ico } from './icons.tsx'

@@ -1,15 +1,19 @@
 /** Managed Chromium Browser chrome, Canvas stream, and screenshot-backed 批注. */
 
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactElement } from 'react'
-import { BROWSER_DEVICE_PRESETS, liveHref, type BrowserDevice } from '../browser.ts'
+import { BROWSER_DEVICE_PRESETS, externalBrowserHref, managedBrowserHref, type BrowserDevice, type BrowserState } from '../browser.ts'
 import { visibleAnnotations } from '../annotation.ts'
 import type { Annotation, AnnotationRect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserCaptureReply } from './controller.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import { Ico, type IconName } from './icons.tsx'
 import { ManagedBrowserCanvas } from './ManagedBrowserCanvas.tsx'
+import { MANAGED_BROWSER_PRESENTATION_CSS } from './managed-browser-presentation.ts'
 import { NoteComposer } from './NoteComposer.tsx'
 
 const BROWSER_CSS = `
+.dcs-browser-occupant { display:flex; flex:1; min-height:0; min-width:0; width:100%; }
+.dcs-browser-occupant[hidden] { display:none; }
 .dcs-browser { display:flex; flex-direction:column; flex:1; min-height:0; width:100%; position:relative; }
 .dcs-b-chrome { display:flex; align-items:center; gap:2px; padding:8px 10px; border-bottom:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); flex-shrink:0; }
 .dcs-b-nav { width:28px; height:28px; border:0; border-radius:6px; background:transparent; display:grid; place-items:center; color:var(--dsw-alias-label-tertiary); }
@@ -32,15 +36,7 @@ const BROWSER_CSS = `
 .dcs-b-empty h2 { margin:10px 0 0; font-size:17px; font-weight:600; color:var(--dsw-alias-label-secondary); }
 .dcs-b-empty p { margin:0; font-size:13px; color:var(--dsw-alias-label-tertiary); max-width:320px; text-align:center; }
 .dcs-b-page { flex:1; min-height:0; width:100%; position:relative; overflow:hidden; background:#fff; }
-.dcs-managed-browser { position:absolute; inset:0; overflow:hidden; display:grid; place-items:center; background:#f3f4f6; }
-.dcs-managed-browser-surface { position:relative; flex:none; overflow:hidden; background:#fff; box-shadow:0 1px 8px rgba(15,23,42,.16); }
-.dcs-managed-browser-canvas { width:100%; height:100%; display:block; object-fit:contain; object-position:center; touch-action:none; user-select:none; outline:none; }
-.dcs-managed-ime { position:absolute; left:-10000px; top:0; width:1px; height:1px; opacity:0; }
-.dcs-managed-browser-status { position:absolute; inset:0; z-index:6; display:grid; place-items:center; pointer-events:none; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-bg-base); font-size:13px; }
-.dcs-managed-selected, .dcs-managed-hover, .dcs-managed-selection { position:absolute; pointer-events:none; box-sizing:border-box; z-index:2; }
-.dcs-managed-selected { border:2px solid #0ea5e9; background:rgba(14,165,233,.2); box-shadow:0 0 0 1px rgba(255,255,255,.7) inset; }
-.dcs-managed-hover { border:1.5px solid #38bdf8; background:rgba(56,189,248,.1); }
-.dcs-managed-selection { border:1.5px solid #38bdf8; background:rgba(56,189,248,.18); }
+${MANAGED_BROWSER_PRESENTATION_CSS}
 .dcs-b-chrome > .dcs-tool[data-on] { background:var(--dsw-alias-label-primary); color:var(--dsw-alias-bg-base); }
 .dcs-b-capturing { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); z-index:5; pointer-events:none; padding:5px 10px; border-radius:999px; background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l2); color:var(--dsw-alias-label-secondary); font-size:12px; }
 .dcs-b-badge { position:absolute; z-index:4; border:0; border-radius:999px; min-width:18px; height:18px; padding:0 5px; transform:translate(-50%,-100%); background:#38bdf8; color:#0f172a; font-size:11px; font-weight:700; cursor:pointer; }
@@ -60,31 +56,33 @@ function ensureBrowserStyles(): void {
 
 type Ticket = { path: string; expiresAt: number }
 
-export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture, sendLabel, addLabel, deleteLabel }: {
+export function BrowserPane({ snapshot, browser, tabId, active, onIntent, requestTicket, requestCapture, sendLabel, addLabel, deleteLabel }: {
   snapshot: SidebarSnapshot
+  browser: BrowserState
+  tabId: string
+  active: boolean
   onIntent: (intent: Intent) => void
   requestTicket: (tabId: string) => Promise<Ticket | undefined>
-  requestCapture: (tabId: string) => Promise<BrowserCaptureReply | undefined>
+  requestCapture: (tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>) => Promise<BrowserCaptureReply | undefined>
   sendLabel: string
   addLabel: string
   deleteLabel: string
 }): ReactElement {
   ensureBrowserStyles()
-  const browser = snapshot.browser
   const bodyRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState(browser.draft)
   const [capturing, setCapturing] = useState(false)
   const [deviceOverride, setDeviceOverride] = useState<BrowserDevice | null>(null)
   const device = deviceOverride ?? browser.device
-  const href = liveHref(browser.url)
+  const href = managedBrowserHref(browser.url)
+  const externalHref = externalBrowserHref(browser.url)
   const hasPage = href !== undefined
-  const tabId = snapshot.tabs.find((tab) => tab.id === snapshot.active && tab.kind === 'Browser')?.id
 
   useEffect(() => { setDraft(browser.draft) }, [browser.draft])
   useEffect(() => { setDeviceOverride(null) }, [browser.device])
   useEffect(() => {
-    if (!browser.annotate) return
+    if (!active || !browser.annotate) return
     const onKey = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
       event.preventDefault()
@@ -92,7 +90,7 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
     }
     window.addEventListener('keydown', onKey)
     return () => { window.removeEventListener('keydown', onKey) }
-  }, [browser.annotate, onIntent])
+  }, [active, browser.annotate, onIntent])
 
   const submitUrl = (event: FormEvent): void => {
     event.preventDefault()
@@ -100,17 +98,18 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
   }
 
   const openLive = (): void => {
-    if (href === undefined) return
+    if (externalHref === undefined) return
     onIntent({ type: 'browser-open-external' })
-    window.open(href, '_blank', 'noopener')
+    window.open(externalHref, '_blank', 'noopener')
   }
 
-  const pick = async (rect: AnnotationRect, anchor: { x: number; y: number }): Promise<void> => {
+  const pick = async (rect: AnnotationRect, anchor: { x: number; y: number }, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<void> => {
     if (tabId === undefined || capturing) return
     setCapturing(true)
     try {
-      const capture = await requestCapture(tabId)
+      const capture = await requestCapture(tabId, expected)
       if (capture === undefined) return
+      if (capture.layoutRevision !== expected.revision || capture.mediaGeneration !== expected.mediaGeneration) return
       const hit = targetFor(rect, capture)
       const page = pageRef.current
       const body = bodyRef.current
@@ -118,11 +117,14 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
       const y = anchor.y + (page?.offsetTop ?? 0)
       onIntent({
         type: 'browser-click-content',
+        tabId,
         mark: hit === undefined ? areaCaption(rect) : nodeCaption(hit),
         x: body === null ? x : Math.min(body.clientWidth - 12, Math.max(12, x)),
         y: body === null ? y : Math.min(body.clientHeight - 12, Math.max(12, y)),
         captureId: capture.captureId,
         documentId: capture.documentId,
+        layoutRevision: capture.layoutRevision,
+        mediaGeneration: capture.mediaGeneration,
         ...hit === undefined ? { rect } : { selector: hit.selector, rect: hit.rect ?? rect },
       })
     } finally {
@@ -138,7 +140,7 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
         <NavButton title="刷新" enabled={hasPage} icon="refresh" onClick={() => { onIntent({ type: 'browser-refresh' }) }} />
         <form className="dcs-b-url" onSubmit={submitUrl}>
           <input value={draft} placeholder="Enter a URL" onChange={(event) => { setDraft(event.target.value) }} />
-          <NavButton title="外部打开" enabled={hasPage} icon="external" onClick={openLive} />
+          <NavButton title="外部打开" enabled={externalHref !== undefined} icon="external" onClick={openLive} />
         </form>
         <DevicePicker value={device} onChange={(next) => {
           setDeviceOverride(next)
@@ -152,16 +154,18 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
       </div>
       {browser.status === 'empty' && <Empty title="打开网页" detail="输入 URL，在侧栏里查看页面" />}
       {browser.status !== 'empty' && href === undefined && (
-        <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http 或 https 地址'} />
+        <Empty title="无法打开" detail={browser.runtimeError ?? '需要 http、https 或绝对本地 HTML 地址'} />
       )}
-      {browser.status !== 'empty' && href !== undefined && tabId !== undefined && (
+      {browser.status !== 'empty' && href !== undefined && (
         <div className="dcs-b-page" ref={pageRef}>
           <ManagedBrowserCanvas
             tabId={tabId}
+            active={active}
             device={device}
             annotate={browser.annotate}
             selectedRect={browser.pendingRect}
             selectedSelector={browser.pendingSelector}
+            fitContainerRef={pageRef}
             requestTicket={requestTicket}
             onPick={pick}
             onState={(projection) => {
@@ -204,8 +208,8 @@ export function BrowserPane({ snapshot, onIntent, requestTicket, requestCapture,
           editing={browser.editingId !== null}
           onDelete={() => { if (browser.editingId !== null) onIntent({ type: 'remove-attachment', id: browser.editingId }) }}
           onChange={(text) => { onIntent({ type: 'browser-set-note-draft', text }) }}
-          onAdd={() => { onIntent({ type: 'browser-note-add' }) }}
-          onSend={() => { onIntent({ type: 'browser-note-send' }) }}
+          onAdd={() => { onIntent({ type: 'browser-note-add', ...(tabId === undefined ? {} : { tabId }) }) }}
+          onSend={() => { onIntent({ type: 'browser-note-send', ...(tabId === undefined ? {} : { tabId }) }) }}
           onDismiss={() => { onIntent({ type: 'browser-dismiss-note' }) }}
         />
       )}

@@ -1,10 +1,8 @@
 /** Invisible bridge that lets the resident composer submit stacked annotations with no visible draft. */
 
-export const ANNOTATION_DRAFT_SENTINEL = '\u200b'
+import { ANNOTATION_DRAFT_SENTINEL, stripAnnotationDraftSentinel } from '../annotation-message.ts'
 
-export function stripAnnotationDraftSentinel(draft: string): string {
-  return draft.replaceAll(ANNOTATION_DRAFT_SENTINEL, '')
-}
+export { ANNOTATION_DRAFT_SENTINEL, stripAnnotationDraftSentinel }
 
 export function annotationDraftProjection(
   draft: string,

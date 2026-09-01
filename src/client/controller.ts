@@ -2,7 +2,7 @@
 
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from './shim.js'
 import {
   SIDEBAR_BROWSER_CAPTURE_ENDPOINT,
   SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT,
@@ -17,13 +17,16 @@ import {
   isRecord,
 } from '../contract.ts'
 import { formatDelivery } from '../send-text.ts'
-import { logEventsFromSession, turnWritesFromSession } from '../turn-writes.ts'
+import type { ReviewChange } from '../review.ts'
+import { createConversationProjection, type ConversationProjection } from './conversation-projection.ts'
 import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
-import { allowTranscriptClick, allowTranscriptTakeover, installTranscriptClickCapture, type TranscriptClickCaptureRoot } from '../transcript-takeover.ts'
-import { hunkForOpen, viewForTool } from '../tool-open.ts'
-import { hunkForToolRow, type ToolRowHunk } from './tool-stats.ts'
+import { viewForTool } from '../tool-open.ts'
+import type { ToolRowHunk } from './tool-stats.ts'
+import { SidebarAlpha1CompatAdapter, type CapturedToolContext } from './sidebar-alpha1-compat-adapter.ts'
+import { relativize } from '../relativize.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
+import type { BrowserLayout } from '../managed-browser-protocol.ts'
 import type { LogEvent, RosterEntry } from '../side-chat.ts'
 import { applyDetailsTrack } from '../details-occupancy.ts'
 import { pinHostDetailsTrack } from './host-frame.ts'
@@ -37,6 +40,8 @@ const REFRESH_RETRY_MS = [0, 100, 250, 500, 1_000, 2_000, 3_000, 5_000] as const
 export type BrowserCaptureReply = {
   captureId: string
   documentId: string
+  layoutRevision: number
+  mediaGeneration: number
   url: string
   title: string
   width: number
@@ -49,17 +54,17 @@ export class SidebarController {
   #listeners = new Set<() => void>()
   #effectPrompt = new Set<string>()
   #stagedKey = new Map<string, string>()
-  #userWatch = new Set<string>()
-  #turnWritesCache = new Map<string, { source: unknown; turnWrites: ReturnType<typeof turnWritesFromSession> }>()
+  #userWatch = new Map<string, { source: unknown; dispose: () => void }>()
+  #disposed = false
+  #conversationProjections = new Map<string, { binding: unknown; projection: ConversationProjection }>()
   #ctx: ClientContext
   #rpc: ConnectionHandle['rpc']
   #layout: ILayout
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
-  #pathTakeover = false
-  #urlClicks = false
-  #layoutReveal: ILayout | undefined
   #revealing = false
+  #compatAdapter: SidebarAlpha1CompatAdapter | undefined
+  #compatDispose: (() => void) | undefined
   #pendingCollapsed = new Map<string, boolean>()
   /** This client's details-track chrome. Host `collapsed` is not applied here. */
   #chromeCollapsed = new Map<string, boolean>()
@@ -80,14 +85,38 @@ export class SidebarController {
     return () => { this.#listeners.delete(listener) }
   }
 
+  /** Release session event subscriptions owned by this controller. */
+  dispose(): void {
+    if (this.#disposed) return
+    this.#disposed = true
+    const failures: unknown[] = []
+    const compatDispose = this.#compatDispose
+    this.#compatDispose = undefined
+    this.#compatAdapter = undefined
+    if (compatDispose !== undefined) {
+      try { compatDispose() } catch (error) { failures.push(error) }
+    }
+    const watches = [...this.#userWatch.values()]
+    this.#userWatch.clear()
+    for (const watch of watches) {
+      try { watch.dispose() } catch (error) { failures.push(error) }
+    }
+    this.#listeners.clear()
+    this.#conversationProjections.clear()
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'SidebarController disposal failed')
+  }
+
   snap(sessionId: string): SidebarSnapshot | undefined {
     return this.#store.bySession[sessionId]
   }
 
-  async browserCapture(sessionId: string, tabId: string): Promise<BrowserCaptureReply | undefined> {
+  async browserCapture(sessionId: string, tabId: string, expected: Pick<BrowserLayout, 'revision' | 'mediaGeneration'>): Promise<BrowserCaptureReply | undefined> {
     const gate = this.#gate(sessionId)
     if (gate === undefined) return undefined
-    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, { ...gate, tabId })
+    const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_CAPTURE_ENDPOINT, {
+      ...gate, tabId, expectedRevision: expected.revision, expectedMediaGeneration: expected.mediaGeneration,
+    })
     if (!result.ok || !captureReply(result.value)) return undefined
     return result.value
   }
@@ -119,7 +148,7 @@ export class SidebarController {
   async refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined> {
     return this.#enqueue(sessionId, async () => {
       const epoch = this.#refreshEpoch.get(sessionId) ?? 0
-      if (this.snap(sessionId) === undefined && signal?.aborted !== true) {
+      if (this.snap(sessionId) === undefined && !aborted(signal)) {
         const lightGate = this.#gate(sessionId)
         if (lightGate !== undefined) {
           try {
@@ -131,11 +160,11 @@ export class SidebarController {
             if (light.ok && isRecord(light.value) && isRecord(light.value.snapshot)) {
               if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
               const snapshot = light.value.snapshot as unknown as SidebarSnapshot
+              await this.#syncStaged(snapshot)
               this.#hostCollapsed.set(sessionId, snapshot.collapsed)
               const applied = this.#put(snapshot)
               this.#syncLayout(applied)
               this.#watchUserTurns(sessionId)
-              void this.#syncStaged(applied)
             }
           } catch {
             // Paint chrome from the full snapshot if the light request fails.
@@ -143,10 +172,10 @@ export class SidebarController {
         }
       }
       for (const delay of REFRESH_RETRY_MS) {
-        if (signal?.aborted === true) return undefined
+        if (aborted(signal)) return undefined
         if (delay > 0) {
           await new Promise<void>((resolve) => { setTimeout(resolve, delay) })
-          if (signal?.aborted === true) return undefined
+          if (aborted(signal)) return undefined
         }
         const gate = this.#gate(sessionId)
         if (gate === undefined) return undefined
@@ -155,11 +184,11 @@ export class SidebarController {
           if (!result.ok || !isRecord(result.value) || !isRecord(result.value.snapshot)) continue
           if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
           const snapshot = result.value.snapshot as unknown as SidebarSnapshot
+          await this.#syncStaged(snapshot)
           this.#hostCollapsed.set(sessionId, snapshot.collapsed)
           const applied = this.#put(snapshot)
           this.#syncLayout(applied)
           this.#watchUserTurns(sessionId)
-          void this.#syncStaged(applied)
           return applied
         } catch {
           // The web host can restart while this mounted client reconnects.
@@ -206,6 +235,8 @@ export class SidebarController {
       if (!result.ok) return undefined
       const reply = result.value as { snapshot: SidebarSnapshot; effects: Effect[] }
       if ((this.#refreshEpoch.get(sessionId) ?? 0) !== epoch) return undefined
+      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
+      if (!sending) await this.#syncStaged(reply.snapshot)
       if (toggle) this.#pendingCollapsed.delete(sessionId)
       else if (intentRevealsSidebar(intent)) this.#writeChrome(sessionId, false)
       else this.#writeChrome(sessionId, reply.snapshot.collapsed)
@@ -222,8 +253,6 @@ export class SidebarController {
           throw error
         }
       }
-      const sending = applyEffects && reply.effects.some((effect) => effect.type === 'send' || effect.type === 'queue')
-      if (!sending) void this.#syncStaged(applied)
       return applied
     }
     return this.#enqueue(sessionId, work)
@@ -237,28 +266,34 @@ export class SidebarController {
       sessionId: string
       cwd: string
       busy: boolean
-      turnWrites: ReturnType<typeof turnWritesFromSession>
+      turnWrites: ReviewChange[]
       roster: RosterEntry[]
       logs: Record<string, LogEvent[]>
     },
   ): Promise<Intent | undefined> {
     if (intent.type !== 'browser-note-add' && intent.type !== 'browser-note-send') return intent
     const snapshot = this.snap(sessionId)
-    const tabId = snapshot?.active
-    const browser = tabId === null || tabId === undefined ? undefined : snapshot?.browsers[tabId]
+    const candidateTabId = intent.tabId ?? snapshot?.active
+    if (typeof candidateTabId !== 'string') return undefined
+    const tabId = candidateTabId
+    const browser = snapshot?.browsers[tabId]
     if (browser === undefined) return undefined
     let evidence = browser.pendingEvidence
     if (evidence === null) {
-      if (browser.pendingCaptureId === null) return undefined
+      if (browser.pendingCaptureId === null || browser.pendingLayoutRevision === null || browser.pendingMediaGeneration === null) return undefined
       const result = await this.#rpc.call(SIDEBAR_RPC_CHANNEL, SIDEBAR_BROWSER_EVIDENCE_COMMIT_ENDPOINT, {
         ...gate,
         captureId: browser.pendingCaptureId,
+        expectedRevision: browser.pendingLayoutRevision,
+        expectedMediaGeneration: browser.pendingMediaGeneration,
       })
       if (!result.ok || !browserEvidence(result.value)) return undefined
       evidence = result.value
     }
     if (browser.pendingDocumentId !== null && evidence.documentId !== browser.pendingDocumentId) return undefined
-    return { ...intent, evidence }
+    if (browser.pendingLayoutRevision !== null && evidence.layoutRevision !== browser.pendingLayoutRevision) return undefined
+    if (browser.pendingMediaGeneration !== null && evidence.mediaGeneration !== browser.pendingMediaGeneration) return undefined
+    return { ...intent, tabId, evidence }
   }
 
   #enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
@@ -278,117 +313,78 @@ export class SidebarController {
   }
 
   installPathTakeover(): void {
-    this.#installUrlClicks()
-    this.#installLayoutReveal()
-    if (this.#pathTakeover) return
-    const workspaces = this.#ctx.workspaces
-    if (workspaces === undefined || typeof workspaces.openPath !== 'function') return
-    this.#pathTakeover = true
-    const original = workspaces.openPath.bind(workspaces)
-    let lastTool: string | undefined
-    let lastHunkId: string | undefined
-    let lastRowHunk: ToolRowHunk | undefined
-    if (typeof document !== 'undefined') {
-      const captureToolContext = (target: EventTarget | null): void => {
-        const raw = target
-        const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
-        const host = node instanceof Element ? node.closest('[data-tool]') : null
-        lastTool = host instanceof Element ? host.getAttribute('data-tool') ?? undefined : undefined
-        lastHunkId = host instanceof HTMLElement ? host.dataset.dcsHunkId : undefined
-        lastRowHunk = host instanceof HTMLElement ? hunkForToolRow(host) : undefined
-      }
-      document.addEventListener('pointerdown', (event) => { captureToolContext(event.target) }, true)
-      // Keyboard activation has no pointerdown; capture the row before the host click handler runs.
-      document.addEventListener('click', (event) => { captureToolContext(event.target) }, true)
-    }
-    const patched = async (path: string): Promise<void> => {
-      const sessionId = this.#ctx.sessions.list.getSnapshot().current
-      if (sessionId === undefined) {
-        await original(path)
-        return
-      }
-      if (isTakeoverUrl(path)) {
-        await this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(path) })
-        return
-      }
-      const cwd = this.#ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd ?? ''
-      const view = viewForTool(lastTool)
-      const binding = this.#ctx.sessions.binding(sessionId as never)
-      const hunk = lastRowHunk
-        ?? (binding === undefined ? undefined : hunkForOpen(binding.session.getSnapshot(), path, lastTool, lastHunkId))
-      lastTool = undefined
-      lastHunkId = undefined
-      lastRowHunk = undefined
-      await this.dispatch(String(sessionId), {
-        type: 'open-path',
-        path: relativize(path, cwd),
-        view,
-        ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
-      })
+    if (this.#compatDispose !== undefined) return
+    if (this.#compatAdapter === undefined) {
+      this.#compatAdapter = new SidebarAlpha1CompatAdapter(
+        this.#ctx,
+        {
+          dispatch: (sessionId: string, intent: Intent) => this.dispatch(sessionId, intent),
+          openPath: (path: string, captured: CapturedToolContext) => this.#handleCompatOpenPath(path, captured),
+          onLayoutOpen: () => this.#handleCompatLayoutOpenDetails(),
+        },
+        this.#layout,
+      )
     }
     try {
-      workspaces.openPath = patched
-    } catch {
-      try {
-        Object.defineProperty(workspaces, 'openPath', { value: patched, writable: true, configurable: true })
-      } catch {
-        // URL clicks still take over http(s) links; file rows keep the Host opener.
-      }
+      const dispose = this.#compatAdapter.install()
+      this.#compatDispose = dispose
+    } catch (error) {
+      this.#compatAdapter = undefined
+      this.#compatDispose = undefined
+      throw error
     }
   }
 
-  #installLayoutReveal(): void {
-    const layout = this.#layoutFace() as ILayout & { openDetails?: () => void }
-    if (this.#layoutReveal === layout || typeof layout.openDetails !== 'function') return
-    const original = layout.openDetails.bind(layout)
-    const wrapped = (): void => {
-      original()
-      if (this.#revealing) return
-      const current = this.#ctx.sessions.list.getSnapshot().current
-      if (current !== undefined) this.#revealLocal(String(current))
-    }
-    try {
-      layout.openDetails = wrapped
-      this.#layoutReveal = layout
-    } catch {
-      try {
-        Object.defineProperty(layout, 'openDetails', { value: wrapped, writable: true, configurable: true })
-        this.#layoutReveal = layout
-      } catch {
-        // A replacement layout may appear later; the next reveal retries.
-      }
-    }
+  /** Open one decorated transcript path through the exact captured Tool-row context. */
+  openTranscriptPath(path: string): Promise<boolean> | undefined {
+    return this.#compatAdapter?.tryOpenTranscriptPath(path)
   }
 
-  #installUrlClicks(): void {
-    if (this.#urlClicks || typeof document === 'undefined') return
-    this.#urlClicks = true
-    const onClick = (event: MouseEvent): void => {
-      const raw = event.target
-      const node = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null
-      if (!(node instanceof Element)) return
-      const anchor = node.closest('a')
-      if (anchor === null) return
-      if (!allowTranscriptClick(event, anchor.hasAttribute('data-dcs-url'))) return
-      if (!allowTranscriptTakeover((selector) => anchor.closest(selector))) return
-      const href = (anchor.getAttribute('data-dcs-url') ?? anchor.getAttribute('href') ?? '').trim()
-      if (!isTakeoverUrl(href)) return
-      event.preventDefault()
-      event.stopPropagation()
-      const sessionId = this.#ctx.sessions.list.getSnapshot().current
-      if (sessionId === undefined) return
-      void this.dispatch(String(sessionId), { type: 'open-url', url: normalizeUrl(href) })
+  async #handleCompatOpenPath(path: string, captured: CapturedToolContext): Promise<boolean> {
+    const sessionId = this.#ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) return false
+    const key = String(sessionId)
+    if (isTakeoverUrl(path)) {
+      return (await this.dispatch(key, { type: 'open-url', url: normalizeUrl(path) })) !== undefined
     }
-    const roots: TranscriptClickCaptureRoot[] = [document as unknown as TranscriptClickCaptureRoot]
-    if (typeof window !== 'undefined') roots.unshift(window as unknown as TranscriptClickCaptureRoot)
-    installTranscriptClickCapture(roots, onClick as (event: unknown) => void)
+    const cwd = (this.#ctx.sessions.list.getSnapshot().byId as Record<string, { cwd?: string }>)[key]?.cwd ?? ''
+    const view = viewForTool(captured.lastTool)
+    const hunk = captured.lastRowHunk ?? this.#getCompatHunk(key, path, captured.lastTool, captured.lastHunkId)
+    return (await this.dispatch(key, {
+      type: 'open-path',
+      path: relativize(path, cwd),
+      view,
+      ...(hunk === undefined ? {} : { before: hunk.before, after: hunk.after }),
+    })) !== undefined
+  }
+
+  #getCompatHunk(sessionId: string, path: string, tool: string | undefined, hunkId: string | undefined): ToolRowHunk | undefined {
+    return this.#conversationFor(sessionId)?.hunkForOpen(path, tool, hunkId)
+  }
+
+  #handleCompatLayoutOpenDetails(): void {
+    if (this.#revealing) return
+    const current = this.#ctx.sessions.list.getSnapshot().current
+    if (current !== undefined) this.#revealLocal(String(current))
+  }
+
+  /** @internal - adapter disposer owned by ctx.effect */
+  uninstallCompat(): void {
+    const dispose = this.#compatDispose
+    this.#compatDispose = undefined
+    this.#compatAdapter = undefined
+    dispose?.()
+  }
+
+  #ensureCompatLayout(): void {
+    this.#compatAdapter?.ensureLayoutPatched()
   }
 
   #gate(sessionId: string, opts: { includeLogs?: boolean; includeRoster?: boolean; intent?: Intent } = {}): {
     sessionId: string
     cwd: string
     busy: boolean
-    turnWrites: ReturnType<typeof turnWritesFromSession>
+    turnWrites: ReviewChange[]
     roster: RosterEntry[]
     logs: Record<string, LogEvent[]>
   } | undefined {
@@ -398,21 +394,34 @@ export class SidebarController {
     const sessionState = binding?.session.getSnapshot()
     const busy = sessionState?.running === true
     const roster = opts.includeRoster === true ? rosterFromList(list, archivedIds(this.#ctx)) : []
-    const logs = opts.includeLogs === true ? logsFromList(this.#ctx, list.ids as string[]) : {}
+    const logs = opts.includeLogs === true ? this.#logsFromList(list.ids as string[]) : {}
     const snapshot = this.snap(sessionId)
     const turnWrites = needsTurnWrites(snapshot, opts.intent)
-      ? this.#turnWritesFor(sessionId, sessionState)
+      ? [...(this.#conversationFor(sessionId)?.turnWrites() ?? [])]
       : []
     return { sessionId, cwd: summary?.cwd ?? '', busy, turnWrites, roster, logs }
   }
 
-  #turnWritesFor(sessionId: string, sessionState: unknown): ReturnType<typeof turnWritesFromSession> {
-    const cached = this.#turnWritesCache.get(sessionId)
-    const turnWrites = cached?.source === sessionState
-      ? cached.turnWrites
-      : turnWritesFromSession(sessionState)
-    if (sessionState !== cached?.source) this.#turnWritesCache.set(sessionId, { source: sessionState, turnWrites })
-    return turnWrites
+  #conversationFor(sessionId: string): ConversationProjection | undefined {
+    const binding = this.#ctx.sessions.binding(sessionId as never)
+    if (binding === undefined) {
+      this.#conversationProjections.delete(sessionId)
+      return undefined
+    }
+    const cached = this.#conversationProjections.get(sessionId)
+    if (cached?.binding === binding) return cached.projection
+    const projection = createConversationProjection(this.#ctx, binding)
+    this.#conversationProjections.set(sessionId, { binding, projection })
+    return projection
+  }
+
+  #logsFromList(ids: string[]): Record<string, LogEvent[]> {
+    const logs: Record<string, LogEvent[]> = {}
+    for (const id of ids) {
+      const projection = this.#conversationFor(id)
+      if (projection !== undefined) logs[id] = [...projection.logEvents()]
+    }
+    return logs
   }
 
   #put(snapshot: SidebarSnapshot): SidebarSnapshot {
@@ -507,8 +516,8 @@ export class SidebarController {
   }
 
   #applyTrack(collapsed: boolean | undefined): void {
+    this.#ensureCompatLayout()
     try {
-      if (this.#layoutReveal !== undefined) this.#installLayoutReveal()
       applyDetailsTrack(this.#layoutFace(), collapsed)
     } catch {
       // layout face is missing until AppFrame mounts
@@ -565,7 +574,7 @@ export class SidebarController {
   }
 
   async #syncStaged(snapshot: SidebarSnapshot): Promise<void> {
-    const key = snapshot.attachments.map((item) => item.id).join(',')
+    const key = stagedAttachmentsKey(snapshot.attachments)
     if (this.#stagedKey.get(snapshot.sessionId) === key) return
     this.#stagedKey.set(snapshot.sessionId, key)
     try {
@@ -574,34 +583,109 @@ export class SidebarController {
         return
       }
       await this.#stageAnnotations(snapshot.sessionId, snapshot.attachments)
-    } catch {
+    } catch (error) {
       this.#stagedKey.delete(snapshot.sessionId)
+      if (snapshot.attachments.length > 0) throw error
     }
   }
 
   #watchUserTurns(sessionId: string): void {
-    if (this.#userWatch.has(sessionId)) return
     const binding = this.#ctx.sessions.binding(sessionId as never)
-    const session = binding?.session as { getSnapshot?: () => unknown; subscribe?: (listener: () => void) => () => void } | undefined
-    if (session === undefined || typeof session.subscribe !== 'function' || typeof session.getSnapshot !== 'function') return
-    this.#userWatch.add(sessionId)
-    let last = userTurnCount(session.getSnapshot())
-    session.subscribe(() => {
-      if (this.#effectPrompt.has(sessionId)) {
-        last = userTurnCount(session.getSnapshot())
-        return
-      }
-      const next = userTurnCount(session.getSnapshot())
-      if (next > last && (this.snap(sessionId)?.attachments.length ?? 0) > 0) {
-        void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
-      }
-      last = next
-    })
+    const eventSource = (binding as { eventSource?: unknown } | undefined)?.eventSource
+    if (isEventSource(eventSource)) {
+      let revision = eventSource.getSnapshot().revision
+      this.#replaceUserWatch(sessionId, eventSource, (notify) => eventSource.subscribe(notify), () => {
+        const window = eventSource.getSnapshot()
+        if (window.revision === revision) return
+        revision = window.revision
+        if (!changeAddsDirectUserMessage(window.change)) return
+        if ((this.snap(sessionId)?.attachments.length ?? 0) > 0) {
+          void this.dispatch(sessionId, { type: 'composer-send', text: '' }, false)
+        }
+      })
+      return
+    }
+    this.#clearUserWatch(sessionId)
   }
+
+  #replaceUserWatch(
+    sessionId: string,
+    source: unknown,
+    subscribe: (listener: () => void) => () => void,
+    listener: () => void,
+  ): void {
+    const previous = this.#userWatch.get(sessionId)
+    if (previous?.source === source) return
+    this.#clearUserWatch(sessionId)
+    if (this.#disposed) return
+    const watch = { source, dispose: () => {} }
+    this.#userWatch.set(sessionId, watch)
+    try {
+      const dispose = subscribe(() => {
+        if (this.#userWatch.get(sessionId) === watch) listener()
+      })
+      watch.dispose = dispose
+      if (this.#userWatch.get(sessionId) !== watch) dispose()
+    } catch (error) {
+      if (this.#userWatch.get(sessionId) === watch) this.#userWatch.delete(sessionId)
+      throw error
+    }
+  }
+
+  #clearUserWatch(sessionId: string): void {
+    const watch = this.#userWatch.get(sessionId)
+    if (watch === undefined) return
+    this.#userWatch.delete(sessionId)
+    watch.dispose()
+  }
+}
+
+type SessionEventWindowLike = {
+  revision: number
+  change: unknown
+}
+
+function isEventSource(value: unknown): value is {
+  getSnapshot: () => SessionEventWindowLike
+  subscribe: (listener: () => void) => () => void
+} {
+  return isRecord(value)
+    && typeof value.getSnapshot === 'function'
+    && typeof value.subscribe === 'function'
+    && isRecord(value.getSnapshot())
+    && typeof value.getSnapshot().revision === 'number'
+}
+
+function changeAddsDirectUserMessage(change: unknown): boolean {
+  if (!isRecord(change) || change.kind !== 'append' || !Array.isArray(change.entries)) return false
+  return change.entries.some((entry) => {
+    if (!isRecord(entry) || entry.type !== 'event' || !isRecord(entry.event)) return false
+    const event = entry.event
+    return event.type === 'user/message'
+      && isRecord(event.data)
+      && isRecord(event.data.source)
+      && event.data.source.kind === 'user'
+  })
 }
 
 function intentNeedsRoster(intent: Intent): boolean {
   return intent.type === 'side-list' || intent.type === 'side-inspect' || intent.type === 'side-deliver'
+}
+
+function stagedAttachmentsKey(attachments: readonly Annotation[]): string {
+  return stableJson(attachments)
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(orderJsonProperties(value)) ?? ''
+}
+
+function orderJsonProperties(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderJsonProperties)
+  if (!isRecord(value)) return value
+  const ordered: Record<string, unknown> = {}
+  for (const key of Object.keys(value).sort()) ordered[key] = orderJsonProperties(value[key])
+  return ordered
 }
 
 function intentRevealsSidebar(intent: Intent): boolean {
@@ -614,31 +698,12 @@ function intentRevealsSidebar(intent: Intent): boolean {
     || intent.type === 'edit-attachment'
 }
 
-function userTurnCount(snapshot: unknown): number {
-  if (!isRecord(snapshot)) return 0
-  if (Array.isArray(snapshot.messages)) {
-    return snapshot.messages.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
-  }
-  const chat = isRecord(snapshot.chat) ? snapshot.chat : snapshot
-  const legacy = isRecord(chat.legacy) ? chat.legacy : chat
-  const nodes = isRecord(legacy) ? legacy.nodes : undefined
-  if (nodes instanceof Map) {
-    let count = 0
-    for (const node of nodes.values()) {
-      if (isRecord(node) && (node.role === 'user' || node.kind === 'user')) count += 1
-    }
-    return count
-  }
-  if (Array.isArray(nodes)) {
-    return nodes.filter((item) => isRecord(item) && (item.role === 'user' || item.kind === 'user')).length
-  }
-  return 0
-}
-
 function captureReply(value: unknown): value is BrowserCaptureReply {
   return isRecord(value)
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.url === 'string'
     && typeof value.title === 'string'
     && typeof value.width === 'number'
@@ -651,10 +716,16 @@ function browserEvidence(value: unknown): value is BrowserEvidence {
     && typeof value.id === 'string'
     && typeof value.captureId === 'string'
     && typeof value.documentId === 'string'
+    && positiveSafeInteger(value.layoutRevision)
+    && positiveSafeInteger(value.mediaGeneration)
     && typeof value.ref === 'string'
     && value.mediaType === 'image/jpeg'
     && typeof value.width === 'number'
     && typeof value.height === 'number'
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 
@@ -665,17 +736,13 @@ function isLayoutFace(value: unknown): value is ILayout {
     && typeof (value as { closeDetails?: unknown }).closeDetails === 'function'
 }
 
-function relativize(path: string, cwd: string): string {
-  if (cwd.length === 0) return path
-  const prefix = cwd.endsWith('/') ? cwd : `${cwd}/`
-  if (path.startsWith(prefix)) return path.slice(prefix.length)
-  if (path === cwd) return ''
-  return path
+function archivedIds(ctx: ClientContext): ReadonlySet<string> {
+  const snap = ctx.workspaces.list.getSnapshot() as { archivedSessionIds?: readonly string[] }
+  return new Set(snap.archivedSessionIds ?? [])
 }
 
-function archivedIds(ctx: ClientContext): ReadonlySet<string> {
-  const snap = ctx.workspaces.list.getSnapshot() as { archivedSessionIds?: string[] }
-  return new Set(snap.archivedSessionIds ?? [])
+function aborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
 }
 
 function rosterFromList(list: { ids: string[]; byId: Record<string, {
@@ -700,14 +767,4 @@ function rosterFromList(list: { ids: string[]; byId: Record<string, {
       busy: row?.running === true,
     }
   })
-}
-
-function logsFromList(ctx: ClientContext, ids: string[]): Record<string, LogEvent[]> {
-  const logs: Record<string, LogEvent[]> = {}
-  for (const id of ids) {
-    const binding = ctx.sessions.binding(id as never)
-    if (binding === undefined) continue
-    logs[id] = logEventsFromSession(binding.session.getSnapshot())
-  }
-  return logs
 }

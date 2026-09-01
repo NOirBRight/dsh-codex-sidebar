@@ -2,6 +2,7 @@
 
 import { execFile } from 'node:child_process'
 import { open, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { FileChange, SidebarSnapshot, TreeNode } from './session.ts'
 import { fileDiff, type DiffLine, type FileDiff, type ReviewChange, type ReviewFile, type ReviewMode, type ReviewScopeStats, type ReviewState } from './review.ts'
@@ -398,9 +399,16 @@ async function readChange(cwd: string, path: string, after: string | undefined, 
   return { before, after: next }
 }
 
+export function expandUserPath(path: string): string {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2))
+  return path
+}
+
 export async function readPreview(cwd: string, path: string, signal?: AbortSignal): Promise<string | undefined> {
-  if (path.length === 0 || (cwd.length === 0 && !isAbsolute(path))) return undefined
-  const full = safePath(cwd, path)
+  const expanded = expandUserPath(path)
+  if (expanded.length === 0 || (cwd.length === 0 && !isAbsolute(expanded))) return undefined
+  const full = safePath(cwd, expanded)
   if (full === undefined) return undefined
   try {
     signal?.throwIfAborted()

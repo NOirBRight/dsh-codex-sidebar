@@ -16,8 +16,8 @@ export type AnnotationChipPorts = {
 
 export function sourceForFlowKey(snapshot: unknown, key: string): unknown {
   if (typeof snapshot !== 'object' || snapshot === null) return undefined
-  const chat = (snapshot as { chat?: { nodes?: unknown } }).chat
-  const nodes = chat?.nodes
+  const root = snapshot as { nodes?: unknown; chat?: { nodes?: unknown } }
+  const nodes = root.nodes ?? root.chat?.nodes
   if (nodes === undefined || nodes === null) return undefined
   const rec = nodes as { get?: (k: string) => { data?: { source?: unknown } } } & Record<string, { data?: { source?: unknown } }>
   const node = typeof rec.get === 'function' ? rec.get(key) : rec[key]
@@ -30,15 +30,19 @@ export function decorate(ports: AnnotationChipPorts, root: ParentNode = document
   for (const row of rows) {
     if (!(row instanceof HTMLElement)) continue
     const key = row.getAttribute('data-chat-flow-key') ?? ''
-    const marks = key.length === 0 || sessionId === undefined
-      ? undefined
-      : annotationMarksFromSource(ports.nodeSource(key))
     const existing = row.querySelector(':scope > .' + MARK)
+    if (key.length === 0 || sessionId === undefined) {
+      existing?.remove()
+      painted.delete(row)
+      continue
+    }
+    const marks = annotationMarksFromSource(ports.nodeSource(key))
     if (marks === undefined || marks.length === 0) {
       existing?.remove()
       painted.delete(row)
       continue
     }
+    if (sessionId === undefined) continue
     const signature = marksSignature(sessionId, marks)
     const host = existing instanceof HTMLElement ? existing : document.createElement('div')
     host.className = MARK

@@ -4,6 +4,7 @@ import { isRecord } from './contract.ts'
 import { lineStats, type ReviewChange } from './review.ts'
 
 export const WRITE_TOOL = /^(write|edit|str_replace|strreplace|search_replace|apply_patch|notebook)/i
+const DIFF_TOOL = /^(edit|str_replace|strreplace|search_replace|apply_patch|notebook)/i
 
 export type OpenHunk = { before: string; after: string; op: 'write' | 'edit' }
 
@@ -12,7 +13,7 @@ const collectedCache = new WeakMap<object, { stats: Stats; hunks: Array<OpenHunk
 const settledNodeCache = new WeakMap<object, Array<OpenHunk & { path: string }>>()
 
 export function viewForTool(toolName: string | undefined): 'preview' | 'diff' {
-  if (toolName !== undefined && WRITE_TOOL.test(toolName)) return 'diff'
+  if (toolName !== undefined && DIFF_TOOL.test(toolName)) return 'diff'
   return 'preview'
 }
 

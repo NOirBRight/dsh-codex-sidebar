@@ -65,6 +65,10 @@ class FakeElement {
     return null
   }
 
+  querySelector(selector: string): FakeElement | null {
+    return this.querySelectorAll(selector)[0] ?? null
+  }
+
   querySelectorAll(selector: string): FakeElement[] {
     const found: FakeElement[] = []
     const visit = (node: FakeElement): void => {
@@ -131,7 +135,7 @@ describe('transcript path links', () => {
 })
 
 describe('path link decorate and click', () => {
-  it('makes transcript HTTP anchors inert before the official shell capture sees them', () => {
+  it('marks transcript HTTP anchors without changing official fallback attributes', () => {
     stubDom()
     const root = new FakeHTMLElement('MAIN')
     const row = new FakeHTMLElement('DIV')
@@ -145,8 +149,8 @@ describe('path link decorate and click', () => {
     decorate(root as never)
 
     expect(anchor.getAttribute('data-dcs-url')).toBe('https://example.test/docs')
-    expect(anchor.getAttribute('href')).toBe('#dcs-browser')
-    expect(anchor.getAttribute('target')).toBeNull()
+    expect(anchor.getAttribute('href')).toBe('https://example.test/docs')
+    expect(anchor.getAttribute('target')).toBe('_blank')
 
     const outside = new FakeHTMLElement('A')
     outside.setAttribute('href', 'https://example.test/settings')
@@ -191,5 +195,18 @@ describe('path link decorate and click', () => {
     expect(live.dataset.dcsPath).toBeUndefined()
     expect(live.className).not.toContain('dcs-path-link')
     expect(pathFromClick({ target: live } as unknown as Event)).toBeUndefined()
+  })
+
+  it('opens official file-mutation path buttons in the sidebar'
+    + '', () => {
+    stubDom()
+    const row = new FakeHTMLElement('DIV')
+    row.setAttribute('data-tool', 'edit')
+    const btn = new FakeHTMLElement('BUTTON')
+    btn.textContent = '~/Workstation/dsh-mobile-pairing/src/tunnel-server.ts'
+    row.append(btn)
+    expect(pathFromClick({ target: btn } as unknown as Event)).toBe(
+      '~/Workstation/dsh-mobile-pairing/src/tunnel-server.ts',
+    )
   })
 })
