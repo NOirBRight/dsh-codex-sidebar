@@ -4,9 +4,9 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sanitizedSubprocessEnv } from './subprocess-env.mjs'
 
-export const ALPHA1_REVISION = 'cd5ef8148158c3a752a658978873241fdf8e2bbc'
-export const ALPHA1_TAG = 'dsh-v0.1.2-alpha.1'
-export const ALPHA1_VERSION = '0.1.2-alpha.1'
+export const ALPHA4_REVISION = '4e84901e6471b79ec0338099867ebb4606d12bb5'
+export const ALPHA4_TAG = 'dsh-v0.1.2-alpha.4'
+export const ALPHA4_VERSION = '0.1.2-alpha.4'
 const OFFICIAL_REPOSITORY = 'deepseek-ai/deepseek-harness'
 export const REQUIRED_TYPES = [
   'packages/api/remotes/lib/types/client/index.d.ts',
@@ -34,12 +34,12 @@ function repositoryOf(remote) {
     .replace(/\.git$/, '')
 }
 
-export function assessAlpha1Checkout({ remote, status, head, tag, missingTypes = [] }) {
+export function assessAlpha4Checkout({ remote, status, head, tag, missingTypes = [] }) {
   const reasons = []
   if (repositoryOf(remote) !== OFFICIAL_REPOSITORY) reasons.push('origin is not deepseek-ai/deepseek-harness')
   if (status.trim() !== '') reasons.push('official DSH checkout has local changes')
-  if (head.trim() !== ALPHA1_REVISION) reasons.push('official DSH revision is not ' + ALPHA1_REVISION)
-  if (tag?.trim() !== ALPHA1_TAG) reasons.push('official DSH tag is not ' + ALPHA1_TAG)
+  if (head.trim() !== ALPHA4_REVISION) reasons.push('official DSH revision is not ' + ALPHA4_REVISION)
+  if (tag?.trim() !== ALPHA4_TAG) reasons.push('official DSH tag is not ' + ALPHA4_TAG)
   if (missingTypes.length > 0) reasons.push(`official DSH declarations are missing: ${missingTypes.join(', ')}`)
   return reasons.length === 0 ? { ok: true } : { ok: false, reasons }
 }
@@ -50,7 +50,7 @@ function git(checkout, env, ...args) {
 
 function inspect(checkout, env) {
   const missingTypes = REQUIRED_TYPES.filter((path) => !existsSync(resolve(checkout, path)))
-  return assessAlpha1Checkout({
+  return assessAlpha4Checkout({
     remote: git(checkout, env, 'config', '--get', 'remote.origin.url'),
     status: git(checkout, env, 'status', '--porcelain'),
     head: git(checkout, env, 'rev-parse', 'HEAD'),
@@ -68,8 +68,8 @@ function currentTarget(link) {
   }
 }
 
-export function prepareAlpha1Types({ root, requested = process.env.DSH_ALPHA1_CHECKOUT }) {
-  const link = resolve(root, '.dsh-alpha1')
+export function prepareAlpha4Types({ root, requested = process.env.DSH_ALPHA4_CHECKOUT }) {
+  const link = resolve(root, '.dsh-alpha4')
   const existing = currentTarget(link)
   const candidates = [requested === undefined ? undefined : resolve(requested), existing]
   const failures = []
@@ -91,7 +91,7 @@ export function prepareAlpha1Types({ root, requested = process.env.DSH_ALPHA1_CH
   }
   if (target === undefined) {
     throw new Error([
-      'dsh-codex-sidebar: provide DSH_ALPHA1_CHECKOUT pointing to a clean, built official dsh-v0.1.2-alpha.1 checkout.',
+      'dsh-codex-sidebar: provide DSH_ALPHA4_CHECKOUT pointing to a clean, built official dsh-v0.1.2-alpha.4 checkout.',
       'Build that checkout with `pnpm install --frozen-lockfile && pnpm run build` first.',
       ...failures,
     ].join('\n'))
@@ -107,7 +107,7 @@ export function prepareAlpha1Types({ root, requested = process.env.DSH_ALPHA1_CH
 
 function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-  console.log(`dsh-codex-sidebar: .dsh-alpha1 -> ${prepareAlpha1Types({ root })}`)
+  console.log(`dsh-codex-sidebar: .dsh-alpha4 -> ${prepareAlpha4Types({ root })}`)
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) main()

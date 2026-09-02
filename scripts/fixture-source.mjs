@@ -1,9 +1,9 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { ALPHA1_REVISION, ALPHA1_TAG, ALPHA1_VERSION, REQUIRED_TYPES, assessAlpha1Checkout } from './prepare-alpha1-types.mjs'
+import { ALPHA4_REVISION, ALPHA4_TAG, ALPHA4_VERSION, REQUIRED_TYPES, assessAlpha4Checkout } from './prepare-alpha4-types.mjs'
 import { archiveByteSize, archiveDigest, archiveSha256, assertLocalFixture, assertSafeDirectoryRoot, assertSafeDirectoryTree, CLEAN_ZOD_SOURCE, command, compareVersions, packageKey, packageManifestFromArchive, pathWithin, removeTemporaryTree, sanitizedSubprocessEnv, satisfiesVersion, withCleanup, workspaceRange } from './check-pack.mjs'
 
-const CLEAN_ALPHA1_REPOSITORY = 'https://github.com/deepseek-ai/deepseek-harness.git'
+const CLEAN_ALPHA4_REPOSITORY = 'https://github.com/deepseek-ai/deepseek-harness.git'
 
 function fail(message) {
   throw new Error('[dsh-codex-sidebar fixture preparation] ' + message)
@@ -122,24 +122,24 @@ function nodeModulePackageIndex(root, approvedRoot = root) {
 
 
 function alphaCheckout(root, env) {
-  const link = join(root, '.dsh-alpha1')
-  const requested = process.env.DSH_ALPHA1_CHECKOUT
+  const link = join(root, '.dsh-alpha4')
+  const requested = process.env.DSH_ALPHA4_CHECKOUT
   const candidate = requested === undefined
     ? (existsSync(link) ? realpathSync(link) : undefined)
     : resolve(requested)
   if (candidate === undefined || !existsSync(candidate)) {
-    fail('set DSH_ALPHA1_CHECKOUT to the built official ' + ALPHA1_TAG + ' checkout')
+    fail('set DSH_ALPHA4_CHECKOUT to the built official ' + ALPHA4_TAG + ' checkout')
   }
   const checkout = realpathSync(candidate)
   const missingTypes = REQUIRED_TYPES.filter((path) => !existsSync(join(checkout, path)))
-  const assessment = assessAlpha1Checkout({
+  const assessment = assessAlpha4Checkout({
     remote: command('git', ['-C', checkout, 'config', '--get', 'remote.origin.url'], { env }),
     status: command('git', ['-C', checkout, 'status', '--porcelain=v1', '--untracked-files=all'], { env }),
     head: command('git', ['-C', checkout, 'rev-parse', 'HEAD'], { env }),
     tag: command('git', ['-C', checkout, 'describe', '--exact-match', '--tags', 'HEAD'], { env }),
     missingTypes,
   })
-  if (!assessment.ok) fail('official alpha1 checkout rejected at ' + checkout + ': ' + assessment.reasons.join('; '))
+  if (!assessment.ok) fail('official alpha4 checkout rejected at ' + checkout + ': ' + assessment.reasons.join('; '))
   return checkout
 }
 
@@ -148,7 +148,7 @@ function fixtureSources(root, env) {
   const packageRoot = join(alpha, 'packages')
   const vendorRoot = join(alpha, 'vendor')
   const cleanStoreZod = join(alpha, CLEAN_ZOD_SOURCE)
-  if (!existsSync(cleanStoreZod)) fail('clean alpha1 pnpm-store zod@4.4.3 fixture is unavailable: ' + cleanStoreZod)
+  if (!existsSync(cleanStoreZod)) fail('clean alpha4 pnpm-store zod@4.4.3 fixture is unavailable: ' + cleanStoreZod)
   const index = packageIndex([packageRoot, vendorRoot])
   addIndexedPackage(index, cleanStoreZod)
   const repositoryRoot = realpathSync(root)
@@ -231,19 +231,19 @@ function resolveFixtureSource({ parent, name, range, sources }) {
 function fixtureProvenance(root, sources, name, source, version) {
   approvedFixtureSource(source, sources, 'fixture provenance')
   const officialPackage = pathWithin(join(sources.alpha, 'packages'), source) || pathWithin(join(sources.alpha, 'vendor'), source)
-  if (officialPackage) return { kind: 'clean-alpha1', repository: CLEAN_ALPHA1_REPOSITORY, source: relative(sources.alpha, source).replaceAll(sep, '/'), tag: ALPHA1_TAG, revision: ALPHA1_REVISION, integrity: 'git:' + ALPHA1_REVISION }
+  if (officialPackage) return { kind: 'clean-alpha4', repository: CLEAN_ALPHA4_REPOSITORY, source: relative(sources.alpha, source).replaceAll(sep, '/'), tag: ALPHA4_TAG, revision: ALPHA4_REVISION, integrity: 'git:' + ALPHA4_REVISION }
   const alphaNodeModules = join(sources.alpha, 'node_modules')
   const fromCleanStore = existsSync(alphaNodeModules) && pathWithin(realpathSync(alphaNodeModules), source)
   const lockRoot = fromCleanStore ? sources.alpha : sources.root
   const lock = lockEntry(lockRoot, name, version)
-  return { kind: fromCleanStore ? 'registry-clean-alpha1-store' : 'registry-consumer-store', source: relative(lockRoot, source).replaceAll(sep, '/'), lockfile: fromCleanStore ? 'clean-alpha1/pnpm-lock.yaml' : 'consumer/pnpm-lock.yaml', integrity: lock.integrity }
+  return { kind: fromCleanStore ? 'registry-clean-alpha4-store' : 'registry-consumer-store', source: relative(lockRoot, source).replaceAll(sep, '/'), lockfile: fromCleanStore ? 'clean-alpha4/pnpm-lock.yaml' : 'consumer/pnpm-lock.yaml', integrity: lock.integrity }
 }
 
 function assertDeclaredRange(edge, child, sources) {
   if (edge.range.startsWith('workspace:')) {
     const suffix = edge.range.slice('workspace:'.length)
     if (suffix !== '*' && suffix !== '^' && suffix !== '~' && !satisfiesVersion(child.manifest.version, suffix)) fail('workspace range is unsatisfied: ' + edge.parentKey + ' -> ' + child.key + ' (' + edge.range + ')')
-    if (!pathWithin(sources.alpha, child.source)) fail('workspace dependency is outside official alpha1 checkout: ' + edge.parentKey + ' -> ' + child.key + ' (child ' + child.source + ', parent ' + edge.parentSource + ', root ' + sources.alpha + ')')
+    if (!pathWithin(sources.alpha, child.source)) fail('workspace dependency is outside official alpha4 checkout: ' + edge.parentKey + ' -> ' + child.key + ' (child ' + child.source + ', parent ' + edge.parentSource + ', root ' + sources.alpha + ')')
     return
   }
   if (!satisfiesVersion(child.manifest.version, edge.range)) fail('declared range is unsatisfied: ' + edge.parentKey + ' -> ' + child.key + ' (' + edge.range + ')')
@@ -268,8 +268,8 @@ export function fixtureRecords(root, manifest, env = sanitizedSubprocessEnv()) {
     if (packageManifest.name !== pending.name) fail('fixture name mismatch: requested ' + pending.name + ', found ' + packageManifest.name)
     const child = records.get(childKey) ?? (() => {
       const provenance = fixtureProvenance(root, sources, packageManifest.name, source, packageManifest.version)
-      if (pathWithin(sources.alpha, source) && packageManifest.name.startsWith('@deepseek-ai/dsh-') && packageManifest.version !== ALPHA1_VERSION) fail('official fixture ' + packageManifest.name + ' has version ' + packageManifest.version + ', expected ' + ALPHA1_VERSION)
-      if (!pathWithin(sources.alpha, source) && packageManifest.name.startsWith('@deepseek-ai/dsh-')) fail('DSH fixture is not sourced from official alpha1 checkout: ' + packageManifest.name)
+      if (pathWithin(sources.alpha, source) && packageManifest.name.startsWith('@deepseek-ai/dsh-') && packageManifest.version !== ALPHA4_VERSION) fail('official fixture ' + packageManifest.name + ' has version ' + packageManifest.version + ', expected ' + ALPHA4_VERSION)
+      if (!pathWithin(sources.alpha, source) && packageManifest.name.startsWith('@deepseek-ai/dsh-')) fail('DSH fixture is not sourced from official alpha4 checkout: ' + packageManifest.name)
       const record = { key: childKey, name: packageManifest.name, version: packageManifest.version, source, manifest: packageManifest, provenance, integrity: provenance.integrity }
       records.set(childKey, record)
       for (const entry of dependencyEntries(packageManifest)) queue.push({ parent: record, ...entry })
@@ -394,7 +394,7 @@ function ensureSafeDirectoryPath(root, target, label) {
 }
 
 /** Persist exact fixture archives and their provenance for offline pack checks. */
-export function persistFixtureBundle({ root, graph, archivePaths, destination = 'fixtures/alpha1' }) {
+export function persistFixtureBundle({ root, graph, archivePaths, destination = 'fixtures/alpha4' }) {
   const repositoryRoot = assertSafeDirectoryRoot(root, 'fixture repository root')
   const bundleRoot = resolve(repositoryRoot, destination)
   if (!pathWithin(repositoryRoot, bundleRoot) || bundleRoot === repositoryRoot) fail('persisted fixture destination escapes repository root: ' + destination)
@@ -428,7 +428,7 @@ export function persistFixtureBundle({ root, graph, archivePaths, destination = 
       .sort((left, right) => (left.parentKey + '>' + left.childKey + ':' + left.field + ':' + left.name).localeCompare(right.parentKey + '>' + right.childKey + ':' + right.field + ':' + right.name))
     const payload = {
       schema: 1,
-      alpha1: { repository: CLEAN_ALPHA1_REPOSITORY, tag: ALPHA1_TAG, revision: ALPHA1_REVISION },
+      alpha4: { repository: CLEAN_ALPHA4_REPOSITORY, tag: ALPHA4_TAG, revision: ALPHA4_REVISION },
       root: { key: graph.root.key, name: graph.root.name, version: graph.root.version },
       fixtures,
       edges,

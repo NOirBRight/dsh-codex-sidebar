@@ -618,7 +618,7 @@ describe('annotation effect prompts', () => {
     } as never)
     await controller.refresh('sess-a')
     expect(controller.snap('sess-a')?.collapsed).toBe(true)
-    controller.installPathTakeover()
+    controller.installRuntimeIntegration()
     layout.openDetails()
     expect(openDetails).toHaveBeenCalled()
     expect(controller.snap('sess-a')?.collapsed).toBe(false)
@@ -656,7 +656,7 @@ describe('annotation effect prompts', () => {
       get: (name: string) => name === 'layout' ? currentLayout : { rpc: { call } },
     } as never)
     await controller.refresh('sess-a')
-    controller.installPathTakeover()
+    controller.installRuntimeIntegration()
     desktopOpen.mockClear()
     currentLayout = mobile
 
@@ -679,7 +679,7 @@ describe('annotation effect prompts', () => {
       layout,
       workspaces: { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } },
     } as never)
-    expect(() => { controller.installPathTakeover() }).not.toThrow()
+    expect(() => { controller.installRuntimeIntegration() }).not.toThrow()
     layout.openDetails()
     expect(openDetails).toHaveBeenCalled()
   })

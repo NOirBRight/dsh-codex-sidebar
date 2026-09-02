@@ -23,7 +23,7 @@ import { needsTurnWrites } from './turn-writes-gate.ts'
 import { isTakeoverUrl, normalizeUrl } from '../browser.ts'
 import { viewForTool } from '../tool-open.ts'
 import type { ToolRowHunk } from './tool-stats.ts'
-import { SidebarAlpha1CompatAdapter, type CapturedToolContext } from './sidebar-alpha1-compat-adapter.ts'
+import { SidebarRuntimeIntegration, type CapturedToolContext } from './sidebar-runtime-integration.ts'
 import { relativize } from '../relativize.ts'
 import type { Annotation, BrowserEvidence, Effect, Intent, SidebarSnapshot } from '../session.ts'
 import type { BrowserLayout } from '../managed-browser-protocol.ts'
@@ -63,8 +63,8 @@ export class SidebarController {
   #chain = new Map<string, Promise<unknown>>()
   #depth = new Map<string, number>()
   #revealing = false
-  #compatAdapter: SidebarAlpha1CompatAdapter | undefined
-  #compatDispose: (() => void) | undefined
+  #integration: SidebarRuntimeIntegration | undefined
+  #integrationDispose: (() => void) | undefined
   #pendingCollapsed = new Map<string, boolean>()
   /** This client's details-track chrome. Host `collapsed` is not applied here. */
   #chromeCollapsed = new Map<string, boolean>()
@@ -90,11 +90,11 @@ export class SidebarController {
     if (this.#disposed) return
     this.#disposed = true
     const failures: unknown[] = []
-    const compatDispose = this.#compatDispose
-    this.#compatDispose = undefined
-    this.#compatAdapter = undefined
-    if (compatDispose !== undefined) {
-      try { compatDispose() } catch (error) { failures.push(error) }
+    const integrationDispose = this.#integrationDispose
+    this.#integrationDispose = undefined
+    this.#integration = undefined
+    if (integrationDispose !== undefined) {
+      try { integrationDispose() } catch (error) { failures.push(error) }
     }
     const watches = [...this.#userWatch.values()]
     this.#userWatch.clear()
@@ -312,35 +312,35 @@ export class SidebarController {
     return next
   }
 
-  installPathTakeover(): void {
-    if (this.#compatDispose !== undefined) return
-    if (this.#compatAdapter === undefined) {
-      this.#compatAdapter = new SidebarAlpha1CompatAdapter(
+  installRuntimeIntegration(): void {
+    if (this.#integrationDispose !== undefined) return
+    if (this.#integration === undefined) {
+      this.#integration = new SidebarRuntimeIntegration(
         this.#ctx,
         {
           dispatch: (sessionId: string, intent: Intent) => this.dispatch(sessionId, intent),
-          openPath: (path: string, captured: CapturedToolContext) => this.#handleCompatOpenPath(path, captured),
-          onLayoutOpen: () => this.#handleCompatLayoutOpenDetails(),
+          openPath: (path: string, captured: CapturedToolContext) => this.#handleIntegrationOpenPath(path, captured),
+          onLayoutOpen: () => this.#handleIntegrationLayoutOpenDetails(),
         },
         this.#layout,
       )
     }
     try {
-      const dispose = this.#compatAdapter.install()
-      this.#compatDispose = dispose
+      const dispose = this.#integration.install()
+      this.#integrationDispose = dispose
     } catch (error) {
-      this.#compatAdapter = undefined
-      this.#compatDispose = undefined
+      this.#integration = undefined
+      this.#integrationDispose = undefined
       throw error
     }
   }
 
   /** Open one decorated transcript path through the exact captured Tool-row context. */
   openTranscriptPath(path: string): Promise<boolean> | undefined {
-    return this.#compatAdapter?.tryOpenTranscriptPath(path)
+    return this.#integration?.tryOpenTranscriptPath(path)
   }
 
-  async #handleCompatOpenPath(path: string, captured: CapturedToolContext): Promise<boolean> {
+  async #handleIntegrationOpenPath(path: string, captured: CapturedToolContext): Promise<boolean> {
     const sessionId = this.#ctx.sessions.list.getSnapshot().current
     if (sessionId === undefined) return false
     const key = String(sessionId)
@@ -349,7 +349,7 @@ export class SidebarController {
     }
     const cwd = (this.#ctx.sessions.list.getSnapshot().byId as Record<string, { cwd?: string }>)[key]?.cwd ?? ''
     const view = viewForTool(captured.lastTool)
-    const hunk = captured.lastRowHunk ?? this.#getCompatHunk(key, path, captured.lastTool, captured.lastHunkId)
+    const hunk = captured.lastRowHunk ?? this.#getIntegrationHunk(key, path, captured.lastTool, captured.lastHunkId)
     return (await this.dispatch(key, {
       type: 'open-path',
       path: relativize(path, cwd),
@@ -358,26 +358,26 @@ export class SidebarController {
     })) !== undefined
   }
 
-  #getCompatHunk(sessionId: string, path: string, tool: string | undefined, hunkId: string | undefined): ToolRowHunk | undefined {
+  #getIntegrationHunk(sessionId: string, path: string, tool: string | undefined, hunkId: string | undefined): ToolRowHunk | undefined {
     return this.#conversationFor(sessionId)?.hunkForOpen(path, tool, hunkId)
   }
 
-  #handleCompatLayoutOpenDetails(): void {
+  #handleIntegrationLayoutOpenDetails(): void {
     if (this.#revealing) return
     const current = this.#ctx.sessions.list.getSnapshot().current
     if (current !== undefined) this.#revealLocal(String(current))
   }
 
   /** @internal - adapter disposer owned by ctx.effect */
-  uninstallCompat(): void {
-    const dispose = this.#compatDispose
-    this.#compatDispose = undefined
-    this.#compatAdapter = undefined
+  uninstallIntegration(): void {
+    const dispose = this.#integrationDispose
+    this.#integrationDispose = undefined
+    this.#integration = undefined
     dispose?.()
   }
 
-  #ensureCompatLayout(): void {
-    this.#compatAdapter?.ensureLayoutPatched()
+  #ensureIntegrationLayout(): void {
+    this.#integration?.ensureLayoutPatched()
   }
 
   #gate(sessionId: string, opts: { includeLogs?: boolean; includeRoster?: boolean; intent?: Intent } = {}): {
@@ -516,7 +516,7 @@ export class SidebarController {
   }
 
   #applyTrack(collapsed: boolean | undefined): void {
-    this.#ensureCompatLayout()
+    this.#ensureIntegrationLayout()
     try {
       applyDetailsTrack(this.#layoutFace(), collapsed)
     } catch {

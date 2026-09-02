@@ -16,7 +16,7 @@ describe('managed Browser presentation CSS', () => {
     expect(MANAGED_BROWSER_PRESENTATION_CSS).toMatch(/\.dcs-managed-browser-video,\s*\.dcs-managed-browser-canvas\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*object-fit:\s*contain[^}]*object-position:\s*center[^}]*pointer-events:\s*none/s)
   })
 
-  it('measures fit from the official details content track while preserving the Alpha1 sidebar track', () => {
+  it('measures fit from the official details content track while preserving the Alpha4 sidebar track', () => {
     expect(SIDEBAR_CSS).toMatch(/\[data-dcs-pin\]\s*\{[^}]*grid-template-columns:\s*var\(--dcs-sidebar-track, auto\)\s+minmax\(0, 1fr\)\s+var\(--dcs-details-track, 0px\)/s)
     expect(SIDEBAR_CSS).toMatch(/\.dcs-body\[data-fill\]\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/s)
     expect(browserCss).toMatch(/\.dcs-b-page\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0[^}]*width:\s*100%[^}]*overflow:\s*hidden/s)

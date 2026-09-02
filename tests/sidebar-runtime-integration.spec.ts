@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { SidebarAlpha1CompatAdapter } from '../src/client/sidebar-alpha1-compat-adapter.ts'
+import { SidebarRuntimeIntegration } from '../src/client/sidebar-runtime-integration.ts'
 import { SidebarController } from '../src/client/controller.ts'
 import { createSidebarSession, type FilesPort } from '../src/session.ts'
 
@@ -68,7 +68,7 @@ function makeCallbacks(overrides: Partial<Record<string, unknown>> = {}) {
   }
 }
 
-describe('alpha.1 compat adapter - install/dispose', () => {
+describe('Alpha.4 integration adapter - install/dispose', () => {
   let origDoc: unknown
   let origWin: unknown
   beforeEach(() => {
@@ -96,7 +96,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const origRemoteOpen = remoteSession.openWorkspacePath
     const origLayoutOpen = layout.openDetails
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     const dispose = adapter.install()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origWorkspacesOpen)
     expect((remoteSession as unknown as { openWorkspacePath: unknown }).openWorkspacePath).not.toBe(origRemoteOpen)
@@ -121,7 +121,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces, layout } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     adapter.install()
     const firstPatched = (workspaces as unknown as { openPath: unknown }).openPath
     const firstDocCount = (doc as { listeners: unknown[] }).listeners.length
@@ -142,7 +142,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     const disposeFirst = adapter.install()
     const patched = (workspaces as unknown as { openPath: unknown }).openPath
     expect(patched).not.toBe(origOpen)
@@ -163,14 +163,14 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces, layout } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter1 = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter1 = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     adapter1.install()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origOpen)
     const patched1 = (workspaces as unknown as { openPath: unknown }).openPath
     adapter1.dispose()
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(origOpen)
     expect((doc as { listeners: unknown[] }).listeners.length).toBe(0)
-    const adapter2 = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter2 = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     adapter2.install()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origOpen)
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(patched1)
@@ -185,7 +185,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     adapter.install()
     const ourPatched = (workspaces as unknown as { openPath: unknown }).openPath
     expect(ourPatched).not.toBe(origOpen)
@@ -213,7 +213,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
       get: (name: string) => (name === 'layout' ? layout : undefined),
     }
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     expect(() => adapter.install()).not.toThrow()
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(workspaces.openPath)
     expect(() => adapter.dispose()).not.toThrow()
@@ -235,7 +235,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
       get: () => undefined,
     }
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, undefined)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, undefined)
     expect(() => adapter.install()).not.toThrow()
     expect((doc as { listeners: unknown[] }).listeners.length).toBeGreaterThan(0)
     expect((win as { listeners: unknown[] }).listeners.length).toBeGreaterThan(0)
@@ -251,7 +251,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     // Inject failure on document url click after earlier tool captures succeeded
     const doc2 = (globalThis as unknown as { document: Record<string, unknown> }).document as Record<string, unknown>
     const origDocAdd = (doc2 as { addEventListener: unknown }).addEventListener
@@ -285,7 +285,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
       sessions: makeSessions('sess-a'),
       get: (name: string) => (name === 'layout' ? layout : undefined),
     }
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     adapter.install()
     const wrapped = (layout as unknown as { openDetails: () => void }).openDetails
     wrapped()
@@ -297,7 +297,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, remoteSession } = makeCtx()
     const origRemote = remoteSession.openWorkspacePath
     const callbacks = makeCallbacks({ openPath: vi.fn(async () => { throw new Error('dispatch boom') }) })
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     adapter.install()
     const wrapped = (remoteSession as unknown as { openWorkspacePath: (req: unknown, signal?: unknown) => Promise<unknown> }).openWorkspacePath
     const result = await wrapped({ path: 'src/Login.tsx' })
@@ -319,13 +319,13 @@ describe('alpha.1 compat adapter - install/dispose', () => {
       get: (name: string) => (name === 'layout' ? layout : undefined),
     }
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, layout)
     adapter.install()
     const patchedWs1 = (workspaces1 as unknown as { openPath: unknown }).openPath
     expect(patchedWs1).not.toBe(origWs1Open)
     // Replace Host object
     ;(ctx as { workspaces: unknown }).workspaces = workspaces2
-    // Calling the old patched handler with no session delegates to the current official opener.
+    // Calling the previous patched handler with no session delegates to the current official opener.
     const oldHandler = patchedWs1 as (path: string) => Promise<boolean>
     await expect(oldHandler('some/path')).resolves.toBe(false)
     expect(origWs1Open).not.toHaveBeenCalled()
@@ -343,7 +343,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     const { ctx, workspaces } = makeCtx()
     const origOpen = workspaces.openPath
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     adapter.install()
     const ourPatched = (workspaces as unknown as { openPath: unknown }).openPath
     // Sibling replaces after we installed
@@ -353,7 +353,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     adapter.dispose()
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(siblingWrapped)
     // Also ensure we didn't repatch after dispose: installing again should wrap sibling, not orig
-    const adapter2 = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter2 = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     adapter2.install()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(siblingWrapped)
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origOpen)
@@ -377,7 +377,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
       get: (name: string) => (name === 'layout' ? currentLayout : undefined),
     }
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as unknown as never, callbacks as never, desktop)
+    const adapter = new SidebarRuntimeIntegration(ctx as unknown as never, callbacks as never, desktop)
     adapter.install()
     expect((desktop as { openDetails: unknown }).openDetails).not.toBe(origDesktop)
     const desktopPatched = (desktop as { openDetails: unknown }).openDetails
@@ -408,7 +408,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
     ;(global as unknown as { window: unknown }).window = win
     const { ctx } = makeCtx()
     const callbacks = makeCallbacks()
-    const adapter = new SidebarAlpha1CompatAdapter(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
+    const adapter = new SidebarRuntimeIntegration(ctx as never, callbacks as never, (ctx as unknown as { layout: unknown }).layout)
     adapter.install()
     const docClickListeners = (doc as { listeners: Array<{ type: string }> }).listeners.filter(l => l.type === 'click')
     const winClickListeners = (win as { listeners: Array<{ type: string }> }).listeners.filter(l => l.type === 'click')
@@ -422,7 +422,7 @@ describe('alpha.1 compat adapter - install/dispose', () => {
   })
 })
 
-describe('controller integration - compat adapter via SidebarController', () => {
+describe('controller integration - integration adapter via SidebarController', () => {
   it('controller install/dispose wraps and restores via adapter', async () => {
     const workspaces = { openPath: vi.fn(async (p: string) => p), list: { getSnapshot: () => ({ archivedSessionIds: [] }) } }
     const remoteSession = { openWorkspacePath: vi.fn(async () => ({ ok: true })) }
@@ -442,13 +442,13 @@ describe('controller integration - compat adapter via SidebarController', () => 
     const origWorkspaces = workspaces.openPath
     const origRemote = remoteSession.openWorkspacePath
     const origLayout = layout.openDetails
-    controller.installPathTakeover()
+    controller.installRuntimeIntegration()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origWorkspaces)
     expect((remoteSession as unknown as { openWorkspacePath: unknown }).openWorkspacePath).not.toBe(origRemote)
     expect((layout as unknown as { openDetails: unknown }).openDetails).not.toBe(origLayout)
-    controller.installPathTakeover()
+    controller.installRuntimeIntegration()
     const patched = (workspaces as unknown as { openPath: unknown }).openPath
-    controller.installPathTakeover()
+    controller.installRuntimeIntegration()
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(patched)
     controller.dispose()
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(origWorkspaces)
@@ -485,7 +485,7 @@ describe('controller integration - compat adapter via SidebarController', () => 
     })
     // First, workspaces patch would succeed if we got there, but layout failure should cause transactional rollback
     // To make workspaces succeed before layout fails, we need document to succeed
-    expect(() => controller.installPathTakeover()).toThrow('injected layout failure')
+    expect(() => controller.installRuntimeIntegration()).toThrow('injected layout failure')
     // After failure, workspaces should be restored (no partial)
     expect((workspaces as unknown as { openPath: unknown }).openPath).toBe(origWorkspaces)
     expect((doc as { listeners: unknown[] }).listeners.length).toBe(0)
@@ -493,7 +493,7 @@ describe('controller integration - compat adapter via SidebarController', () => 
     if (origDescriptor) Object.defineProperty(layout, 'openDetails', origDescriptor)
     else delete (layout as unknown as { openDetails?: unknown }).openDetails
     ;(layout as { openDetails: unknown }).openDetails = vi.fn()
-    expect(() => controller.installPathTakeover()).not.toThrow()
+    expect(() => controller.installRuntimeIntegration()).not.toThrow()
     expect((workspaces as unknown as { openPath: unknown }).openPath).not.toBe(origWorkspaces)
     controller.dispose()
   })
@@ -515,7 +515,7 @@ describe('controller integration - compat adapter via SidebarController', () => 
       remote: {},
     } as unknown as never
     const controller = new SidebarController(ctx as never)
-    expect(() => controller.installPathTakeover()).not.toThrow()
+    expect(() => controller.installRuntimeIntegration()).not.toThrow()
     expect((layout as unknown as { openDetails: unknown }).openDetails).not.toBe(origLayout)
     expect(() => controller.dispose()).not.toThrow()
     expect((layout as unknown as { openDetails: unknown }).openDetails).toBe(origLayout)

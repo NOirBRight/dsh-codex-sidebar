@@ -59,16 +59,16 @@ function temporaryPackage(files: Record<string, string>): string {
 function temporaryFixtureBundle(): { root: string; bundleRoot: string; archive: string } {
   const root = mkdtempSync(join(tmpdir(), 'dsh-codex-sidebar-fixture-contract-'))
   temporaryRoots.push(root)
-  const bundleRoot = join(root, 'fixtures', 'alpha1')
+  const bundleRoot = join(root, 'fixtures', 'alpha4')
   const archive = join(bundleRoot, 'tarballs', 'zod-4.4.3.tgz')
   mkdirSync(dirname(archive), { recursive: true })
-  cpSync(new URL('../fixtures/alpha1/tarballs/zod-4.4.3.tgz', import.meta.url), archive)
+  cpSync(new URL('../fixtures/alpha4/tarballs/zod-4.4.3.tgz', import.meta.url), archive)
   const git = spawnSync('git', ['init', '--quiet', root], { encoding: 'utf8', env: sanitizedSubprocessEnv({ GIT_CONFIG_NOSYSTEM: '1' }) })
   if (git.status !== 0) throw new Error('could not initialize fixture test repository')
   return { root, bundleRoot, archive }
 }
 
-describe('Alpha1 build contract', () => {
+describe('Alpha4 build contract', () => {
   it('typechecks the client face and emits its public declaration', () => {
     const manifest = json<Manifest>('../package.json')
     const client = json<{ include?: string[]; compilerOptions?: { emitDeclarationOnly?: boolean; outDir?: string; paths?: Record<string, string[]> } }>(
@@ -81,9 +81,9 @@ describe('Alpha1 build contract', () => {
     expect(client.compilerOptions).toMatchObject({ emitDeclarationOnly: true, outDir: 'lib/types' })
     expect(manifest.exports?.['./client']).toMatchObject({ types: './lib/types/client/index.d.ts' })
     expect(client.compilerOptions?.paths?.['@deepseek-ai/dsh-client-ui-chat/client']).toEqual([
-      '.dsh-alpha1/packages/client/ui-chat/lib/types/client/index.d.ts',
+      '.dsh-alpha4/packages/client/ui-chat/lib/types/client/index.d.ts',
     ])
-    expect(readFileSync(new URL('../scripts/prepare-alpha1-types.mjs', import.meta.url), 'utf8')).toContain(
+    expect(readFileSync(new URL('../scripts/prepare-alpha4-types.mjs', import.meta.url), 'utf8')).toContain(
       'packages/client/ui-chat/lib/types/client/index.d.ts',
     )
   })
@@ -97,7 +97,7 @@ describe('Alpha1 build contract', () => {
     expect(source).toContain('const client = registrations[0].factory(createRequire(clientEntry))')
   })
 
-  it('uses only the real Alpha1 peer lane and keeps DSH packages out of runtime dependencies', () => {
+  it('uses only the real Alpha4 peer lane and keeps DSH packages out of runtime dependencies', () => {
     const manifest = json<Manifest>('../package.json')
     const dshPeers = Object.entries(manifest.peerDependencies ?? {})
       .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
@@ -107,8 +107,8 @@ describe('Alpha1 build contract', () => {
       .filter((name) => name.startsWith('@deepseek-ai/dsh-'))
 
     expect(dshPeers.length).toBeGreaterThan(0)
-    expect(dshPeers.every(([, range]) => range === '0.1.2-alpha.1')).toBe(true)
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-client-ui-chat']).toBe('0.1.2-alpha.1')
+    expect(dshPeers.every(([, range]) => range === '0.1.2-alpha.4')).toBe(true)
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-client-ui-chat']).toBe('0.1.2-alpha.4')
     const clientInject = (manifest as Manifest & { dsh?: { client?: { inject?: string[] } } }).dsh?.client?.inject ?? []
     expect(clientInject).toContain('@deepseek-ai/dsh-client-ui-chat')
     expect(runtimeDsh).toEqual([])
@@ -189,8 +189,8 @@ describe('Alpha1 build contract', () => {
 
   it('rejects a fixture archive ignored by repository rules', () => {
     const { root } = temporaryFixtureBundle()
-    writeFileSync(join(root, '.gitignore'), 'fixtures/alpha1/tarballs/zod-4.4.3.tgz\n')
-    expect(() => assertPersistedFixtureFilesVisible(root, ['fixtures/alpha1/tarballs/zod-4.4.3.tgz'])).toThrow(/ignored/)
+    writeFileSync(join(root, '.gitignore'), 'fixtures/alpha4/tarballs/zod-4.4.3.tgz\n')
+    expect(() => assertPersistedFixtureFilesVisible(root, ['fixtures/alpha4/tarballs/zod-4.4.3.tgz'])).toThrow(/ignored/)
   })
 
   it('continues past an unusable Corepack candidate', () => {

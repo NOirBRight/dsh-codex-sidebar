@@ -45,9 +45,9 @@ export function apply(ctx: ClientContext): void {
   })
   occupyDetails(ctx.slots, face, SidebarPanel, NS)
   ctx.effect(() => {
-    controller.installPathTakeover()
-    return () => { controller.uninstallCompat() }
-  }, 'dsh-codex-sidebar: alpha.1 compatibility adapter')
+    controller.installRuntimeIntegration()
+    return () => { controller.uninstallIntegration() }
+  }, 'dsh-codex-sidebar: Alpha.4 runtime integration adapter')
   ctx.effect(() => {
     let conversationProjection: ConversationProjection | undefined
     let lastStats: readonly RowHunkStat[] = []

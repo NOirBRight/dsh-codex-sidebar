@@ -1,8 +1,8 @@
 /**
- * Temporary alpha.1 compatibility adapter for dsh-codex-sidebar.
+ * Temporary Alpha.4 runtime integration adapter for dsh-codex-sidebar.
  *
- * DSH alpha.1 does not expose the transcript, layout, or workspace extension
- * seams needed by this client. This adapter is the approved alpha.1 exception:
+ * DSH Alpha.4 does not expose the transcript, layout, or workspace extension
+ * seams needed by this client. This adapter is the approved Alpha.4 exception:
  * it patches only those three surfaces and restores every patch it owns.
  *
  * The adapter never claims a takeover until the active-session dispatch returns
@@ -18,21 +18,21 @@ export type CapturedToolContext = {
     lastHunkId?: string | undefined;
     lastRowHunk?: ToolRowHunk | undefined;
 };
-export type CompatCallbacks = {
+export type IntegrationCallbacks = {
     dispatch: (sessionId: string, intent: Intent) => Promise<unknown>;
     openPath: (path: string, captured: CapturedToolContext) => Promise<boolean>;
     onLayoutOpen: () => void;
 };
 /**
- * Install the temporary alpha.1 Host and DOM compatibility behavior.
- * @param ctx - Client context carrying the alpha.1 services.
+ * Install the temporary Alpha.4 Host and DOM runtime integration behavior.
+ * @param ctx - Client context carrying the Alpha.4 services.
  * @param callbacks - Sidebar dispatch and layout callbacks.
  * @param bootLayout - Layout face captured during client setup.
- * @returns an idempotent disposer for the installed compatibility behavior.
+ * @returns an idempotent disposer for the installed runtime integration behavior.
  */
-export declare class SidebarAlpha1CompatAdapter {
+export declare class SidebarRuntimeIntegration {
     #private;
-    constructor(ctx: ClientContext, callbacks: CompatCallbacks, bootLayout?: unknown);
+    constructor(ctx: ClientContext, callbacks: IntegrationCallbacks, bootLayout?: unknown);
     /** Install once; a later call returns a no-op disposer. */
     install(): () => void;
     /** Restore every owned patch and listener in reverse installation order. */
@@ -43,7 +43,7 @@ export declare class SidebarAlpha1CompatAdapter {
      * @returns true for a Sidebar takeover and false after official fallback.
      */
     tryOpenTranscriptPath(path: string): Promise<boolean> | undefined;
-    /** Retry layout patching after alpha.1 replaces the layout face. */
+    /** Retry layout patching after Alpha.4 replaces the layout face. */
     ensureLayoutPatched(): void;
 }
-//# sourceMappingURL=sidebar-alpha1-compat-adapter.d.ts.map
+//# sourceMappingURL=sidebar-runtime-integration.d.ts.map

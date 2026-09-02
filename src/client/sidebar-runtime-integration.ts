@@ -1,8 +1,8 @@
 /**
- * Temporary alpha.1 compatibility adapter for dsh-codex-sidebar.
+ * Temporary Alpha.4 runtime integration adapter for dsh-codex-sidebar.
  *
- * DSH alpha.1 does not expose the transcript, layout, or workspace extension
- * seams needed by this client. This adapter is the approved alpha.1 exception:
+ * DSH Alpha.4 does not expose the transcript, layout, or workspace extension
+ * seams needed by this client. This adapter is the approved Alpha.4 exception:
  * it patches only those three surfaces and restores every patch it owns.
  *
  * The adapter never claims a takeover until the active-session dispatch returns
@@ -23,7 +23,7 @@ export type CapturedToolContext = {
   lastRowHunk?: ToolRowHunk | undefined
 }
 
-export type CompatCallbacks = {
+export type IntegrationCallbacks = {
   dispatch: (sessionId: string, intent: Intent) => Promise<unknown>
   openPath: (path: string, captured: CapturedToolContext) => Promise<boolean>
   onLayoutOpen: () => void
@@ -145,7 +145,7 @@ function disposeReverse(disposers: readonly (() => void)[]): void {
     }
   }
   if (failures.length === 1) throw failures[0]
-  if (failures.length > 1) throw new AggregateError(failures, 'alpha.1 compatibility teardown failed')
+  if (failures.length > 1) throw new AggregateError(failures, 'Alpha.4 runtime integration teardown failed')
 }
 
 function restoreProperty(
@@ -157,11 +157,11 @@ function restoreProperty(
 ): void {
   if (target[key] !== patched) return
   if (descriptor === undefined) {
-    if (!delete target[key] && target[key] === patched) throw new Error('failed to remove compatibility property ' + key)
+    if (!delete target[key] && target[key] === patched) throw new Error('failed to remove runtime integration property ' + key)
     return
   }
   Object.defineProperty(target, key, descriptor)
-  if (target[key] === patched) throw new Error('failed to restore compatibility property ' + key)
+  if (target[key] === patched) throw new Error('failed to restore runtime integration property ' + key)
   void originalValue
 }
 
@@ -208,15 +208,15 @@ function tryPatch(target: unknown, key: string, patched: unknown): InstalledPatc
 }
 
 /**
- * Install the temporary alpha.1 Host and DOM compatibility behavior.
- * @param ctx - Client context carrying the alpha.1 services.
+ * Install the temporary Alpha.4 Host and DOM runtime integration behavior.
+ * @param ctx - Client context carrying the Alpha.4 services.
  * @param callbacks - Sidebar dispatch and layout callbacks.
  * @param bootLayout - Layout face captured during client setup.
- * @returns an idempotent disposer for the installed compatibility behavior.
+ * @returns an idempotent disposer for the installed runtime integration behavior.
  */
-export class SidebarAlpha1CompatAdapter {
+export class SidebarRuntimeIntegration {
   #ctx: ClientContext
-  #callbacks: CompatCallbacks
+  #callbacks: IntegrationCallbacks
   #bootLayout: unknown
   #installed = false
   #disposers: Array<() => void> = []
@@ -230,7 +230,7 @@ export class SidebarAlpha1CompatAdapter {
   #openHandler: ((path: string) => Promise<boolean>) | undefined
   #urlEvents = new WeakSet<object>()
 
-  constructor(ctx: ClientContext, callbacks: CompatCallbacks, bootLayout?: unknown) {
+  constructor(ctx: ClientContext, callbacks: IntegrationCallbacks, bootLayout?: unknown) {
     this.#ctx = ctx
     this.#callbacks = callbacks
     this.#bootLayout = bootLayout
@@ -251,7 +251,7 @@ export class SidebarAlpha1CompatAdapter {
       try {
         this.dispose()
       } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], 'alpha.1 compatibility setup failed and rollback failed')
+        throw new AggregateError([error, rollbackError], 'Alpha.4 runtime integration setup failed and rollback failed')
       }
       throw error
     }
@@ -297,7 +297,7 @@ export class SidebarAlpha1CompatAdapter {
     return this.#openHandler(path)
   }
 
-  /** Retry layout patching after alpha.1 replaces the layout face. */
+  /** Retry layout patching after Alpha.4 replaces the layout face. */
   ensureLayoutPatched(): void {
     if (!this.#installed) return
     this.#installLayoutReveal()
@@ -368,7 +368,7 @@ export class SidebarAlpha1CompatAdapter {
         return false
       } catch (officialError) {
         if (adapterError === undefined) throw officialError
-        throw new AggregateError([officialError, adapterError], 'alpha.1 path takeover and official fallback failed')
+        throw new AggregateError([officialError, adapterError], 'Alpha.4 path takeover and official fallback failed')
       }
     }
   }
@@ -441,7 +441,7 @@ export class SidebarAlpha1CompatAdapter {
         return await originalBound(request, signal)
       } catch (officialError) {
         if (adapterError === undefined) throw officialError
-        throw new AggregateError([officialError, adapterError], 'alpha.1 Remote takeover and official fallback failed')
+        throw new AggregateError([officialError, adapterError], 'Alpha.4 Remote takeover and official fallback failed')
       }
     }
     const patch = tryPatch(remoteSession, 'openWorkspacePath', wrapped)

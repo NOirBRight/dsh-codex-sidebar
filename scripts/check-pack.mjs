@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ALPHA1_REVISION, ALPHA1_TAG } from './prepare-alpha1-types.mjs'
+import { ALPHA4_REVISION, ALPHA4_TAG } from './prepare-alpha4-types.mjs'
 import { sanitizedSubprocessEnv } from './subprocess-env.mjs'
 
 export { sanitizedSubprocessEnv } from './subprocess-env.mjs'
@@ -602,11 +602,11 @@ export function assertPersistedFixtureArchive(bundleRoot, entry, archiveRoot = j
 function assertPersistedProvenance(entry) {
   const provenance = entry.provenance
   if (provenance === undefined || typeof provenance !== 'object' || provenance === null) fail('fixture provenance is missing: ' + entry.key)
-  if (provenance.kind === 'clean-alpha1') {
-    if (provenance.repository !== 'https://github.com/deepseek-ai/deepseek-harness.git' || provenance.tag !== ALPHA1_TAG || provenance.revision !== ALPHA1_REVISION || provenance.integrity !== 'git:' + ALPHA1_REVISION) fail('clean alpha1 provenance is invalid: ' + entry.key)
+  if (provenance.kind === 'clean-alpha4') {
+    if (provenance.repository !== 'https://github.com/deepseek-ai/deepseek-harness.git' || provenance.tag !== ALPHA4_TAG || provenance.revision !== ALPHA4_REVISION || provenance.integrity !== 'git:' + ALPHA4_REVISION) fail('clean alpha4 provenance is invalid: ' + entry.key)
     return
   }
-  if (provenance.kind !== 'registry-clean-alpha1-store' && provenance.kind !== 'registry-consumer-store') fail('fixture provenance kind is invalid: ' + entry.key)
+  if (provenance.kind !== 'registry-clean-alpha4-store' && provenance.kind !== 'registry-consumer-store') fail('fixture provenance kind is invalid: ' + entry.key)
   if (typeof provenance.source !== 'string' || provenance.source.length === 0 || typeof provenance.lockfile !== 'string' || !provenance.lockfile.endsWith('pnpm-lock.yaml') || typeof provenance.integrity !== 'string' || !provenance.integrity.startsWith('sha512-')) fail('registry fixture provenance is invalid: ' + entry.key)
 }
 
@@ -627,27 +627,27 @@ export function assertPersistedFixtureFilesVisible(root, paths, env) {
 
 /** Load and validate the committed exact-version fixture graph. */
 export function loadFixtureBundle(root, manifest, env) {
-  const bundleRoot = resolve(root, 'fixtures/alpha1')
+  const bundleRoot = resolve(root, 'fixtures/alpha4')
   assertSafeDirectoryRoot(bundleRoot, 'persisted fixture root')
   const archiveRoot = join(bundleRoot, 'tarballs')
   assertSafeDirectoryRoot(archiveRoot, 'persisted fixture archive root')
   const manifestPath = join(bundleRoot, 'PROVENANCE.json')
   const manifestInfo = lstatSync(manifestPath, { throwIfNoEntry: false })
-  if (manifestInfo === undefined || !manifestInfo.isFile() || manifestInfo.isSymbolicLink() || realpathSync(manifestPath) !== manifestPath) fail('persisted alpha1 fixture manifest is not a regular file: ' + manifestPath)
+  if (manifestInfo === undefined || !manifestInfo.isFile() || manifestInfo.isSymbolicLink() || realpathSync(manifestPath) !== manifestPath) fail('persisted alpha4 fixture manifest is not a regular file: ' + manifestPath)
   let payload
   try { payload = JSON.parse(readFileSync(manifestPath, 'utf8')) } catch (error) { fail('persisted fixture manifest is invalid: ' + (error instanceof Error ? error.message : String(error))) }
-  if (payload?.schema !== 1 || payload.alpha1?.repository !== 'https://github.com/deepseek-ai/deepseek-harness.git' || payload.alpha1?.tag !== ALPHA1_TAG || payload.alpha1?.revision !== ALPHA1_REVISION) fail('persisted fixture bundle is not the exact official alpha1 artifact')
+  if (payload?.schema !== 1 || payload.alpha4?.repository !== 'https://github.com/deepseek-ai/deepseek-harness.git' || payload.alpha4?.tag !== ALPHA4_TAG || payload.alpha4?.revision !== ALPHA4_REVISION) fail('persisted fixture bundle is not the exact official alpha4 artifact')
   const rootKey = packageKey(manifest.name, manifest.version)
   if (payload.root?.key !== rootKey || payload.root?.name !== manifest.name || payload.root?.version !== manifest.version) fail('persisted fixture root does not match packed package')
   if (!Array.isArray(payload.fixtures) || !Array.isArray(payload.edges)) fail('persisted fixture bundle has no graph arrays')
   const records = new Map()
   const archivePaths = new Map()
-  const persistedPaths = ['fixtures/alpha1/PROVENANCE.json']
+  const persistedPaths = ['fixtures/alpha4/PROVENANCE.json']
   for (const entry of payload.fixtures) {
     if (typeof entry?.key !== 'string' || typeof entry.name !== 'string' || typeof entry.version !== 'string' || entry.key !== packageKey(entry.name, entry.version)) fail('persisted fixture has an inexact package key')
     if (records.has(entry.key)) fail('persisted fixture package@version is duplicated: ' + entry.key)
     assertPersistedProvenance(entry)
-    if (typeof entry.archive === 'string') persistedPaths.push(join('fixtures/alpha1', entry.archive).replaceAll(sep, '/'))
+    if (typeof entry.archive === 'string') persistedPaths.push(join('fixtures/alpha4', entry.archive).replaceAll(sep, '/'))
     const archive = assertPersistedFixtureArchive(bundleRoot, entry, archiveRoot)
     const packed = packageManifestFromArchive(archive, env)
     if (packed.name !== entry.name || packed.version !== entry.version) fail('persisted fixture archive manifest mismatch: ' + entry.key)
@@ -670,7 +670,7 @@ export function loadFixtureBundle(root, manifest, env) {
     const expectedRange = edge.range.startsWith('workspace:') ? workspaceRange(edge.range, child.version) : edge.range
     if (values[edge.name] !== expectedRange) fail('persisted fixture edge range differs from parent declaration: ' + edge.parentKey + ' -> ' + edge.childKey)
     assertPersistedRange(edge, child)
-    if (edge.range.startsWith('workspace:') && child.provenance.kind !== 'clean-alpha1') fail('workspace edge does not point to clean alpha1 fixture: ' + edge.parentKey + ' -> ' + edge.childKey)
+    if (edge.range.startsWith('workspace:') && child.provenance.kind !== 'clean-alpha4') fail('workspace edge does not point to clean alpha4 fixture: ' + edge.parentKey + ' -> ' + edge.childKey)
     const normalized = { ...edge, parentName: parent.name, parentVersion: parent.version, childName: child.name, childVersion: child.version, parentSource: parent.source, optional: edge.optional === true }
     const parentNameKey = edge.parentKey + '>' + edge.name
     const previous = edgeByParentName.get(parentNameKey)
@@ -690,7 +690,7 @@ export function loadFixtureBundle(root, manifest, env) {
   }
   for (const key of records.keys()) if (!reachable.has(key)) fail('persisted fixture is unreachable from packed package: ' + key)
   const zod = records.get('zod@4.4.3')
-  if (zod === undefined || zod.provenance.kind !== 'registry-clean-alpha1-store' || zod.provenance.source !== CLEAN_ZOD_SOURCE) fail('persisted clean alpha1 pnpm-store zod@4.4.3 fixture is missing or came from another source')
+  if (zod === undefined || zod.provenance.kind !== 'registry-clean-alpha4-store' || zod.provenance.source !== CLEAN_ZOD_SOURCE) fail('persisted clean alpha4 pnpm-store zod@4.4.3 fixture is missing or came from another source')
   return { root: rootRecord, records, edges, edgeByParentName, edgeIndex, sources: { alpha: bundleRoot }, archivePaths }
 }
 

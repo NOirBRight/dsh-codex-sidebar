@@ -29,17 +29,17 @@
 
 ## 安装
 
-仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.1；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
+仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.4；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.10
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
@@ -48,7 +48,7 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sid
 
 0.5.7 把编码器 IPv4 host ICE 候选复制到 127.0.0.1（套接字绑在 0.0.0.0 上），GUI Chrome 不必再去打 Clash fake-ip 198.18.0.1。
 
-0.5.0 在 `dsh-client-runtime` 移除后改接精确 0.1.2-alpha.1 的官方 `ui-session`、`ui-conversation`、`ui-chat`、Client store 与 API Remotes。Transcript 消费方统一通过插件 Adapter 读取 canonical Chat nodes，当前 `legacy` 兼容切片只作为 Adapter 内部 fallback。同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入 Alpha 适配线；此前的 0.4.x Alpha 适配分支并不包含这条平行 Browser 开发线。
+0.5.0 在 `dsh-client-runtime` 移除后改接精确 0.1.2-alpha.4 的官方 `ui-session`、`ui-conversation`、Client store 与 API Remotes。Transcript 消费方统一通过插件 Adapter 读取 canonical Chat nodes，legacy 切片只作为 Adapter 内部 fallback。同时把 0.3.23 的有界 Browser 传输和 revision 化 Browser v2 重新并入适配线；此前的 0.4.x 适配分支并不包含这条平行 Browser 开发线。
 
 0.3.0 起，Review/Files 工作区投影按需异步执行：收起侧栏不会扫描 git；Review 文件列表使用摘要，展开文件时才读取详情。侧栏状态默认按 `DSH_HOME` 隔离保存，并从旧的 `~/.dsh-codex-sidebar/sessions` 按需迁移。超大或二进制文件的详情会显示受限摘要，不会为了生成全量 LCS diff 阻塞宿主。
 
@@ -114,12 +114,12 @@ DSH session 被释放时，插件会立即关闭该 session 的 Browser 控制�
 
 ## 本地安装
 
-客户端类型检查固定使用官方 `dsh-v0.1.2-alpha.1` 声明。离线 pack gate 使用仓库内提交的精确版本 fixture bundle：`fixtures/alpha1/`；它不会读取外部 DSH checkout 或已有依赖树。只有在精确 tag 的干净、已构建 checkout 上执行 `pnpm run prepare:pack-fixtures` 才能刷新 bundle；生成的 tarball 会同时保存 provenance 与 integrity。
+客户端类型检查固定使用官方 `dsh-v0.1.2-alpha.4` 声明。离线 pack gate 使用仓库内提交的精确版本 fixture bundle：`fixtures/alpha4/`；它不会读取外部 DSH checkout 或已有依赖树。只有在精确 tag 的干净、已构建 checkout 上执行 `pnpm run prepare:pack-fixtures` 才能刷新 bundle；生成的 tarball 会同时保存 provenance 与 integrity。
 gate 会直接调用 `npm`、`pnpm`、`node`、`git` 和 `tar`，并为它们共用一个经过清理的子进程环境。pnpm install 的策略是 `--offline --ignore-scripts --strict-peer-dependencies --lockfile=false --registry http://127.0.0.1:9/ --store-dir <fresh> --config.audit=false --config.fund=false`；audit 与 fund 是 pnpm 配置等价项，不宣称 npm 专用的 `--no-audit` 或 `--no-fund`。
 
 ```sh
 pnpm install
-DSH_ALPHA1_CHECKOUT=/path/to/deepseek-harness-alpha1 pnpm run typecheck
+DSH_ALPHA4_CHECKOUT=/path/to/deepseek-harness-alpha4 pnpm run typecheck
 pnpm run pack:check
 dsh plugin --profile web add "$(pwd)"
 dsh web
@@ -134,7 +134,7 @@ dsh web
 
 ## 正式版安装（Latest）
 
-Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. 正式成品只支持 DeepSeek Harness 0.1.2-alpha.1；发布包只包含构建后的 Host/Client 产物，不包含兄弟仓库源码、本机路径或 link:/workspace: 依赖。
+Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. 正式成品只支持 DeepSeek Harness 0.1.2-alpha.4；发布包只包含构建后的 Host/Client 产物，不包含兄弟仓库源码、本机路径或 link:/workspace: 依赖。
 
 Latest 安装命令（永久不含版本号）：
 
@@ -167,4 +167,4 @@ dsh plugin --profile web remove dsh-codex-sidebar
 
 回滚：重新执行固定版本 v0.5.10 命令，确认插件列表后只重启一次 Web 服务。失败时查看 journalctl --user -u dsh-web.service 与 dsh plugin --profile web doctor，不要把源码 checkout 写入 production profile。
 
-Release 与完整性：[v0.5.10](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.10) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/SHA256SUMS)。
+Release 与完整性：[v0.5.11](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.11) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.11/SHA256SUMS)。

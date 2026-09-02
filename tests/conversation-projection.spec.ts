@@ -94,7 +94,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('Alpha1 Conversation projection', () => {
+describe('Alpha4 Conversation projection', () => {
   it('derives chips, edit rows, turn writes, logs, and hunk fallback from canonical Chat nodes', () => {
     const source = { annotations: [{ id: 'a1' }] }
     let snapshot: unknown = canonicalChat(source)
@@ -109,7 +109,7 @@ describe('Alpha1 Conversation projection', () => {
     const targetFor = vi.fn(() => target)
     const projection = createConversationProjection({
       uiConversation: { binding: () => ({ target: targetFor }) },
-    } as never, { sessionId: 'session-alpha1' } as never)
+    } as never, { sessionId: 'session-alpha4' } as never)
 
     expect(projection.sourceForFlowKey('user-1')).toBe(source)
     expect(projection.rowHunks()).toEqual([expect.objectContaining({
@@ -134,7 +134,7 @@ describe('Alpha1 Conversation projection', () => {
     expect(notify).toHaveBeenCalledOnce()
   })
 
-  it('degrades all derived views when alpha1 Chat data is unavailable', () => {
+  it('degrades all derived views when alpha4 Chat data is unavailable', () => {
     const target = {
       getSnapshot: () => undefined,
       subscribe: () => () => {},

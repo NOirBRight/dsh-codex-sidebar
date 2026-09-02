@@ -1,4 +1,4 @@
-/** Official Alpha1 Chat projection for sidebar transcript consumers. */
+/** Official Alpha4 Chat projection for sidebar transcript consumers. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client'

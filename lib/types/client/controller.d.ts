@@ -47,11 +47,11 @@ export declare class SidebarController {
     refresh(sessionId: string, signal?: AbortSignal): Promise<SidebarSnapshot | undefined>;
     readFilePreview(sessionId: string, path: string): Promise<string | undefined>;
     dispatch(sessionId: string, intent: Intent, applyEffects?: boolean): Promise<SidebarSnapshot | undefined>;
-    installPathTakeover(): void;
+    installRuntimeIntegration(): void;
     /** Open one decorated transcript path through the exact captured Tool-row context. */
     openTranscriptPath(path: string): Promise<boolean> | undefined;
     /** @internal - adapter disposer owned by ctx.effect */
-    uninstallCompat(): void;
+    uninstallIntegration(): void;
     /**
      * AppFrame columns are pinned by the overlay ColumnPin. Do not closeDetails
      * while the 侧栏 is open — that would collapse the third track.
