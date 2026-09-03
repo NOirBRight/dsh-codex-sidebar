@@ -68,7 +68,9 @@ function temporaryFixtureBundle(): { root: string; bundleRoot: string; archive: 
   return { root, bundleRoot, archive }
 }
 
-describe('Alpha4 build contract', () => {
+const DSH_RANGE = '>=0.1.2-alpha.4 <1.0.0 || 0.1.2-alpha.5 || 0.1.2-rc.1'
+
+describe('dual-runtime build contract', () => {
   it('typechecks the client face and emits its public declaration', () => {
     const manifest = json<Manifest>('../package.json')
     const client = json<{ include?: string[]; compilerOptions?: { emitDeclarationOnly?: boolean; outDir?: string; paths?: Record<string, string[]> } }>(
@@ -107,8 +109,8 @@ describe('Alpha4 build contract', () => {
       .filter((name) => name.startsWith('@deepseek-ai/dsh-'))
 
     expect(dshPeers.length).toBeGreaterThan(0)
-    expect(dshPeers.every(([, range]) => range === '0.1.2-alpha.4')).toBe(true)
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-client-ui-chat']).toBe('0.1.2-alpha.4')
+    expect(dshPeers.every(([, range]) => range === DSH_RANGE)).toBe(true)
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-client-ui-chat']).toBe(DSH_RANGE)
     const clientInject = (manifest as Manifest & { dsh?: { client?: { inject?: string[] } } }).dsh?.client?.inject ?? []
     expect(clientInject).toContain('@deepseek-ai/dsh-client-ui-chat')
     expect(runtimeDsh).toEqual([])

@@ -2,6 +2,7 @@
 
 import type {} from '@deepseek-ai/dsh-session'
 import { SIDEBAR_RPC_CHANNEL } from './contract.ts'
+import { allowDshRuntime } from './compatibility.ts'
 import { createHostBrowser } from './host-browser.ts'
 import { ManagedBrowserRuntime, type ManagedBrowserConfig } from './managed-browser-runtime.ts'
 import { ManagedBrowserEvidenceStore } from './managed-browser-evidence.ts'
@@ -65,6 +66,7 @@ type WebServerHost = {
 
 type EffectContext = {
   effect: (callback: () => void | (() => void), label?: string) => void
+  logger: { warn(message: string): void }
 }
 
 type HostContext = EffectContext & {
@@ -94,6 +96,8 @@ function agentWorkspaceCwd(agent: unknown): string | undefined {
 }
 
 export function apply(ctx: HostContext, config: Config = {}): void {
+  if (!allowDshRuntime(ctx.logger, 'dsh-codex-sidebar', ['@deepseek-ai/dsh-session'])) return
+
   const filesBySession = new Map<string, FilesPort>()
   const annotationSend = new AnnotationSendStore()
   let agentLive = (_id: string): boolean => false

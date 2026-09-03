@@ -44,6 +44,9 @@ type WebServerHost = {
 };
 type EffectContext = {
     effect: (callback: () => void | (() => void), label?: string) => void;
+    logger: {
+        warn(message: string): void;
+    };
 };
 type HostContext = EffectContext & {
     on: (name: 'session/disposed', listener: (session: {

@@ -4,7 +4,14 @@
 
 给一条 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 主会话加上 Codex 风格右侧栏。Files、Review、Browser、Terminal 四个工具共用当前会话的一条标签栏。
 
-![对话和文件预览](docs/screenshots/01-overview.png)
+## 兼容性
+
+已验证运行时是 DeepSeek Harness `0.1.2-alpha.4` 与 `0.1.2-rc.1`（Cordis `4.0.2`）；这份记录只是证据，不是 allowlist。
+
+未知的新版本会先打一条 warning，再按正常挂载路径 best-effort 尝试，不会因为未验证而跳过。
+
+只有复现过的故障才会加入 blocklist；受影响版本、原因和证据见[兼容性记录](package.json)。
+
 
 ## 做什么
 
@@ -29,17 +36,15 @@
 
 ## 安装
 
-仅支持官方精确版本 DeepSeek Harness 0.1.2-alpha.4；后续 0.1.2 预发布版或正式版必须重新通过公开 Client 契约验证后才会放宽兼容范围：
-
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.12
 dsh web
 ```
 
 实验室（`DSH_HOME=~/.dsh-lab`）同样装这个包：
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.12
 ```
 
 仓库里带发布用的 `lib/` 产物，从 GitHub 安装不必放行构建脚本。
@@ -131,10 +136,9 @@ dsh web
 
 见 `CONTEXT.md` 与 `docs/adr/`。
 
-
 ## 正式版安装（Latest）
 
-Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. 正式成品只支持 DeepSeek Harness 0.1.2-alpha.4；发布包只包含构建后的 Host/Client 产物，不包含兄弟仓库源码、本机路径或 link:/workspace: 依赖。
+Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. 正式成品按上方兼容性记录运行；发布包只包含构建后的 Host/Client 产物，不包含兄弟仓库源码、本机路径或 link:/workspace: 依赖。
 
 Latest 安装命令（永久不含版本号）：
 
@@ -147,7 +151,7 @@ dsh plugin --profile web add --force \
 
 ~~~sh
 dsh plugin --profile web add --force \
-  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.10/dsh-codex-sidebar.tgz
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.12/dsh-codex-sidebar.tgz
 ~~~
 
 更新、卸载与验证：
@@ -167,4 +171,4 @@ dsh plugin --profile web remove dsh-codex-sidebar
 
 回滚：重新执行固定版本 v0.5.10 命令，确认插件列表后只重启一次 Web 服务。失败时查看 journalctl --user -u dsh-web.service 与 dsh plugin --profile web doctor，不要把源码 checkout 写入 production profile。
 
-Release 与完整性：[v0.5.11](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.11) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.11/SHA256SUMS)。
+Release 与完整性：[v0.5.12](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.12) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.12/SHA256SUMS)。

@@ -4,9 +4,14 @@ English | [中文](README.zh.md)
 
 A Codex-app-style right-hand sidebar for one [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) session. Files, Review, Browser, and Terminal share a tab strip on the current session.
 
-Compatibility: this release requires DeepSeek Harness `0.1.2-alpha.4` and `@deepseek-ai/cordis@4.0.2`; it is not compatible with Alpha.1–Alpha.3. Users on older runtimes must keep the last plugin tag built for that runtime.
+## Compatibility
 
-![Conversation plus Files preview in the sidebar](docs/screenshots/01-overview.png)
+Verified runtimes are DeepSeek Harness `0.1.2-alpha.4` and `0.1.2-rc.1` on Cordis `4.0.2`; this record is evidence, not an allowlist.
+
+Unknown newer runtimes are attempted on a best-effort basis after one warning, and the plugin keeps its normal mount path.
+
+A reproduced failure is blocklisted only afterward; see the [compatibility records](package.json) for the affected version, reason, and evidence.
+
 
 ## What it does
 
@@ -31,17 +36,17 @@ Chrome follows the DSH host theme. Tabs persist with that session. Side Chat is 
 
 ## Installation
 
-The exact official DeepSeek Harness 0.1.2-alpha.4 release is required. Later 0.1.2 prereleases or finals remain unsupported until this plugin is revalidated against their public Client contracts. Install from GitHub:
+The release artifact was revalidated against the verified runtimes above. Install from GitHub:
 
 ```sh
-dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
+dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.12
 dsh web
 ```
 
 Lab (`DSH_HOME=~/.dsh-lab`) uses the same package name:
 
 ```sh
-DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.11
+DSH_HOME=~/.dsh-lab dsh plugin --profile web add github:NOirBRight/dsh-codex-sidebar#v0.5.12
 ```
 
 The repository tracks release-ready `lib/` artifacts, so GitHub installation needs no build-script allowlist.
@@ -96,7 +101,7 @@ The managed Chromium profile has a 256 MiB derived-cache budget by default. Mana
       browserCleanupTimeoutMs: 2000
 ```
 
-The fixed phone, tablet, and laptop presets remain `390×844`, `768×1024`, and `1280×800`. Fit mode proposes one clamped viewport only after the container settles; selecting a fixed preset sends exactly one proposal through its v2 control connection and never commits through the persisted session or ticket path. Fixed presets never consume container resize observations. The Host verifies the exact target Page's CSS viewport after every proposal, including an unchanged one, and again after the first screencast starts on a fixed-layout connection. It does not use that screencast for capture or start direct-media negotiation until the reconnect verification finishes. During a viewport transition it pauses visual reads, media capture, and input without closing the control connection; an internal epoch discards work that crossed even an unchanged-layout verification, while visual results and gestures also recheck their originating document. The client sends each desktop press/release as one atomic tap or drag, and the Host serializes that complete gesture with viewport writes; evidence selection is canceled if its press and release use different presented revisions. A completed action is not reported as failed merely because a transition queued behind it. A completed Mobile touch tap opens the hidden IME and pauses fit proposals until blur; touch scrolling and desktop focus do not pause fit. This reconnect check repairs a Page whose actual viewport drifted while retaining the existing revision and media generation. The Host uses an identity-bound CDP metrics override when Playwright completes without applying the dimensions and closes the target rather than publishing or streaming an unverified layout. Each control connection binds one exact managed Page/CDP identity and disconnects when that target is replaced. WebRTC carries video only and does not request camera, microphone, or audio. `stunUrls` accepts only `stun:` URLs; TURN is rejected. An empty list still permits host ICE candidates, while deployments that need NAT discovery must configure approved STUN servers. `jpeg-only` is available as a diagnostic `preferredMediaRoute`.
+The fixed phone, tablet, and laptop presets remain `390×844`, `768×1024`, and `1280×800`. Fit mode proposes one clamped viewport only after the container settles; selecting a fixed preset sends exactly one proposal through its v2 control connection and never commits through the persisted session or ticket path. Fixed presets never consume container resize observations. The Host verifies the exact target Page's CSS viewport after every proposal, including an unchanged one, and again after the first screencast starts on a fixed-layout connection. It does not use that screencast for capture or start direct-media negotiation until the reconnect verification finishes. During a viewport transition it pauses visual reads, media capture, and input without closing the control connection; an internal epoch discards work that crossed even an unchanged-layout verification, while visual results and gestures also recheck their originating document. The client sends each desktop press/release as one atomic tap or drag, and the Host serializes that complete gesture with viewport writes; evidence selection is canceled if its press and release use different presented revisions. A completed action is not reported as failed merely because a transition queued behind it. A completed Mobile touch tap opens the hidden IME and pauses fit proposals until blur; touch scrolling and desktop focus do not pause fit. This reconnect check repairs a Page whose actual viewport drifted while retaining the existing revision and media generation. The Host uses an identity-bound CDP metrics override when Playwright completes without applying the dimensions and closes the target rather than publishing or streaming an unverified layout. Each control connection binds one exact managed Page/CDP identity and disconnects when that target is replaced. WebRTC carries video only and does not request camera, microphone, or audio. `stunUrls` accepts only `stun:` URLs; TURN is rejected. An empty list still permits h... (line truncated to 2000 chars)
 
 The Origin-less Mobile tunnel wraps the Browser JSON frame in another Base64 envelope. Its default 96 KiB limit applies to the encoded JPEG bytes and leaves the complete tunnel plaintext below the 200 KiB ceiling. Browser evidence remains an exact, separate Page capture; its read RPC requires an explicit offset and returns at most 96 KiB of raw JPEG as Base64 with a next offset, rather than sending a multi-megabyte response through the tunnel. The fallback may lower JPEG quality or encoded resolution, but it never changes the committed CSS viewport. `desktopJpegFrameIntervalMs` and `mobileJpegFrameIntervalMs` are hard capture-rate ceilings, including interaction-triggered frames. Each interaction, navigation, refresh, or layout commit permits at most `desktopJpegInteractionBurstFrames` or `mobileJpegInteractionBurstFrames` later passive screencast updates; animation alone becomes quiet when that budget is exhausted. New activity replenishes the budget and retains the latest dirty update. Direct WebRTC video uses the separate `directVideoCaptureQuality`, `directVideoCaptureMaxScale`, and `directVideoCaptureMaxRawBytes` profile against the Host-committed viewport, regardless of whether the control socket has an Origin. These encoder-only JPEG bytes never enter the Mobile tunnel. Each connection retains at most one capture, one unacknowledged frame, and one latest dirty request.
 
@@ -114,7 +119,7 @@ Local HTML is active content. Its scripts can read resources served from the sel
 
 ## Local install
 
-Client typechecking is pinned to the official `dsh-v0.1.2-alpha.4` declarations. The offline pack gate consumes the committed exact-version fixture bundle in `fixtures/alpha4/`; it does not inspect an external DSH checkout or pre-existing dependency tree. Refresh that bundle only from a clean, built checkout of the exact tag with `pnpm run prepare:pack-fixtures`; the generated tarballs include their provenance and integrity records.
+Client typechecking uses the official `dsh-v0.1.2-alpha.4` declarations. The offline pack gate consumes the committed fixture bundle in `fixtures/alpha4/`; refresh it only from a clean checkout of the recorded tag with `pnpm run prepare:pack-fixtures`.
 The gate invokes `npm`, `pnpm`, `node`, `git`, and `tar` directly with one sanitized child environment. Its pnpm install policy is `--offline --ignore-scripts --strict-peer-dependencies --lockfile=false --registry http://127.0.0.1:9/ --store-dir <fresh> --config.audit=false --config.fund=false`; the audit and fund settings are pnpm config equivalents, not npm-only `--no-audit` or `--no-fund` flags.
 
 ```sh
@@ -131,7 +136,6 @@ Then open a session and use the sidebar toggle.
 
 See `CONTEXT.md` and `docs/adr/`.
 
-
 ## Release installation (Latest)
 
 Codex-style Files, Review, Browser, and Terminal sidebar for one DSH session. The release artifact targets DeepSeek Harness 0.1.2-alpha.4 and contains built Host/Client files only; it has no sibling-repository source, workstation path, link:, or workspace: dependency.
@@ -147,7 +151,7 @@ Fixed-version installation:
 
 ~~~sh
 dsh plugin --profile web add --force \
-  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.11/dsh-codex-sidebar.tgz
+  https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.12/dsh-codex-sidebar.tgz
 ~~~
 
 Update, uninstall, and verify:
@@ -165,6 +169,6 @@ dsh plugin --profile web remove dsh-codex-sidebar
 
 Configuration: use the plugin section in Settings for Web UI plugins, or the profile dsh.profile.bundles entry for Host-only plugins. Start with this README's minimal YAML/JSON example and provide credentials/backend addresses explicitly.
 
-Rollback: rerun the fixed v0.5.11 command, verify the profile list, then restart the Web service once. Inspect journalctl --user -u dsh-web.service and dsh plugin --profile web doctor; never put a source checkout in the production profile.
+Rollback: rerun the fixed v0.5.12 command, verify the profile list, then restart the Web service once. Inspect journalctl --user -u dsh-web.service and dsh plugin --profile web doctor; never put a source checkout in the production profile.
 
-Release and integrity: [v0.5.11](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.11) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.11/SHA256SUMS).
+Release and integrity: [v0.5.12](https://github.com/NOirBRight/dsh-codex-sidebar/releases/tag/v0.5.12) · [SHA256SUMS](https://github.com/NOirBRight/dsh-codex-sidebar/releases/download/v0.5.12/SHA256SUMS).
